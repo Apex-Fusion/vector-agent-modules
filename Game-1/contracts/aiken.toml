@@ -1,0 +1,9 @@
+name = "vector/adversarial-auditing"
+version = "1.0.0"
+compiler = "v1.1.21"
+plutus = "v3"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.0.0"
+source = "github"
