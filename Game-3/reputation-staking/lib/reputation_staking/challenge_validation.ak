@@ -10,7 +10,7 @@ use aiken/interval.{Finite}
 use cardano/address.{Script, VerificationKey}
 use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
-use reputation_staking/config.{ReputationConfig}
+use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{
   AuditChallengeDatum, AuditClaimDatum, AuditJurorDatum,
@@ -45,6 +45,7 @@ use reputation_staking/utils.{
 pub fn validate_mint_challenge(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   output_datum: ReputationChallengeDatum,
   output: Output,
@@ -61,7 +62,7 @@ pub fn validate_mint_challenge(
   let target_stake_valid =
     verify_target_capability(
       tx.reference_inputs,
-      cfg,
+      refs,
       output_datum.target_did,
       output_datum.challenged_capability,
     )
@@ -101,7 +102,7 @@ pub fn validate_mint_challenge(
       fn(input) {
         assets.quantity_of(
           input.output.value,
-          cfg.endorsement_policy_id,
+          refs.endorsement_policy_id,
           expected_token_name,
         ) >= 1
       },
@@ -111,7 +112,7 @@ pub fn validate_mint_challenge(
   let has_correct_token =
     assets.quantity_of(
       output.value,
-      cfg.endorsement_policy_id,
+      refs.endorsement_policy_id,
       expected_token_name,
     ) == 1
 
@@ -125,7 +126,7 @@ pub fn validate_mint_challenge(
   // Output at endorsement validator
   let at_validator =
     when output.address.payment_credential is {
-      Script(hash) -> hash == cfg.endorsement_policy_id
+      Script(hash) -> hash == refs.endorsement_policy_id
       _ -> False
     }
 
@@ -484,6 +485,7 @@ pub fn map_audit_verdict(verdict: AuditVerdict) -> RepChallengeOutcome {
 pub fn validate_distribute_outcome(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   challenge_datum: ReputationChallengeDatum,
 ) -> Bool {
@@ -500,7 +502,7 @@ pub fn validate_distribute_outcome(
   let token_burned =
     assets.quantity_of(
       tx.mint,
-      cfg.endorsement_policy_id,
+      refs.endorsement_policy_id,
       expected_token_name,
     ) == -1
 
@@ -508,9 +510,9 @@ pub fn validate_distribute_outcome(
   let payouts_valid =
     when outcome is {
       CapabilityFalsified ->
-        validate_falsified_payouts(tx, cfg, params, challenge_datum)
+        validate_falsified_payouts(tx, cfg, refs, params, challenge_datum)
       CapabilityVerified ->
-        validate_verified_payouts(tx, cfg, params, challenge_datum)
+        validate_verified_payouts(tx, cfg, refs, params, challenge_datum)
       Inconclusive ->
         validate_inconclusive_payouts(tx, cfg, params, challenge_datum)
     }
@@ -522,6 +524,7 @@ pub fn validate_distribute_outcome(
 fn validate_falsified_payouts(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   challenge_datum: ReputationChallengeDatum,
 ) -> Bool {
@@ -536,7 +539,7 @@ fn validate_falsified_payouts(
       fn(input) {
         assets.quantity_of(
           input.output.value,
-          cfg.reputation_policy_id,
+          refs.reputation_policy_id,
           target_stake_token,
         ) >= 1
       },
@@ -570,6 +573,7 @@ fn validate_falsified_payouts(
   let target_stake_continues =
     verify_reduced_stake_output(
       tx.outputs,
+      refs,
       cfg,
       challenge_datum.target_did,
       stake_datum.stake_amount - target_slash,
@@ -582,6 +586,7 @@ fn validate_falsified_payouts(
 fn validate_verified_payouts(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   challenge_datum: ReputationChallengeDatum,
 ) -> Bool {
@@ -610,7 +615,7 @@ fn validate_verified_payouts(
       assets.flatten(tx.mint),
       fn(entry) {
         let (pid, name, qty) = entry
-        pid == cfg.reputation_policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
+        pid == refs.reputation_policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
       },
     )
 
@@ -746,7 +751,7 @@ pub fn validate_juror_duty_bonus(
 /// Verify that the target agent has the challenged capability in their StakeUTXO.
 fn verify_target_capability(
   reference_inputs: List<Input>,
-  cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   target_did: ByteArray,
   capability: ByteArray,
 ) -> Bool {
@@ -757,13 +762,13 @@ fn verify_target_capability(
       fn(input) {
         let is_at_reputation =
           when input.output.address.payment_credential is {
-            Script(hash) -> hash == cfg.reputation_policy_id
+            Script(hash) -> hash == refs.reputation_policy_id
             _ -> False
           }
         let has_token =
           assets.quantity_of(
             input.output.value,
-            cfg.reputation_policy_id,
+            refs.reputation_policy_id,
             target_stake_token,
           ) == 1
         is_at_reputation && has_token
@@ -826,6 +831,7 @@ fn verify_treasury_payment(
 /// Verify that the target's StakeUTXO continues with reduced stake amount.
 fn verify_reduced_stake_output(
   outputs: List<Output>,
+  refs: CrossValidatorRefs,
   cfg: ReputationConfig,
   agent_did: ByteArray,
   expected_remaining_stake: Int,
@@ -836,11 +842,11 @@ fn verify_reduced_stake_output(
     fn(output) {
       let is_at_reputation =
         when output.address.payment_credential is {
-          Script(hash) -> hash == cfg.reputation_policy_id
+          Script(hash) -> hash == refs.reputation_policy_id
           _ -> False
         }
       let has_token =
-        assets.quantity_of(output.value, cfg.reputation_policy_id, stake_token) == 1
+        assets.quantity_of(output.value, refs.reputation_policy_id, stake_token) == 1
       let ap3x =
         get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
       is_at_reputation && has_token && ap3x >= expected_remaining_stake

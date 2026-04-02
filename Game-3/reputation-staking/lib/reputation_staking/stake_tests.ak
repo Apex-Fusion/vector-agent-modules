@@ -11,7 +11,7 @@ use reputation_staking/test_helpers.{
   base_tx, key_address, make_output, make_output_no_datum, make_params_ref_input,
   make_registry_ref_input,
   script_address, test_agent_did, test_ap3x_asset_name, test_ap3x_policy_id,
-  test_config, test_owner_key_hash, test_params, test_reputation_policy_id,
+  test_config, test_owner_key_hash, test_params, test_refs, test_reputation_policy_id,
 }
 use reputation_staking/types.{StakeDatum}
 use reputation_staking/utils.{derive_stake_token_name}
@@ -65,7 +65,7 @@ test create_stake_happy_path() {
           }
         }
 
-  validate_create_stake(tx, cfg, params, output_datum, output, current_slot)
+  validate_create_stake(tx, cfg, test_refs(), params, output_datum, output, current_slot)
 }
 
 test create_stake_below_minimum_fails() fail {
@@ -115,7 +115,7 @@ test create_stake_below_minimum_fails() fail {
         }
 
   // Should return False (below minimum)
-  validate_create_stake(tx, cfg, params, output_datum, output, current_slot)
+  validate_create_stake(tx, cfg, test_refs(), params, output_datum, output, current_slot)
 }
 
 test create_stake_empty_capabilities_fails() fail {
@@ -163,7 +163,7 @@ test create_stake_empty_capabilities_fails() fail {
           }
         }
 
-  validate_create_stake(tx, cfg, params, output_datum, output, current_slot)
+  validate_create_stake(tx, cfg, test_refs(), params, output_datum, output, current_slot)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -219,7 +219,7 @@ test increase_stake_happy_path() {
           }
         }
 
-  validate_increase_stake(tx, cfg, input_datum, output_datum, output, current_slot)
+  validate_increase_stake(tx, cfg, test_refs(), input_datum, output_datum, output, current_slot)
 }
 
 test increase_stake_decrease_fails() fail {
@@ -272,7 +272,7 @@ test increase_stake_decrease_fails() fail {
           }
         }
 
-  validate_increase_stake(tx, cfg, input_datum, output_datum, output, current_slot)
+  validate_increase_stake(tx, cfg, test_refs(), input_datum, output_datum, output, current_slot)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -341,7 +341,7 @@ test decrease_stake_happy_path() {
         }
 
   validate_decrease_stake(
-    tx, cfg, params, input_datum, output_datum, output, decrease_amount, current_slot,
+    tx, cfg, test_refs(), params, input_datum, output_datum, output, decrease_amount, current_slot,
   )
 }
 
@@ -398,7 +398,7 @@ test decrease_stake_cooldown_not_met_fails() fail {
         }
 
   validate_decrease_stake(
-    tx, cfg, params, input_datum, output_datum, output, 5_000_000, current_slot,
+    tx, cfg, test_refs(), params, input_datum, output_datum, output, 5_000_000, current_slot,
   )
 }
 
@@ -456,7 +456,7 @@ test decrease_stake_below_minimum_fails() fail {
         }
 
   validate_decrease_stake(
-    tx, cfg, params, input_datum, output_datum, output, decrease_amount, current_slot,
+    tx, cfg, test_refs(), params, input_datum, output_datum, output, decrease_amount, current_slot,
   )
 }
 
@@ -520,6 +520,6 @@ test update_capabilities_happy_path() {
         }
 
   validate_update_capabilities(
-    tx, cfg, params, input_datum, output_datum, output, new_caps, current_slot,
+    tx, cfg, test_refs(), params, input_datum, output_datum, output, new_caps, current_slot,
   )
 }

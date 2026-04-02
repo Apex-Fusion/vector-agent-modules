@@ -14,7 +14,7 @@ use cardano/address.{Script}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
 use reputation_staking/challenge_validation
-use reputation_staking/config.{ReputationConfig}
+use reputation_staking/config.{CrossValidatorRefs, ReputationConfig, get_cross_refs}
 use reputation_staking/endorsement_validation
 use reputation_staking/params.{ProtocolParams, find_protocol_params}
 use reputation_staking/types.{
@@ -147,10 +147,19 @@ fn find_continuing_challenge(
   )
 }
 
+/// Derive own script hash from the spent UTXO's address.
+fn resolve_own_hash(own_ref: OutputReference, tx: Transaction) -> ByteArray {
+  expect Some(own_input) =
+    list.find(tx.inputs, fn(i) { i.output_reference == own_ref })
+  expect Script(hash) = own_input.output.address.payment_credential
+  hash
+}
+
 /// Validate endorsement slashing triggered by a resolved challenge.
 fn validate_endorsement_slash(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   endorsement_datum: EndorsementDatum,
   challenge_ref: OutputReference,
@@ -189,7 +198,7 @@ fn validate_endorsement_slash(
           let has_token =
             assets.quantity_of(
               output.value,
-              cfg.endorsement_policy_id,
+              refs.endorsement_policy_id,
               token_name,
             ) == 1
           if has_token {
@@ -212,7 +221,7 @@ fn validate_endorsement_slash(
         )
       assets.quantity_of(
         tx.mint,
-        cfg.endorsement_policy_id,
+        refs.endorsement_policy_id,
         token_name,
       ) == -1
     }
@@ -224,6 +233,7 @@ fn validate_endorsement_slash(
 fn validate_challenge_withdrawal(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   challenge_datum: ReputationChallengeDatum,
   current_slot: Int,
@@ -242,7 +252,7 @@ fn validate_challenge_withdrawal(
   let token_burned =
     assets.quantity_of(
       tx.mint,
-      cfg.endorsement_policy_id,
+      refs.endorsement_policy_id,
       token_name,
     ) == -1
   let signed = has_credential_signed(tx, challenge_datum.challenger_credential)
@@ -278,17 +288,21 @@ validator endorsement(cfg: ReputationConfig) {
       find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
     let flat_mint = assets.flatten(tx.mint)
 
+    // Look up cross-validator refs for cross-reference checks
+    let refs = get_cross_refs(cfg, tx.reference_inputs)
+
     // F1 fix: Burn handlers require a script input to prevent orphan burns
     let script_input_exists = has_script_input(tx, policy_id)
 
     when redeemer is {
       MintEndorsementToken -> {
+        // Use policy_id (== own hash) for self-referential checks
         expect Some(output) =
-          find_endorsement_output(tx, cfg.endorsement_policy_id)
+          find_endorsement_output(tx, policy_id)
         expect InlineDatum(raw_out) = output.datum
         expect out_datum: EndorsementDatum = raw_out
         endorsement_validation.validate_mint_endorsement(
-          tx, cfg, params, out_datum, output,
+          tx, cfg, refs, params, out_datum, output,
         )
       }
       BurnEndorsementToken ->
@@ -301,12 +315,13 @@ validator endorsement(cfg: ReputationConfig) {
           },
         )
       MintChallengeToken -> {
+        // Use policy_id (== own hash) for self-referential checks
         expect Some(output) =
-          find_challenge_output(tx, cfg.endorsement_policy_id)
+          find_challenge_output(tx, policy_id)
         expect InlineDatum(raw_out) = output.datum
         expect out_datum: ReputationChallengeDatum = raw_out
         challenge_validation.validate_mint_challenge(
-          tx, cfg, params, out_datum, output,
+          tx, cfg, refs, params, out_datum, output,
         )
       }
       BurnChallengeToken ->
@@ -325,7 +340,7 @@ validator endorsement(cfg: ReputationConfig) {
   spend(
     datum: Option<EndorsementValidatorDatum>,
     redeemer: EndorsementValidatorAction,
-    _own_utxo: OutputReference,
+    own_utxo: OutputReference,
     tx: Transaction,
   ) {
     expect Some(validator_datum) = datum
@@ -333,8 +348,14 @@ validator endorsement(cfg: ReputationConfig) {
       find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
     expect Some(current_slot) = get_validity_lower_bound(tx)
 
+    // Derive own script hash at runtime (no circular dependency)
+    let own_hash = resolve_own_hash(own_utxo, tx)
+
+    // Look up cross-validator refs from authenticated reference input
+    let refs = get_cross_refs(cfg, tx.reference_inputs)
+
     // F-NEW-1 fix: Prevent double satisfaction — only one script input allowed
-    expect count_script_inputs(tx, cfg.endorsement_policy_id) == 1
+    expect count_script_inputs(tx, own_hash) == 1
 
     when (validator_datum, redeemer) is {
       (Endorsement(endorsement_datum), EndorsementSpend(action)) ->
@@ -343,23 +364,23 @@ validator endorsement(cfg: ReputationConfig) {
             expect Some(output) =
               find_continuing_endorsement(
                 tx,
-                cfg.endorsement_policy_id,
+                own_hash,
                 endorsement_datum.endorser_did,
                 endorsement_datum.target_did,
               )
             expect InlineDatum(raw_out) = output.datum
         expect out_datum: EndorsementDatum = raw_out
             endorsement_validation.validate_increase_endorsement(
-              tx, cfg, endorsement_datum, out_datum, output,
+              tx, cfg, refs, endorsement_datum, out_datum, output,
             )
           }
           WithdrawEndorsement ->
             endorsement_validation.validate_withdraw_endorsement(
-              tx, cfg, params, endorsement_datum, current_slot,
+              tx, cfg, refs, params, endorsement_datum, current_slot,
             )
           SlashEndorsement { challenge_ref } ->
             validate_endorsement_slash(
-              tx, cfg, params, endorsement_datum, challenge_ref,
+              tx, cfg, refs, params, endorsement_datum, challenge_ref,
             )
         }
 
@@ -367,13 +388,13 @@ validator endorsement(cfg: ReputationConfig) {
         when action is {
           WithdrawChallenge ->
             validate_challenge_withdrawal(
-              tx, cfg, params, challenge_datum, current_slot,
+              tx, cfg, refs, params, challenge_datum, current_slot,
             )
           RespondToChallenge { counter_evidence_hash, counter_evidence_uri } -> {
             expect Some(output) =
               find_continuing_challenge(
                 tx,
-                cfg.endorsement_policy_id,
+                own_hash,
                 challenge_datum.challenger_did,
                 challenge_datum.target_did,
                 challenge_datum.challenged_capability,
@@ -389,7 +410,7 @@ validator endorsement(cfg: ReputationConfig) {
             expect Some(output) =
               find_continuing_challenge(
                 tx,
-                cfg.endorsement_policy_id,
+                own_hash,
                 challenge_datum.challenger_did,
                 challenge_datum.target_did,
                 challenge_datum.challenged_capability,
@@ -407,7 +428,7 @@ validator endorsement(cfg: ReputationConfig) {
             expect Some(output) =
               find_continuing_challenge(
                 tx,
-                cfg.endorsement_policy_id,
+                own_hash,
                 challenge_datum.challenger_did,
                 challenge_datum.target_did,
                 challenge_datum.challenged_capability,
@@ -422,7 +443,7 @@ validator endorsement(cfg: ReputationConfig) {
             expect Some(output) =
               find_continuing_challenge(
                 tx,
-                cfg.endorsement_policy_id,
+                own_hash,
                 challenge_datum.challenger_did,
                 challenge_datum.target_did,
                 challenge_datum.challenged_capability,
@@ -437,7 +458,7 @@ validator endorsement(cfg: ReputationConfig) {
             expect Some(output) =
               find_continuing_challenge(
                 tx,
-                cfg.endorsement_policy_id,
+                own_hash,
                 challenge_datum.challenger_did,
                 challenge_datum.target_did,
                 challenge_datum.challenged_capability,
@@ -450,7 +471,7 @@ validator endorsement(cfg: ReputationConfig) {
           }
           DistributeOutcome ->
             challenge_validation.validate_distribute_outcome(
-              tx, cfg, params, challenge_datum,
+              tx, cfg, refs, params, challenge_datum,
             )
         }
 

@@ -11,7 +11,7 @@ use reputation_staking/test_helpers.{
   make_registry_ref_input, script_address, test_agent_did, test_agent_did_2,
   test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
-  test_params, test_reputation_policy_id, test_tx_hash,
+  test_params, test_refs, test_reputation_policy_id, test_tx_hash,
 }
 use reputation_staking/types.{EndorsementDatum, StakeDatum}
 use reputation_staking/utils.{
@@ -99,7 +99,7 @@ test mint_endorsement_happy_path() {
           }
         }
 
-  validate_mint_endorsement(tx, cfg, params, output_datum, output)
+  validate_mint_endorsement(tx, cfg, test_refs(), params, output_datum, output)
 }
 
 test mint_endorsement_self_endorse_fails() fail {
@@ -148,7 +148,7 @@ test mint_endorsement_self_endorse_fails() fail {
           }
         }
 
-  validate_mint_endorsement(tx, cfg, params, output_datum, output)
+  validate_mint_endorsement(tx, cfg, test_refs(), params, output_datum, output)
 }
 
 test mint_endorsement_below_minimum_fails() fail {
@@ -199,7 +199,7 @@ test mint_endorsement_below_minimum_fails() fail {
           }
         }
 
-  validate_mint_endorsement(tx, cfg, params, output_datum, output)
+  validate_mint_endorsement(tx, cfg, test_refs(), params, output_datum, output)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -255,7 +255,7 @@ test increase_endorsement_happy_path() {
           }
         }
 
-  validate_increase_endorsement(tx, cfg, input_datum, output_datum, output)
+  validate_increase_endorsement(tx, cfg, test_refs(), input_datum, output_datum, output)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -306,7 +306,7 @@ test withdraw_endorsement_happy_path() {
           }
         }
 
-  validate_withdraw_endorsement(tx, cfg, params, input_datum, current_slot)
+  validate_withdraw_endorsement(tx, cfg, test_refs(), params, input_datum, current_slot)
 }
 
 test withdraw_endorsement_too_early_fails() fail {
@@ -342,5 +342,5 @@ test withdraw_endorsement_too_early_fails() fail {
           }
         }
 
-  validate_withdraw_endorsement(tx, cfg, params, input_datum, current_slot)
+  validate_withdraw_endorsement(tx, cfg, test_refs(), params, input_datum, current_slot)
 }
