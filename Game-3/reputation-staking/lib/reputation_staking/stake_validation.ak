@@ -8,7 +8,7 @@ use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output, Transaction}
-use reputation_staking/config.{ReputationConfig}
+use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{
   EndorsementValidatorDatum, Challenge, Open, StakeDatum,
@@ -35,6 +35,7 @@ use reputation_staking/utils.{
 pub fn validate_create_stake(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   output_datum: StakeDatum,
   output: Output,
@@ -68,12 +69,12 @@ pub fn validate_create_stake(
   // Rule 5: Output has the stake tracking token
   let expected_token_name = derive_stake_token_name(output_datum.agent_did)
   let has_token =
-    assets.quantity_of(output.value, cfg.reputation_policy_id, expected_token_name) == 1
+    assets.quantity_of(output.value, refs.reputation_policy_id, expected_token_name) == 1
 
   // Rule 5: Output is at the reputation validator address
   let at_validator =
     when output.address.payment_credential is {
-      Script(hash) -> hash == cfg.reputation_policy_id
+      Script(hash) -> hash == refs.reputation_policy_id
       _ -> False
     }
 
@@ -104,6 +105,7 @@ pub fn validate_create_stake(
 pub fn validate_increase_stake(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   input_datum: StakeDatum,
   output_datum: StakeDatum,
   output: Output,
@@ -125,7 +127,7 @@ pub fn validate_increase_stake(
   // Rule: Stake token travels with UTXO
   let expected_token_name = derive_stake_token_name(input_datum.agent_did)
   let has_token =
-    assets.quantity_of(output.value, cfg.reputation_policy_id, expected_token_name) == 1
+    assets.quantity_of(output.value, refs.reputation_policy_id, expected_token_name) == 1
 
   // Rule 4: Timestamp updated
   let timestamp_valid = output_datum.last_updated == current_slot
@@ -154,6 +156,7 @@ pub fn validate_increase_stake(
 pub fn validate_decrease_stake(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   input_datum: StakeDatum,
   output_datum: StakeDatum,
@@ -180,7 +183,7 @@ pub fn validate_decrease_stake(
   let no_active_challenges =
     verify_no_active_challenges(
       tx.reference_inputs,
-      cfg,
+      refs,
       input_datum.agent_did,
     )
 
@@ -199,7 +202,7 @@ pub fn validate_decrease_stake(
   // Stake token travels with UTXO
   let expected_token_name = derive_stake_token_name(input_datum.agent_did)
   let has_token =
-    assets.quantity_of(output.value, cfg.reputation_policy_id, expected_token_name) == 1
+    assets.quantity_of(output.value, refs.reputation_policy_id, expected_token_name) == 1
 
   // Timestamp updated
   let timestamp_valid = output_datum.last_updated == current_slot
@@ -241,6 +244,7 @@ pub fn validate_decrease_stake(
 pub fn validate_update_capabilities(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   input_datum: StakeDatum,
   output_datum: StakeDatum,
@@ -269,7 +273,7 @@ pub fn validate_update_capabilities(
   let no_active_challenges =
     verify_no_active_challenges(
       tx.reference_inputs,
-      cfg,
+      refs,
       input_datum.agent_did,
     )
 
@@ -283,7 +287,7 @@ pub fn validate_update_capabilities(
   // Stake token travels with UTXO
   let expected_token_name = derive_stake_token_name(input_datum.agent_did)
   let has_token =
-    assets.quantity_of(output.value, cfg.reputation_policy_id, expected_token_name) == 1
+    assets.quantity_of(output.value, refs.reputation_policy_id, expected_token_name) == 1
 
   // Rule 7: Timestamp updated
   let timestamp_valid = output_datum.last_updated == current_slot
@@ -308,7 +312,7 @@ pub fn validate_update_capabilities(
 ///             limitation — Phase 2 should use oracle attestation.
 fn verify_no_active_challenges(
   reference_inputs: List<Input>,
-  cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   agent_did: ByteArray,
 ) -> Bool {
   !list.any(
@@ -316,7 +320,7 @@ fn verify_no_active_challenges(
     fn(input) {
       let is_at_endorsement =
         when input.output.address.payment_credential is {
-          Script(hash) -> hash == cfg.endorsement_policy_id
+          Script(hash) -> hash == refs.endorsement_policy_id
           _ -> False
         }
       if is_at_endorsement {
@@ -327,7 +331,7 @@ fn verify_no_active_challenges(
             assets.flatten(input.output.value),
             fn(entry) {
               let (pid, name, _qty) = entry
-              pid == cfg.endorsement_policy_id && starts_with(name, types.challenge_token_prefix)
+              pid == refs.endorsement_policy_id && starts_with(name, types.challenge_token_prefix)
             },
           )
         if has_challenge_token {

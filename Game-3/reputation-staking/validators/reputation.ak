@@ -12,7 +12,7 @@ use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
-use reputation_staking/config.{ReputationConfig}
+use reputation_staking/config.{CrossValidatorRefs, ReputationConfig, get_cross_refs}
 use reputation_staking/decay
 use reputation_staking/params.{find_protocol_params}
 use reputation_staking/stake_validation
@@ -58,6 +58,14 @@ fn get_validity_lower_bound(tx: Transaction) -> Option<Int> {
     Finite(slot) -> Some(slot)
     _ -> None
   }
+}
+
+/// Derive own script hash from the spent UTXO's address.
+fn resolve_own_hash(own_ref: OutputReference, tx: Transaction) -> ByteArray {
+  expect Some(own_input) =
+    list.find(tx.inputs, fn(i) { i.output_reference == own_ref })
+  expect Script(hash) = own_input.output.address.payment_credential
+  hash
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -116,7 +124,7 @@ validator reputation(cfg: ReputationConfig) {
   spend(
     datum: Option<StakeDatum>,
     redeemer: StakeAction,
-    _own_utxo: OutputReference,
+    own_utxo: OutputReference,
     tx: Transaction,
   ) {
     expect Some(stake_datum) = datum
@@ -126,44 +134,50 @@ validator reputation(cfg: ReputationConfig) {
     // Derive current slot from validity range lower bound
     expect Some(current_slot) = get_validity_lower_bound(tx)
 
+    // Derive own script hash at runtime (no circular dependency)
+    let own_hash = resolve_own_hash(own_utxo, tx)
+
+    // Look up cross-validator refs from authenticated reference input
+    let refs = get_cross_refs(cfg, tx.reference_inputs)
+
     // F5 fix: Prevent double satisfaction — only one script input allowed
-    expect count_script_inputs(tx, cfg.reputation_policy_id) == 1
+    expect count_script_inputs(tx, own_hash) == 1
 
     when redeemer is {
       CreateStake -> {
         expect Some(output) =
-          find_continuing_output(tx, cfg.reputation_policy_id, stake_datum.agent_did)
+          find_continuing_output(tx, own_hash, stake_datum.agent_did)
         expect InlineDatum(raw) = output.datum
         expect out_datum: StakeDatum = raw
         stake_validation.validate_create_stake(
-          tx, cfg, params, out_datum, output, current_slot,
+          tx, cfg, refs, params, out_datum, output, current_slot,
         )
       }
       IncreaseStake -> {
         expect Some(output) =
-          find_continuing_output(tx, cfg.reputation_policy_id, stake_datum.agent_did)
+          find_continuing_output(tx, own_hash, stake_datum.agent_did)
         expect InlineDatum(raw) = output.datum
         expect out_datum: StakeDatum = raw
         stake_validation.validate_increase_stake(
-          tx, cfg, stake_datum, out_datum, output, current_slot,
+          tx, cfg, refs, stake_datum, out_datum, output, current_slot,
         )
       }
       DecreaseStake { amount } -> {
         expect Some(output) =
-          find_continuing_output(tx, cfg.reputation_policy_id, stake_datum.agent_did)
+          find_continuing_output(tx, own_hash, stake_datum.agent_did)
         expect InlineDatum(raw) = output.datum
         expect out_datum: StakeDatum = raw
         stake_validation.validate_decrease_stake(
-          tx, cfg, params, stake_datum, out_datum, output, amount, current_slot,
+          tx, cfg, refs, params, stake_datum, out_datum, output, amount, current_slot,
         )
       }
       UpdateCapabilities { new_capabilities } -> {
         expect Some(output) =
-          find_continuing_output(tx, cfg.reputation_policy_id, stake_datum.agent_did)
+          find_continuing_output(tx, own_hash, stake_datum.agent_did)
         expect InlineDatum(raw) = output.datum
         expect out_datum: StakeDatum = raw
         stake_validation.validate_update_capabilities(
-          tx, cfg, params, stake_datum, out_datum, output, new_capabilities,
+          tx, cfg, refs, params, stake_datum, out_datum, output, new_capabilities,
           current_slot,
         )
       }
@@ -174,7 +188,7 @@ validator reputation(cfg: ReputationConfig) {
         let inactive_epochs = elapsed_epochs - params.activity_window
         expect inactive_epochs > 0
         decay.validate_claim_decay_refund(
-          tx, cfg, params, stake_datum,
+          tx, cfg, refs, params, stake_datum,
           inactive_epochs,
         )
       }

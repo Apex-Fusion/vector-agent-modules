@@ -7,7 +7,7 @@ use cardano/assets
 use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
 }
-use reputation_staking/config.{ReputationConfig}
+use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/utils.{AgentDatum}
 
@@ -20,6 +20,8 @@ pub const test_reputation_policy_id: ByteArray =
 
 pub const test_endorsement_policy_id: ByteArray =
   #"bb00000000000000000000000000000000000000000000000000000000000002"
+
+pub const test_refs_token_policy: ByteArray = #"cc"
 
 pub const test_registry_policy_id: ByteArray =
   #"cc00000000000000000000000000000000000000000000000000000000000003"
@@ -60,8 +62,7 @@ pub const test_tx_hash: ByteArray =
 
 pub fn test_config() -> ReputationConfig {
   ReputationConfig {
-    reputation_policy_id: test_reputation_policy_id,
-    endorsement_policy_id: test_endorsement_policy_id,
+    refs_token_policy: test_refs_token_policy,
     registry_policy_id: test_registry_policy_id,
     registry_script_hash: test_registry_script_hash,
     audit_claim_validator_hash: #"0000000000000000000000000000000000000000000000000000000000000000",
@@ -70,6 +71,13 @@ pub fn test_config() -> ReputationConfig {
     ap3x_policy_id: test_ap3x_policy_id,
     ap3x_asset_name: test_ap3x_asset_name,
     oracle_credential: test_oracle_credential,
+  }
+}
+
+pub fn test_refs() -> CrossValidatorRefs {
+  CrossValidatorRefs {
+    reputation_policy_id: test_reputation_policy_id,
+    endorsement_policy_id: test_endorsement_policy_id,
   }
 }
 

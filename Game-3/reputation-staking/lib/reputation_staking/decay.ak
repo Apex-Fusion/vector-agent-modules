@@ -10,7 +10,7 @@ use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets
 use cardano/transaction.{InlineDatum, Output, Transaction}
-use reputation_staking/config.{ReputationConfig}
+use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{StakeDatum}
 use reputation_staking/utils.{
@@ -68,6 +68,7 @@ pub fn calculate_collector_fee(decay_amount: Int, collector_fee_rate: Int) -> In
 pub fn validate_claim_decay_refund(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   input_datum: StakeDatum,
   inactive_epochs: Int,
@@ -94,6 +95,7 @@ pub fn validate_claim_decay_refund(
       validate_decay_continuing(
         tx,
         cfg,
+        refs,
         input_datum,
         remaining_stake,
         collector_fee,
@@ -104,6 +106,7 @@ pub fn validate_claim_decay_refund(
       validate_decay_full_consumption(
         tx,
         cfg,
+        refs,
         input_datum,
         collector_fee,
         treasury_amount,
@@ -117,6 +120,7 @@ pub fn validate_claim_decay_refund(
 fn validate_decay_continuing(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   input_datum: StakeDatum,
   remaining_stake: Int,
   collector_fee: Int,
@@ -131,11 +135,11 @@ fn validate_decay_continuing(
       fn(output) {
         let is_at_reputation =
           when output.address.payment_credential is {
-            Script(hash) -> hash == cfg.reputation_policy_id
+            Script(hash) -> hash == refs.reputation_policy_id
             _ -> False
           }
         let has_token =
-          assets.quantity_of(output.value, cfg.reputation_policy_id, stake_token) == 1
+          assets.quantity_of(output.value, refs.reputation_policy_id, stake_token) == 1
         let ap3x =
           get_ap3x_amount(
             output.value,
@@ -157,7 +161,7 @@ fn validate_decay_continuing(
 
   // Collector payment (any output not at reputation/treasury/endorsement validators)
   // The collector fee just needs to exist as an output with sufficient AP3X
-  let collector_paid = collector_fee <= 0 || verify_collector_payment(tx, cfg, collector_fee)
+  let collector_paid = collector_fee <= 0 || verify_collector_payment(tx, cfg, refs, collector_fee)
 
   stake_continues && treasury_paid && collector_paid
 }
@@ -166,6 +170,7 @@ fn validate_decay_continuing(
 fn validate_decay_full_consumption(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   input_datum: StakeDatum,
   collector_fee: Int,
   treasury_amount: Int,
@@ -176,7 +181,7 @@ fn validate_decay_full_consumption(
   let token_burned =
     assets.quantity_of(
       tx.mint,
-      cfg.reputation_policy_id,
+      refs.reputation_policy_id,
       stake_token,
     ) == -1
 
@@ -184,7 +189,7 @@ fn validate_decay_full_consumption(
   let treasury_paid = verify_treasury_payment(tx.outputs, cfg, treasury_amount)
 
   // Collector payment
-  let collector_paid = collector_fee <= 0 || verify_collector_payment(tx, cfg, collector_fee)
+  let collector_paid = collector_fee <= 0 || verify_collector_payment(tx, cfg, refs, collector_fee)
 
   token_burned && treasury_paid && collector_paid
 }
@@ -226,6 +231,7 @@ fn verify_treasury_payment(
 fn verify_collector_payment(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   min_amount: Int,
 ) -> Bool {
   // Sum AP3X in outputs not going to protocol addresses
@@ -237,7 +243,7 @@ fn verify_collector_payment(
         let is_protocol =
           when output.address.payment_credential is {
             Script(hash) ->
-              hash == cfg.reputation_policy_id || hash == cfg.endorsement_policy_id || hash == cfg.treasury_script_hash
+              hash == refs.reputation_policy_id || hash == refs.endorsement_policy_id || hash == cfg.treasury_script_hash
             _ -> False
           }
         if !is_protocol {

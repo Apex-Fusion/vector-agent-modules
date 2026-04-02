@@ -8,7 +8,7 @@ use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output, Transaction}
-use reputation_staking/config.{ReputationConfig}
+use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{
   Challenge, EndorsementDatum, EndorsementValidatorDatum, Open, StakeDatum,
@@ -36,6 +36,7 @@ use reputation_staking/utils.{
 pub fn validate_mint_endorsement(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   output_datum: EndorsementDatum,
   output: Output,
@@ -52,7 +53,7 @@ pub fn validate_mint_endorsement(
   let target_has_stake =
     verify_target_has_stake(
       tx.reference_inputs,
-      cfg,
+      refs,
       output_datum.target_did,
     )
 
@@ -68,7 +69,7 @@ pub fn validate_mint_endorsement(
   let has_correct_token =
     assets.quantity_of(
       output.value,
-      cfg.endorsement_policy_id,
+      refs.endorsement_policy_id,
       expected_token_name,
     ) == 1
 
@@ -79,7 +80,7 @@ pub fn validate_mint_endorsement(
       fn(input) {
         assets.quantity_of(
           input.output.value,
-          cfg.endorsement_policy_id,
+          refs.endorsement_policy_id,
           expected_token_name,
         ) >= 1
       },
@@ -93,7 +94,7 @@ pub fn validate_mint_endorsement(
   let capabilities_valid =
     verify_endorsed_capabilities(
       tx.reference_inputs,
-      cfg,
+      refs,
       output_datum.target_did,
       output_datum.endorsed_capabilities,
     )
@@ -101,7 +102,7 @@ pub fn validate_mint_endorsement(
   // Rule 7: Output is at endorsement validator address
   let at_validator =
     when output.address.payment_credential is {
-      Script(hash) -> hash == cfg.endorsement_policy_id
+      Script(hash) -> hash == refs.endorsement_policy_id
       _ -> False
     }
 
@@ -133,6 +134,7 @@ pub fn validate_mint_endorsement(
 pub fn validate_increase_endorsement(
   tx: Transaction,
   cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   input_datum: EndorsementDatum,
   output_datum: EndorsementDatum,
   output: Output,
@@ -163,14 +165,14 @@ pub fn validate_increase_endorsement(
   let has_token =
     assets.quantity_of(
       output.value,
-      cfg.endorsement_policy_id,
+      refs.endorsement_policy_id,
       expected_token_name,
     ) == 1
 
   // Output at correct address
   let at_validator =
     when output.address.payment_credential is {
-      Script(hash) -> hash == cfg.endorsement_policy_id
+      Script(hash) -> hash == refs.endorsement_policy_id
       _ -> False
     }
 
@@ -195,7 +197,8 @@ pub fn validate_increase_endorsement(
 ///   6. Transaction signed by endorser_credential
 pub fn validate_withdraw_endorsement(
   tx: Transaction,
-  cfg: ReputationConfig,
+  _cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   params: ProtocolParams,
   input_datum: EndorsementDatum,
   current_slot: Int,
@@ -209,7 +212,7 @@ pub fn validate_withdraw_endorsement(
   let no_active_challenges =
     verify_no_target_challenges(
       tx.reference_inputs,
-      cfg,
+      refs,
       input_datum.target_did,
     )
 
@@ -222,7 +225,7 @@ pub fn validate_withdraw_endorsement(
   let token_burned =
     assets.quantity_of(
       tx.mint,
-      cfg.endorsement_policy_id,
+      refs.endorsement_policy_id,
       expected_token_name,
     ) == -1
 
@@ -239,7 +242,7 @@ pub fn validate_withdraw_endorsement(
 /// Verify that the target agent has an active StakeUTXO (via reference inputs).
 fn verify_target_has_stake(
   reference_inputs: List<Input>,
-  cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   target_did: ByteArray,
 ) -> Bool {
   let expected_token_name = derive_stake_token_name(target_did)
@@ -248,13 +251,13 @@ fn verify_target_has_stake(
     fn(input) {
       let is_at_reputation =
         when input.output.address.payment_credential is {
-          Script(hash) -> hash == cfg.reputation_policy_id
+          Script(hash) -> hash == refs.reputation_policy_id
           _ -> False
         }
       let has_stake_token =
         assets.quantity_of(
           input.output.value,
-          cfg.reputation_policy_id,
+          refs.reputation_policy_id,
           expected_token_name,
         ) == 1
       is_at_reputation && has_stake_token
@@ -266,7 +269,7 @@ fn verify_target_has_stake(
 /// Reads the target's StakeDatum from reference inputs.
 fn verify_endorsed_capabilities(
   reference_inputs: List<Input>,
-  cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   target_did: ByteArray,
   endorsed_capabilities: List<ByteArray>,
 ) -> Bool {
@@ -277,13 +280,13 @@ fn verify_endorsed_capabilities(
       fn(input) {
         let is_at_reputation =
           when input.output.address.payment_credential is {
-            Script(hash) -> hash == cfg.reputation_policy_id
+            Script(hash) -> hash == refs.reputation_policy_id
             _ -> False
           }
         let has_stake_token =
           assets.quantity_of(
             input.output.value,
-            cfg.reputation_policy_id,
+            refs.reputation_policy_id,
             expected_token_name,
           ) == 1
         is_at_reputation && has_stake_token
@@ -298,7 +301,7 @@ fn verify_endorsed_capabilities(
 /// F4 fix: Parse as EndorsementValidatorDatum wrapper, only inspect challenge tokens.
 fn verify_no_target_challenges(
   reference_inputs: List<Input>,
-  cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
   target_did: ByteArray,
 ) -> Bool {
   !list.any(
@@ -306,7 +309,7 @@ fn verify_no_target_challenges(
     fn(input) {
       let is_at_endorsement =
         when input.output.address.payment_credential is {
-          Script(hash) -> hash == cfg.endorsement_policy_id
+          Script(hash) -> hash == refs.endorsement_policy_id
           _ -> False
         }
       if is_at_endorsement {
@@ -316,7 +319,7 @@ fn verify_no_target_challenges(
             assets.flatten(input.output.value),
             fn(entry) {
               let (pid, name, _qty) = entry
-              pid == cfg.endorsement_policy_id && starts_with(name, types.challenge_token_prefix)
+              pid == refs.endorsement_policy_id && starts_with(name, types.challenge_token_prefix)
             },
           )
         if has_challenge_token {
