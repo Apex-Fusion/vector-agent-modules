@@ -14,8 +14,15 @@ pub type ReputationConfig {
   registry_policy_id: PolicyId,
   /// Script hash of the Agent Registry validator (for address verification)
   registry_script_hash: ByteArray,
-  /// Script hash of Game 1 claim validator (for escalation — stubbed Phase 1.0)
+  /// Script hash of Game 1 claim validator (= claim token policy_id)
   audit_claim_validator_hash: ByteArray,
+  /// Script hash of Game 1 challenge validator (= challenge token policy_id)
+  audit_challenge_validator_hash: ByteArray,
+  /// Script hash of Game 1 jury pool validator (= juror token policy_id)
+  audit_jury_pool_hash: ByteArray,
+  /// Policy ID of the NFT that authenticates the Game 1 CrossValidatorRefs UTxO.
+  /// Used to locate and trust Game 1 cross-validator references in reference inputs.
+  audit_refs_token_policy: PolicyId,
   /// Script hash of protocol params holder
   params_script_hash: ByteArray,
   /// Script hash of protocol treasury

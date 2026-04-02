@@ -146,6 +146,11 @@ pub fn validate_increase_endorsement(
   // Rule 3: Amount increased
   let amount_increased = output_datum.stake_amount > input_datum.stake_amount
 
+  // Rule 5: Cannot remove capabilities during increase (spec: cannot remove challenged ones;
+  // we enforce no removals at all — endorser can withdraw and re-create to change capabilities)
+  let no_capabilities_removed =
+    is_subset(input_datum.endorsed_capabilities, output_datum.endorsed_capabilities)
+
   // Rule 6: created_at preserved
   let created_at_preserved = input_datum.created_at == output_datum.created_at
 
@@ -177,7 +182,7 @@ pub fn validate_increase_endorsement(
   // Rule 7: Signed by endorser
   let signed = has_credential_signed(tx, input_datum.endorser_credential)
 
-  same_endorser && same_target && same_credential && amount_increased && created_at_preserved && value_correct && has_token && at_validator && signed
+  same_endorser && same_target && same_credential && amount_increased && no_capabilities_removed && created_at_preserved && value_correct && has_token && at_validator && signed
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -213,6 +218,19 @@ pub fn validate_withdraw_endorsement(
       input_datum.target_did,
     )
 
+  // Rule 4 (F-NEW-5 fix): Verify AP3X returned to endorser
+  let endorser_paid =
+    list.any(
+      tx.outputs,
+      fn(output) {
+        let is_to_endorser =
+          output.address.payment_credential == input_datum.endorser_credential
+        let ap3x =
+          get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
+        is_to_endorser && ap3x >= input_datum.stake_amount
+      },
+    )
+
   // Rule 5: Endorsement token is burned in this tx
   let expected_token_name =
     derive_endorsement_token_name(
@@ -229,7 +247,7 @@ pub fn validate_withdraw_endorsement(
   // Rule 6: Signed by endorser
   let signed = has_credential_signed(tx, input_datum.endorser_credential)
 
-  cooldown_met && no_active_challenges && token_burned && signed
+  cooldown_met && no_active_challenges && endorser_paid && token_burned && signed
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

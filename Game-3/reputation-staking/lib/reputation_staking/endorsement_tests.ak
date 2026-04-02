@@ -7,7 +7,7 @@ use reputation_staking/endorsement_validation.{
   validate_withdraw_endorsement,
 }
 use reputation_staking/test_helpers.{
-  base_tx, make_input, make_output,
+  base_tx, key_address, make_input, make_output,
   make_registry_ref_input, script_address, test_agent_did, test_agent_did_2,
   test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
@@ -284,12 +284,22 @@ test withdraw_endorsement_happy_path() {
   let token_name =
     derive_endorsement_token_name(test_agent_did, test_agent_did_2)
 
+  // F-NEW-5: Endorser must receive their AP3X back
+  let endorser_return_output =
+    make_output(
+      key_address(test_owner_key_hash),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 5_000_000),
+      0,
+    )
+
   let tx =
     base_tx(current_slot)
       |> fn(t) {
           Transaction {
             ..t,
             reference_inputs: [],
+            outputs: [endorser_return_output],
             mint: assets.from_lovelace(0)
               |> assets.add(test_endorsement_policy_id, token_name, -1),
             extra_signatories: [test_owner_key_hash],

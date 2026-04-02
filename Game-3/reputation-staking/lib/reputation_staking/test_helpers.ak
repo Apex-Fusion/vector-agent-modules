@@ -41,6 +41,19 @@ pub const test_ap3x_asset_name: ByteArray = "AP3X"
 pub const test_oracle_credential: ByteArray =
   #"2200000000000000000000000000000000000000000000000000000000000008"
 
+// Game 1 deployed script hashes (from vector-game-theory repo)
+pub const test_audit_claim_hash: ByteArray =
+  #"6884d7c86a0761da8a61e6a7a346197aa2949fef8030a3eb84944dda"
+
+pub const test_audit_challenge_hash: ByteArray =
+  #"781843681859bcababb90a220ad84604cb324aef4757c6a5c46a96fc"
+
+pub const test_audit_jury_pool_hash: ByteArray =
+  #"b15af09128457e09b23c79119aa0c8c85d25c9fd96656f2611fdc962"
+
+pub const test_audit_refs_token_policy: ByteArray =
+  #"3300000000000000000000000000000000000000000000000000000000000010"
+
 pub const test_agent_did: ByteArray = "agent_did_001"
 
 pub const test_agent_did_2: ByteArray = "agent_did_002"
@@ -64,7 +77,10 @@ pub fn test_config() -> ReputationConfig {
     endorsement_policy_id: test_endorsement_policy_id,
     registry_policy_id: test_registry_policy_id,
     registry_script_hash: test_registry_script_hash,
-    audit_claim_validator_hash: #"0000000000000000000000000000000000000000000000000000000000000000",
+    audit_claim_validator_hash: test_audit_claim_hash,
+    audit_challenge_validator_hash: test_audit_challenge_hash,
+    audit_jury_pool_hash: test_audit_jury_pool_hash,
+    audit_refs_token_policy: test_audit_refs_token_policy,
     params_script_hash: test_params_script_hash,
     treasury_script_hash: test_treasury_script_hash,
     ap3x_policy_id: test_ap3x_policy_id,

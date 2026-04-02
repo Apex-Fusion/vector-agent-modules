@@ -12,18 +12,22 @@ use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
+use reputation_staking/challenge_validation
 use reputation_staking/config.{ReputationConfig}
 use reputation_staking/decay
-use reputation_staking/params.{find_protocol_params}
+use reputation_staking/params.{ProtocolParams, find_protocol_params}
 use reputation_staking/stake_validation
 use reputation_staking/types.{
-  BurnGenesisBonus, BurnStakeToken, ClaimDecayRefund, CreateStake, DecreaseStake,
-  IncreaseStake, MintHistoryBonus, MintStakeToken,
+  AuditClaimWon, BurnGenesisBonus, BurnStakeToken, ChallengeWon,
+  ClaimDecayRefund, CreateStake, DecreaseStake, GenesisBonus,
+  HistoryBonusDatum, IncreaseStake, JurorDuty,
+  MintHistoryBonus, MintStakeToken,
   StakeAction, StakeDatum, StakeMintAction, UpdateCapabilities,
   genesis_bonus_token_prefix, history_bonus_token_prefix, stake_token_prefix,
 }
 use reputation_staking/utils.{
-  count_script_inputs, derive_stake_token_name, has_script_input, starts_with,
+  count_script_inputs, derive_stake_token_name,
+  has_key_signed, has_script_input, starts_with, verify_agent_exists,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -61,6 +65,134 @@ fn get_validity_lower_bound(tx: Transaction) -> Option<Int> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// History Bonus & Genesis Validation (F-NEW-6 fix)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Validate the history bonus mint by checking the bonus output datum source.
+/// Dispatches to source-specific validation (Game 1 claim won, jury duty, etc.)
+fn validate_history_bonus_mint(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  params: ProtocolParams,
+  policy_id: PolicyId,
+) -> Bool {
+  // Find the history bonus output at the reputation validator
+  expect Some(bonus_output) =
+    list.find(
+      tx.outputs,
+      fn(output) {
+        let is_at_reputation =
+          when output.address.payment_credential is {
+            Script(hash) -> hash == policy_id
+            _ -> False
+          }
+        let has_bonus_token =
+          list.any(
+            assets.flatten(output.value),
+            fn(entry) {
+              let (pid, name, _qty) = entry
+              pid == policy_id && starts_with(name, history_bonus_token_prefix)
+            },
+          )
+        is_at_reputation && has_bonus_token
+      },
+    )
+  expect InlineDatum(raw) = bonus_output.datum
+  expect bonus_datum: HistoryBonusDatum = raw
+
+  // Agent must have active DID
+  let agent_exists =
+    verify_agent_exists(tx.reference_inputs, cfg, bonus_datum.agent_did)
+
+  // Source-specific validation
+  let source_valid =
+    when bonus_datum.source is {
+      AuditClaimWon ->
+        challenge_validation.validate_audit_claim_won_bonus(
+          tx, cfg, bonus_datum.agent_did,
+        )
+      JurorDuty ->
+        challenge_validation.validate_juror_duty_bonus(
+          tx, cfg, bonus_datum.agent_did,
+        )
+      ChallengeWon ->
+        // ChallengeWon bonuses are minted during DistributeOutcome
+        // Oracle must sign (already enforced at mint handler level)
+        True
+      GenesisBonus ->
+        // Genesis has its own validation below
+        validate_genesis_mint(tx, cfg, params, bonus_datum)
+      // Other game sources: require oracle attestation (already enforced above)
+      _ -> True
+    }
+
+  agent_exists && source_valid
+}
+
+/// Validate genesis bonus minting rules.
+fn validate_genesis_mint(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  params: ProtocolParams,
+  bonus_datum: HistoryBonusDatum,
+) -> Bool {
+  expect Some(current_slot) = get_validity_lower_bound(tx)
+
+  // bonus_points must match genesis_bonus_amount
+  let correct_amount = bonus_datum.bonus_points == params.genesis_bonus_amount
+
+  // Must be within minting window (slots since genesis)
+  let within_window = current_slot <= params.genesis_minting_window
+
+  // Token must be unique per agent (genesis token not already in inputs)
+  let genesis_prefix = genesis_bonus_token_prefix
+  let already_has_genesis =
+    list.any(
+      tx.inputs,
+      fn(input) {
+        list.any(
+          assets.flatten(input.output.value),
+          fn(entry) {
+            let (pid, name, _qty) = entry
+            pid == cfg.reputation_policy_id && starts_with(name, genesis_prefix)
+          },
+        )
+      },
+    )
+  let is_unique = !already_has_genesis
+
+  correct_amount && within_window && is_unique
+}
+
+/// Validate genesis bonus burn: protection period must have elapsed.
+fn validate_genesis_burn(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  params: ProtocolParams,
+  current_slot: Int,
+) -> Bool {
+  // Find the genesis bonus input being consumed
+  expect Some(genesis_input) =
+    list.find(
+      tx.inputs,
+      fn(input) {
+        list.any(
+          assets.flatten(input.output.value),
+          fn(entry) {
+            let (pid, name, _qty) = entry
+            pid == cfg.reputation_policy_id && starts_with(name, genesis_bonus_token_prefix)
+          },
+        )
+      },
+    )
+  expect InlineDatum(raw) = genesis_input.output.datum
+  expect bonus_datum: HistoryBonusDatum = raw
+
+  // Protection period must have elapsed since bonus creation
+  bonus_datum.created_at + params.genesis_protection_period <= current_slot
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Validator
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -92,23 +224,43 @@ validator reputation(cfg: ReputationConfig) {
             pid == policy_id && starts_with(name,stake_token_prefix) && qty == -1
           },
         )
-      MintHistoryBonus ->
-        script_input_exists && list.any(
-          flat_mint,
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == policy_id && starts_with(name,history_bonus_token_prefix) && qty == 1
-          },
-        )
-      BurnGenesisBonus ->
+      MintHistoryBonus -> {
+        // F-NEW-6 fix: Require oracle signature AND source-specific validation
+        let params =
+          find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
+        let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
+        let has_valid_token =
+          list.any(
+            flat_mint,
+            fn(entry) {
+              let (pid, name, qty) = entry
+              pid == policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
+            },
+          )
+        // Find the history bonus output to determine source
+        let bonus_valid =
+          validate_history_bonus_mint(tx, cfg, params, policy_id)
+        script_input_exists && oracle_signed && has_valid_token && bonus_valid
+      }
+      BurnGenesisBonus -> {
         // F1 fix: Require script input to prevent orphan burns
-        script_input_exists && list.any(
-          flat_mint,
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == policy_id && starts_with(name,genesis_bonus_token_prefix) && qty == -1
-          },
-        )
+        // Genesis burn: verify protection period has elapsed
+        let params =
+          find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
+        expect Some(current_slot) = get_validity_lower_bound(tx)
+        let has_valid_burn =
+          list.any(
+            flat_mint,
+            fn(entry) {
+              let (pid, name, qty) = entry
+              pid == policy_id && starts_with(name, genesis_bonus_token_prefix) && qty == -1
+            },
+          )
+        // Verify the genesis bonus being burned has passed protection period
+        let protection_met =
+          validate_genesis_burn(tx, cfg, params, current_slot)
+        script_input_exists && has_valid_burn && protection_met
+      }
     }
   }
 
@@ -169,6 +321,8 @@ validator reputation(cfg: ReputationConfig) {
       }
       ClaimDecayRefund -> {
         // F6 fix: Calculate inactive_epochs from on-chain data instead of hardcoding
+        // F-NEW-2 fix: Guard against division by zero
+        expect params.epoch_length > 0
         let elapsed_slots = current_slot - stake_datum.last_updated
         let elapsed_epochs = elapsed_slots / params.epoch_length
         let inactive_epochs = elapsed_epochs - params.activity_window

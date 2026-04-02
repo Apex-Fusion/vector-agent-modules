@@ -1,15 +1,17 @@
 /// Tests for challenge validation logic.
 
 use cardano/address.{VerificationKey}
+use cardano/assets
 use cardano/transaction.{Transaction}
 use reputation_staking/challenge_validation.{
   validate_default_judgment, validate_respond_to_challenge,
   validate_resolve_challenge,
 }
 use reputation_staking/test_helpers.{
-  base_tx, test_agent_did, test_agent_did_2, test_config,
-  test_oracle_credential, test_owner_key_hash, test_owner_key_hash_2,
-  test_params,
+  base_tx, key_address, make_output,
+  test_agent_did, test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id,
+  test_config, test_oracle_credential, test_owner_key_hash,
+  test_owner_key_hash_2, test_params,
 }
 use reputation_staking/types.{
   CapabilityFalsified, CapabilityVerified, Inconclusive, Open, Resolved,
@@ -147,6 +149,7 @@ test respond_to_challenge_bad_hash_fails() fail {
 // ──────────────────────────────────────────────────────────────────────────────
 
 test default_judgment_happy_path() {
+  let cfg = test_config()
   let params = test_params()
   // Past response deadline, no response
   let current_slot = 1000 + 10_800 + 1
@@ -159,10 +162,32 @@ test default_judgment_happy_path() {
       state: Resolved { outcome: CapabilityFalsified },
     }
 
-  validate_default_judgment(input_datum, output_datum, params, current_slot)
+  // DEFAULT_JUDGMENT_FEE: fee = 25_000_000 * 100 / 10_000 = 250_000
+  let submitter_key =
+    #"5500000000000000000000000000000000000000000000000000000000000055"
+  let fee_output =
+    make_output(
+      key_address(submitter_key),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 250_000),
+      0,
+    )
+
+  let tx =
+    base_tx(current_slot)
+      |> fn(t) {
+          Transaction {
+            ..t,
+            outputs: [fee_output],
+            extra_signatories: [submitter_key],
+          }
+        }
+
+  validate_default_judgment(tx, cfg, input_datum, output_datum, params, current_slot)
 }
 
 test default_judgment_before_deadline_fails() fail {
+  let cfg = test_config()
   let params = test_params()
   // Before deadline
   let current_slot = 1000 + 5000
@@ -175,10 +200,13 @@ test default_judgment_before_deadline_fails() fail {
       state: Resolved { outcome: CapabilityFalsified },
     }
 
-  validate_default_judgment(input_datum, output_datum, params, current_slot)
+  let tx = base_tx(current_slot)
+
+  validate_default_judgment(tx, cfg, input_datum, output_datum, params, current_slot)
 }
 
 test default_judgment_with_response_fails() fail {
+  let cfg = test_config()
   let params = test_params()
   let current_slot = 1000 + 10_800 + 1
 
@@ -195,7 +223,9 @@ test default_judgment_with_response_fails() fail {
       state: Resolved { outcome: CapabilityFalsified },
     }
 
-  validate_default_judgment(input_datum, output_datum, params, current_slot)
+  let tx = base_tx(current_slot)
+
+  validate_default_judgment(tx, cfg, input_datum, output_datum, params, current_slot)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

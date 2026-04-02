@@ -23,15 +23,16 @@ use reputation_staking/types.{
   DistributeOutcome, Endorsement, EndorsementDatum,
   EndorsementMintAction,
   EndorsementSpend, EndorsementValidatorAction, EndorsementValidatorDatum,
-  EscalateToAudit, IncreaseEndorsement, MintChallengeToken,
+  Escalated, EscalateToAudit, IncreaseEndorsement, MintChallengeToken,
   MintEndorsementToken, Open, ReputationChallengeDatum,
-  ResolveChallenge, Resolved, RespondToChallenge, SlashEndorsement,
+  ResolveChallenge, ResolveEscalation, Resolved, RespondToChallenge,
+  SlashEndorsement,
   WithdrawChallenge, WithdrawEndorsement, challenge_token_prefix,
   endorsement_token_prefix,
 }
 use reputation_staking/utils.{
-  derive_challenge_token_name, derive_endorsement_token_name,
-  has_credential_signed, has_script_input, starts_with,
+  count_script_inputs, derive_challenge_token_name, derive_endorsement_token_name,
+  get_ap3x_amount, has_credential_signed, has_script_input, starts_with,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -193,8 +194,11 @@ fn validate_endorsement_slash(
             ) == 1
           if has_token {
             expect InlineDatum(raw_out) = output.datum
-        expect out_datum: EndorsementDatum = raw_out
-            out_datum.stake_amount == remaining && out_datum.endorser_did == endorsement_datum.endorser_did && out_datum.target_did == endorsement_datum.target_did
+            expect out_datum: EndorsementDatum = raw_out
+            // F-NEW-4 fix: Verify AP3X value matches datum claim
+            let ap3x =
+              get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
+            out_datum.stake_amount == remaining && ap3x >= remaining && out_datum.endorser_did == endorsement_datum.endorser_did && out_datum.target_did == endorsement_datum.target_did
           } else {
             False
           }
@@ -225,8 +229,9 @@ fn validate_challenge_withdrawal(
   current_slot: Int,
 ) -> Bool {
   let state_open = challenge_datum.state == Open
+  // F-NEW-8 fix: Strict less-than to avoid race with respond at deadline slot
   let before_deadline =
-    current_slot <= challenge_datum.created_at + params.challenge_response_deadline
+    current_slot < challenge_datum.created_at + params.challenge_response_deadline
   let no_response = challenge_datum.response_submitted_at == 0
   let token_name =
     derive_challenge_token_name(
@@ -242,7 +247,20 @@ fn validate_challenge_withdrawal(
     ) == -1
   let signed = has_credential_signed(tx, challenge_datum.challenger_credential)
 
-  state_open && before_deadline && no_response && token_burned && signed
+  // Verify AP3X returned to challenger
+  let challenger_paid =
+    list.any(
+      tx.outputs,
+      fn(output) {
+        let is_to_challenger =
+          output.address.payment_credential == challenge_datum.challenger_credential
+        let ap3x =
+          get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
+        is_to_challenger && ap3x >= challenge_datum.stake_amount
+      },
+    )
+
+  state_open && before_deadline && no_response && token_burned && signed && challenger_paid
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -315,6 +333,9 @@ validator endorsement(cfg: ReputationConfig) {
       find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
     expect Some(current_slot) = get_validity_lower_bound(tx)
 
+    // F-NEW-1 fix: Prevent double satisfaction — only one script input allowed
+    expect count_script_inputs(tx, cfg.endorsement_policy_id) == 1
+
     when (validator_datum, redeemer) is {
       (Endorsement(endorsement_datum), EndorsementSpend(action)) ->
         when action is {
@@ -364,8 +385,39 @@ validator endorsement(cfg: ReputationConfig) {
               counter_evidence_hash, counter_evidence_uri, current_slot,
             )
           }
-          EscalateToAudit ->
-            fail @"Escalation to Game 1 not yet implemented (Phase 1.0)"
+          EscalateToAudit -> {
+            expect Some(output) =
+              find_continuing_challenge(
+                tx,
+                cfg.endorsement_policy_id,
+                challenge_datum.challenger_did,
+                challenge_datum.target_did,
+                challenge_datum.challenged_capability,
+              )
+            expect InlineDatum(raw_out) = output.datum
+            expect out_datum: ReputationChallengeDatum = raw_out
+            // Extract the audit_claim_ref from the output's Escalated state
+            expect Escalated { audit_claim_ref } = out_datum.state
+            challenge_validation.validate_escalate_to_audit(
+              tx, cfg, params, challenge_datum, out_datum,
+              audit_claim_ref, current_slot,
+            )
+          }
+          ResolveEscalation -> {
+            expect Some(output) =
+              find_continuing_challenge(
+                tx,
+                cfg.endorsement_policy_id,
+                challenge_datum.challenger_did,
+                challenge_datum.target_did,
+                challenge_datum.challenged_capability,
+              )
+            expect InlineDatum(raw_out) = output.datum
+            expect out_datum: ReputationChallengeDatum = raw_out
+            challenge_validation.validate_resolve_escalation(
+              tx, cfg, challenge_datum, out_datum,
+            )
+          }
           ResolveChallenge { outcome } -> {
             expect Some(output) =
               find_continuing_challenge(
@@ -393,7 +445,7 @@ validator endorsement(cfg: ReputationConfig) {
             expect InlineDatum(raw_out) = output.datum
         expect out_datum: ReputationChallengeDatum = raw_out
             challenge_validation.validate_default_judgment(
-              challenge_datum, out_datum, params, current_slot,
+              tx, cfg, challenge_datum, out_datum, params, current_slot,
             )
           }
           DistributeOutcome ->

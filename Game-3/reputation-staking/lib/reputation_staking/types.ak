@@ -4,6 +4,7 @@
 /// multi-validators. See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 4.1–4.5.
 
 use cardano/address.{Credential}
+use cardano/assets.{PolicyId}
 use cardano/transaction.{OutputReference}
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -158,8 +159,13 @@ pub type RepChallengeAction {
     counter_evidence_hash: ByteArray,
     counter_evidence_uri: ByteArray,
   }
-  /// Escalate to Game 1 for full adversarial resolution
+  /// Escalate to Game 1 for full adversarial resolution.
+  /// Creates a Game 1 claim and transitions challenge to Escalated state.
   EscalateToAudit
+  /// Resolve an escalated challenge by reading the Game 1 verdict.
+  /// Reads the resolved Game 1 challenge via reference input, maps verdict
+  /// to Game 3 outcome: ClaimerWins→CapabilityVerified, AuditorWins→CapabilityFalsified.
+  ResolveEscalation
   /// Resolve directly (Foundation oracle in Phase 1.0)
   ResolveChallenge { outcome: RepChallengeOutcome }
   /// Auto-resolve after missed response deadline
@@ -250,4 +256,111 @@ pub type EndorsementValidatorDatum {
 pub type EndorsementValidatorAction {
   EndorsementSpend(EndorsementAction)
   ChallengeSpend(RepChallengeAction)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Game 1 Mirror Types (for cross-contract reads via reference inputs)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Mirror of Game 1 ClaimDatum — used to verify escalation claim existence.
+/// Only the fields needed for Game 3 cross-reads are included.
+pub type AuditClaimDatum {
+  /// DID of the claiming agent (policy_id of their registry NFT)
+  claimer_did: PolicyId,
+  /// Payment credential of claimer
+  claimer_credential: Credential,
+  /// blake2b_256 hash of the off-chain claim data
+  claim_hash: ByteArray,
+  /// Category tag for claim routing
+  claim_type: ByteArray,
+  /// Off-chain storage URI
+  storage_uri: ByteArray,
+  /// AP3X staked by claimer
+  stake_amount: Int,
+  /// POSIX time in milliseconds when claim was submitted
+  submitted_at: Int,
+  /// Challenge window in POSIX milliseconds
+  challenge_window: Int,
+  /// Current state
+  state: AuditClaimState,
+}
+
+/// Mirror of Game 1 ClaimState.
+pub type AuditClaimState {
+  /// Open for challenges
+  AuditOpen
+  /// A challenge has been filed
+  AuditChallenged
+  /// Claim validated
+  AuditValidated
+  /// Claim invalidated
+  AuditInvalidated
+}
+
+/// Mirror of Game 1 ChallengeDatum — used to read verdict after resolution.
+pub type AuditChallengeDatum {
+  /// Reference to the claim UTXO being challenged
+  claim_ref: OutputReference,
+  /// DID of the challenging agent
+  auditor_did: PolicyId,
+  /// Payment credential of auditor
+  auditor_credential: Credential,
+  /// AP3X staked by auditor
+  stake_amount: Int,
+  /// blake2b_256 hash of auditor's counter-evidence
+  evidence_hash: ByteArray,
+  /// Off-chain storage URI for counter-evidence
+  evidence_uri: ByteArray,
+  /// POSIX time in milliseconds when challenge was opened
+  challenged_at: Int,
+  /// POSIX milliseconds after challenged_at for resolution
+  resolution_deadline: Int,
+  /// Snapshot of eligible juror DIDs at OpenChallenge time
+  eligible_jurors: List<PolicyId>,
+  /// Current state
+  state: AuditChallengeState,
+}
+
+/// Mirror of Game 1 ChallengeState.
+pub type AuditChallengeState {
+  /// Awaiting Foundation oracle resolution
+  PendingOracle
+  /// Awaiting jury selection
+  PendingJury
+  /// Jury selected, awaiting votes
+  AuditVoting { selected_jurors: List<PolicyId> }
+  /// Resolved — verdict rendered
+  AuditResolved { verdict: AuditVerdict }
+}
+
+/// Mirror of Game 1 Verdict.
+pub type AuditVerdict {
+  /// Claimer was correct — auditor loses stake
+  ClaimerWins
+  /// Auditor was correct — claimer loses stake
+  AuditorWins
+  /// Inconclusive — both stakes returned minus jury fee
+  AuditInconclusive
+}
+
+/// Mirror of Game 1 JurorDatum — used to verify jury duty for history bonuses.
+pub type AuditJurorDatum {
+  /// DID of the juror agent
+  juror_did: PolicyId,
+  /// Payment credential for reward distribution
+  juror_credential: Credential,
+  /// AP3X staked as juror bond
+  bond_amount: Int,
+  /// Number of challenges this juror has resolved
+  cases_resolved: Int,
+  /// Number of times this juror voted with the majority
+  majority_votes: Int,
+  /// POSIX time in milliseconds when juror registered
+  registered_at: Int,
+  /// Active case assignment
+  active_case: Option<ByteArray>,
+  /// Commit-reveal voting: commitment hash
+  vote_commitment: Option<ByteArray>,
+  /// Commit-reveal voting: revealed verdict
+  revealed_verdict: Option<AuditVerdict>,
 }

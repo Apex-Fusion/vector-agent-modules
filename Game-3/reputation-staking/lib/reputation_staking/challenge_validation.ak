@@ -6,19 +6,24 @@
 
 use aiken/builtin
 use aiken/collection/list
-use cardano/address.{Script}
+use aiken/interval.{Finite}
+use cardano/address.{Script, VerificationKey}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, Output, Transaction}
+use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
 use reputation_staking/config.{ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{
-  CapabilityFalsified, CapabilityVerified, Inconclusive, Open,
+  AuditChallengeDatum, AuditClaimDatum, AuditJurorDatum,
+  AuditResolved, AuditValidated, AuditVerdict,
+  AuditorWins, ClaimerWins, AuditInconclusive,
+  CapabilityFalsified, CapabilityVerified, Escalated, Inconclusive, Open,
   RepChallengeOutcome, ReputationChallengeDatum, Resolved, StakeDatum,
+  history_bonus_token_prefix,
 }
 use reputation_staking/utils.{
-  derive_challenge_token_name, derive_stake_token_name, get_ap3x_amount,
-  has_credential_signed,
-  has_key_signed, verify_agent_exists,
+  derive_challenge_token_name, derive_stake_token_name, find_agent_registry_datum,
+  get_ap3x_amount, has_credential_signed,
+  has_key_signed, starts_with, verify_agent_exists,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -64,6 +69,17 @@ pub fn validate_mint_challenge(
   // Rule 3: No self-challenge
   let not_self_challenge =
     output_datum.challenger_did != output_datum.target_did
+
+  // MIN_AGENT_AGE check: challenger must have been registered for min_agent_age slots
+  let challenger_agent =
+    find_agent_registry_datum(tx.reference_inputs, cfg, output_datum.challenger_did)
+  let validity_lower =
+    when tx.validity_range.lower_bound.bound_type is {
+      Finite(slot) -> slot
+      _ -> 0
+    }
+  let challenger_old_enough =
+    validity_lower >= challenger_agent.registered_at + params.min_agent_age
 
   // Rule 5: Minimum challenge stake
   let meets_minimum = output_datum.stake_amount >= params.min_challenge_stake
@@ -121,7 +137,7 @@ pub fn validate_mint_challenge(
   // Rule 9: Signed by challenger
   let signed = has_credential_signed(tx, output_datum.challenger_credential)
 
-  challenger_exists && target_exists && target_stake_valid && not_self_challenge && meets_minimum && evidence_valid && token_is_new && has_correct_token && state_open && initial_state_clean && at_validator && value_correct && signed
+  challenger_exists && target_exists && target_stake_valid && not_self_challenge && challenger_old_enough && meets_minimum && evidence_valid && token_is_new && has_correct_token && state_open && initial_state_clean && at_validator && value_correct && signed
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -182,7 +198,11 @@ pub fn validate_respond_to_challenge(
 ///
 /// Callable by anyone (permissionless).
 /// If target did NOT respond by deadline → CapabilityFalsified.
+/// DEFAULT_JUDGMENT_FEE: submitter receives a small fee from the challenge stake
+/// as an incentive for triggering the resolution.
 pub fn validate_default_judgment(
+  tx: Transaction,
+  cfg: ReputationConfig,
   input_datum: ReputationChallengeDatum,
   output_datum: ReputationChallengeDatum,
   params: ProtocolParams,
@@ -202,11 +222,35 @@ pub fn validate_default_judgment(
   let resolved_correctly =
     output_datum.state == Resolved { outcome: CapabilityFalsified }
 
-  // All other datum fields preserved
+  // DEFAULT_JUDGMENT_FEE: small fee from challenge stake to any tx signer
+  let fee = input_datum.stake_amount * params.default_judgment_fee / 10_000
+  let fee_paid =
+    if fee <= 0 {
+      True
+    } else {
+      list.any(
+        tx.outputs,
+        fn(output) {
+          // Pay to any extra signatory (the submitter)
+          let is_to_signer =
+            list.any(
+              tx.extra_signatories,
+              fn(signer) {
+                output.address.payment_credential == VerificationKey(signer)
+              },
+            )
+          let ap3x =
+            get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
+          is_to_signer && ap3x >= fee
+        },
+      )
+    }
+
+  // All other datum fields preserved (stake_amount preserved — fee deducted during DistributeOutcome)
   let datum_preserved =
     output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
 
-  state_open && past_deadline && no_response && resolved_correctly && datum_preserved
+  state_open && past_deadline && no_response && resolved_correctly && fee_paid && datum_preserved
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -237,6 +281,183 @@ pub fn validate_resolve_challenge(
     output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
 
   state_open && oracle_signed && resolved_correctly && datum_preserved
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// EscalateToAudit — Game 1 Integration
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Validate escalation of a Game 3 challenge to Game 1 Adversarial Auditing.
+///
+/// MUST:
+///   1. Challenge state == Open (with response — both parties have submitted evidence)
+///   2. Within escalation window (created_at + challenge_response_deadline + escalation_window)
+///   3. Signed by either challenger or target (either party can escalate)
+///   4. A Game 1 claim UTXO is created at the audit_claim_validator_hash address
+///      (verified by checking for a token under that policy in tx outputs)
+///   5. Continuing challenge UTXO transitions to Escalated { audit_claim_ref }
+///   6. All other datum fields preserved
+pub fn validate_escalate_to_audit(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  params: ProtocolParams,
+  input_datum: ReputationChallengeDatum,
+  output_datum: ReputationChallengeDatum,
+  audit_claim_ref: OutputReference,
+  current_slot: Int,
+) -> Bool {
+  // Rule 1: State must be Open
+  let state_open = input_datum.state == Open
+
+  // Rule 1: Response must have been submitted (both parties have evidence)
+  let has_response = input_datum.response_submitted_at > 0
+
+  // Rule 2: Within escalation window
+  let escalation_deadline =
+    input_datum.created_at + params.challenge_response_deadline + params.escalation_window
+  let within_window = current_slot <= escalation_deadline
+
+  // Rule 3: Signed by either party
+  let challenger_signed =
+    has_credential_signed(tx, input_datum.challenger_credential)
+  let target_signed = has_credential_signed(tx, input_datum.target_credential)
+  let authorized = challenger_signed || target_signed
+
+  // Rule 4 (F-NEW-7 fix): Verify a Game 1 claim output exists at the claim
+  // validator address with a datum that links back to this challenge.
+  // The claim_hash must be blake2b_256(evidence_hash ++ counter_evidence_hash)
+  // and claim_type must be "reputation_challenge".
+  let expected_claim_hash =
+    builtin.blake2b_256(
+      builtin.append_bytearray(
+        input_datum.evidence_hash,
+        input_datum.counter_evidence_hash,
+      ),
+    )
+  let claim_output_valid =
+    list.any(
+      tx.outputs,
+      fn(output) {
+        let is_at_claim =
+          when output.address.payment_credential is {
+            Script(hash) -> hash == cfg.audit_claim_validator_hash
+            _ -> False
+          }
+        if is_at_claim {
+          when output.datum is {
+            InlineDatum(raw) -> {
+              expect claim: AuditClaimDatum = raw
+              claim.claim_hash == expected_claim_hash && claim.claim_type == "reputation_challenge"
+            }
+            _ -> False
+          }
+        } else {
+          False
+        }
+      },
+    )
+
+  // Rule 5: Output state transitions to Escalated
+  let state_escalated =
+    output_datum.state == Escalated { audit_claim_ref }
+
+  // Rule 6: All other datum fields preserved
+  let datum_preserved =
+    output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
+
+  state_open && has_response && within_window && authorized && claim_output_valid && state_escalated && datum_preserved
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ResolveEscalation — Read Game 1 verdict and map to Game 3 outcome
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Validate resolution of an escalated challenge by reading Game 1 verdict.
+///
+/// Permissionless — anyone can trigger once Game 1 challenge is resolved.
+///
+/// MUST:
+///   1. Challenge state == Escalated { audit_claim_ref }
+///   2. Game 1 challenge UTXO found in reference inputs at audit_challenge_validator_hash
+///      with state == AuditResolved { verdict }
+///   3. Game 1 challenge references the same claim (claim_ref matches audit_claim_ref)
+///   4. Verdict mapped: ClaimerWins → CapabilityVerified, AuditorWins → CapabilityFalsified,
+///      AuditInconclusive → Inconclusive
+///   5. Output state == Resolved { mapped_outcome }
+///   6. All other datum fields preserved
+pub fn validate_resolve_escalation(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  input_datum: ReputationChallengeDatum,
+  output_datum: ReputationChallengeDatum,
+) -> Bool {
+  // Rule 1: State must be Escalated
+  expect Escalated { audit_claim_ref } = input_datum.state
+
+  // Rule 2: Find the Game 1 challenge in reference inputs
+  expect Some(g1_challenge_input) =
+    list.find(
+      tx.reference_inputs,
+      fn(input) {
+        let is_at_challenge_validator =
+          when input.output.address.payment_credential is {
+            Script(hash) -> hash == cfg.audit_challenge_validator_hash
+            _ -> False
+          }
+        if is_at_challenge_validator {
+          when input.output.datum is {
+            InlineDatum(raw) -> {
+              expect g1_datum: AuditChallengeDatum = raw
+              // Rule 3: Must reference the same claim
+              g1_datum.claim_ref == audit_claim_ref
+            }
+            _ -> False
+          }
+        } else {
+          False
+        }
+      },
+    )
+
+  // Parse the Game 1 challenge datum
+  expect InlineDatum(raw_g1) = g1_challenge_input.output.datum
+  expect g1_challenge: AuditChallengeDatum = raw_g1
+
+  // Rule 2: Must be in AuditResolved state
+  expect AuditResolved { verdict } = g1_challenge.state
+
+  // F-NEW-3 fix: Verify the Game 1 challenge involves at least one of the
+  // Game 3 parties (auditor_did should match the escalating party's DID).
+  // The claim was created from the Game 3 challenge's evidence, so the
+  // Game 1 challenge must reference the correct claim (already checked above)
+  // and the auditor must be a known party.
+  let identity_linked =
+    g1_challenge.auditor_did == input_datum.challenger_did || g1_challenge.auditor_did == input_datum.target_did
+
+  // Rule 4: Map Game 1 verdict to Game 3 outcome
+  let mapped_outcome =
+    map_audit_verdict(verdict)
+
+  // Rule 5: Output state is Resolved with mapped outcome
+  let resolved_correctly = output_datum.state == Resolved { outcome: mapped_outcome }
+
+  // Rule 6: All other datum fields preserved
+  let datum_preserved =
+    output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
+
+  identity_linked && resolved_correctly && datum_preserved
+}
+
+/// Map a Game 1 Verdict to a Game 3 RepChallengeOutcome.
+/// ClaimerWins means the agent's claim was valid → CapabilityVerified
+/// AuditorWins means the auditor proved it false → CapabilityFalsified
+/// AuditInconclusive → Inconclusive
+pub fn map_audit_verdict(verdict: AuditVerdict) -> RepChallengeOutcome {
+  when verdict is {
+    ClaimerWins -> CapabilityVerified
+    AuditorWins -> CapabilityFalsified
+    AuditInconclusive -> Inconclusive
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -381,10 +602,23 @@ fn validate_verified_payouts(
   let treasury_paid =
     verify_treasury_payment(tx.outputs, cfg, protocol_fee)
 
-  target_paid && treasury_paid
+  // ChallengeWon history bonus: target should receive a history bonus token
+  // for successfully defending their capability claim.
+  // Verify a history bonus token is minted under the reputation policy.
+  let history_bonus_minted =
+    list.any(
+      assets.flatten(tx.mint),
+      fn(entry) {
+        let (pid, name, qty) = entry
+        pid == cfg.reputation_policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
+      },
+    )
+
+  target_paid && treasury_paid && history_bonus_minted
 }
 
 /// Validate payouts for inconclusive outcome.
+/// Both parties get their stakes back minus split protocol fee.
 fn validate_inconclusive_payouts(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -406,10 +640,103 @@ fn validate_inconclusive_payouts(
       challenger_return,
     )
 
+  // Target's challenge UTXO stake is also returned (minus half fee)
+  // The challenge UTXO held the challenger's stake; target's self-stake is untouched.
+  // No explicit target return needed — their StakeUTXO is not consumed.
+
   // Treasury gets fee
   let treasury_paid = verify_treasury_payment(tx.outputs, cfg, total_fee)
 
   challenger_paid && treasury_paid
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// MintHistoryBonus — Game 1 cross-game validation
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Validate minting a history bonus for winning an audit claim in Game 1.
+///
+/// MUST:
+///   1. A Game 1 claim UTXO exists in reference inputs at audit_claim_validator_hash
+///      with state == AuditValidated
+///   2. The claim's claimer_did matches the agent_did receiving the bonus
+///   3. Oracle signs (prevents replay — oracle tracks which claims have been rewarded)
+pub fn validate_audit_claim_won_bonus(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  agent_did: ByteArray,
+) -> Bool {
+  // Find a validated Game 1 claim for this agent
+  let has_validated_claim =
+    list.any(
+      tx.reference_inputs,
+      fn(input) {
+        let is_at_claim_validator =
+          when input.output.address.payment_credential is {
+            Script(hash) -> hash == cfg.audit_claim_validator_hash
+            _ -> False
+          }
+        if is_at_claim_validator {
+          when input.output.datum is {
+            InlineDatum(raw) -> {
+              expect claim: AuditClaimDatum = raw
+              // claimer_did in Game 1 = agent DID (NFT asset name)
+              claim.claimer_did == agent_did && claim.state == AuditValidated
+            }
+            _ -> False
+          }
+        } else {
+          False
+        }
+      },
+    )
+
+  // Oracle must sign to prevent replay
+  let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
+
+  has_validated_claim && oracle_signed
+}
+
+/// Validate minting a history bonus for jury duty in Game 1.
+///
+/// MUST:
+///   1. A Game 1 juror UTXO exists in reference inputs at audit_jury_pool_hash
+///      with cases_resolved > 0 and majority_votes > 0
+///   2. The juror's juror_did matches the agent_did receiving the bonus
+///   3. Oracle signs (prevents replay)
+pub fn validate_juror_duty_bonus(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  agent_did: ByteArray,
+) -> Bool {
+  // Find a juror UTXO showing completed duty for this agent
+  let has_jury_duty =
+    list.any(
+      tx.reference_inputs,
+      fn(input) {
+        let is_at_jury_pool =
+          when input.output.address.payment_credential is {
+            Script(hash) -> hash == cfg.audit_jury_pool_hash
+            _ -> False
+          }
+        if is_at_jury_pool {
+          when input.output.datum is {
+            InlineDatum(raw) -> {
+              expect juror: AuditJurorDatum = raw
+              juror.juror_did == agent_did && juror.cases_resolved > 0 && juror.majority_votes > 0
+            }
+            _ -> False
+          }
+        } else {
+          False
+        }
+      },
+    )
+
+  // Oracle must sign to prevent replay
+  let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
+
+  has_jury_duty && oracle_signed
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
