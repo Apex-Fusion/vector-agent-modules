@@ -1,0 +1,16 @@
+name = "vector/holder-scripts"
+version = "0.1.0"
+compiler = "v1.1.21"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Simple always-succeeds holder scripts for params/oracle/treasury addresses"
+
+[repository]
+user = "vector"
+project = "holder-scripts"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.0.0"
+source = "github"

@@ -1,0 +1,49 @@
+{
+  "preamble": {
+    "title": "vector/holder-scripts",
+    "description": "Simple always-succeeds holder scripts for params/oracle/treasury addresses",
+    "version": "0.1.0",
+    "plutusVersion": "v3",
+    "compiler": {
+      "name": "Aiken",
+      "version": "v1.1.21+42babe5"
+    },
+    "license": "Apache-2.0"
+  },
+  "validators": [
+    {
+      "title": "holder.holder.spend",
+      "datum": {
+        "title": "_datum",
+        "schema": {
+          "$ref": "#/definitions/Data"
+        }
+      },
+      "redeemer": {
+        "title": "_redeemer",
+        "schema": {
+          "$ref": "#/definitions/Data"
+        }
+      },
+      "compiledCode": "586b0101003229800aba2aba1aab9eaab9dab9a9bad00248888896600264653001300700198039804000cc01c0092225980099b8748008c020dd500144c8cc88cdc42400001260160026016601800260126ea800a2c8038600e00260086ea801e29344d9590021300101020001",
+      "hash": "0611cf74214ef8fdd88a9e521cd9dae2a5269b4d1f0beb8d0133763e"
+    },
+    {
+      "title": "holder.holder.else",
+      "redeemer": {
+        "schema": {}
+      },
+      "compiledCode": "586b0101003229800aba2aba1aab9eaab9dab9a9bad00248888896600264653001300700198039804000cc01c0092225980099b8748008c020dd500144c8cc88cdc42400001260160026016601800260126ea800a2c8038600e00260086ea801e29344d9590021300101020001",
+      "hash": "0611cf74214ef8fdd88a9e521cd9dae2a5269b4d1f0beb8d0133763e"
+    }
+  ],
+  "definitions": {
+    "Data": {
+      "title": "Data",
+      "description": "Any Plutus data."
+    },
+    "Int": {
+      "dataType": "integer"
+    }
+  }
+}

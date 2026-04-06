@@ -1,0 +1,7 @@
+.venv
+wallets/
+.env
+build/
+__pycache__/
+*.pyc
+**/docs/old/
