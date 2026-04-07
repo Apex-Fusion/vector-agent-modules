@@ -34,7 +34,7 @@ WORKSPACE = Path(os.environ.get("APEX_WORKSPACE", "."))
 TESTNET_DIR = WORKSPACE / "testnet"
 SIM_DIR = WORKSPACE / "simulation"
 RESULTS_DIR = WORKSPACE / "simulation-results"
-CONTRACTS_DIR = WORKSPACE / "contracts" / "game-1-adversarial-auditing"
+CONTRACTS_DIR = WORKSPACE / "contracts"
 BLUEPRINT_PATH = CONTRACTS_DIR / "plutus.json"
 
 AIKEN_BIN = os.environ.get("AIKEN_BIN", "aiken")

@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-Adversarial Auditing is a stake-based challenge-response game where agents stake AP3X to challenge the correctness of other agents' on-chain claims. It serves as the **dispute resolution layer** for the entire Vector agent economy (Core Stack: Games 1 + 3 + 5 + 12).
+Adversarial Auditing is a stake-based challenge-response module where agents stake AP3X to challenge the correctness of other agents' on-chain claims. It serves as the **dispute resolution layer** for the entire Vector agent economy (Core Stack: Games 1 + 3 + 5 + 12).
 
 Selfish auditors seeking profit create system-wide integrity as a side effect — the Bitcoin analogy applied to trust verification.
 
@@ -464,7 +464,7 @@ MUST:
 
 ## 5. Parameters
 
-All parameters are governance-adjustable (Game 6 pathway).
+All parameters are governance-adjustable (Module 6 pathway).
 
 | Parameter | Initial Value | Unit | Rationale |
 |-----------|--------------|------|-----------|
@@ -522,7 +522,7 @@ All parameters are governance-adjustable (Game 6 pathway).
 
 1. **Minimum stake**: 50 AP3X per claim locks capital
 2. **Claim type validation** (Phase 1.1): Certain claim types require minimum evidence quality
-3. **Reputation integration** (Game 3 synergy): Claims from low-reputation agents are flagged for priority auditing
+3. **Reputation integration** (Module 3 synergy): Claims from low-reputation agents are flagged for priority auditing
 4. **Economic deterrent**: If auditors exist, submitting false claims is -EV (you lose stake)
 
 ---
@@ -644,7 +644,7 @@ pub type ProtocolParams {
 ### 8.1 Python SDK (Primary)
 
 ```python
-# vector_agent_sdk/games/auditing.py
+# vector_agent_sdk/modules/auditing.py
 
 class AuditingClient:
     """Client for Module 1: Adversarial Auditing"""
@@ -819,7 +819,7 @@ The Koios indexer must track:
 
 ### 9.5 Monitoring Agent (Proof of Useful Work synergy)
 
-A dedicated monitoring agent (Game 9) can:
+A dedicated monitoring agent (Module 9) can:
 - Watch for new claims and evaluate them automatically
 - Challenge suspicious claims (profitable if successful)
 - Alert human operators of high-stake challenges
@@ -926,7 +926,7 @@ audit_health = (challenges_resolved × avg_stake) / total_claims
 
 - [ ] Dynamic stake pricing (higher stakes for repeated auditor-claimer pairs)
 - [ ] Claim type-specific validation rules
-- [ ] Integration with Game 3 (Reputation Staking) for juror eligibility
+- [ ] Integration with Module 3 (Reputation Staking) for juror eligibility
 - [ ] Integration with Module 12 (Escrow) as dispute resolution backend
 - [ ] AFI component reporting
 - [ ] Comprehensive test suite (50+ tests)
@@ -937,8 +937,8 @@ audit_health = (challenges_resolved × avg_stake) / total_claims
 
 1. **Jury size optimization**: Is 5 jurors sufficient for reliable resolution? What's the minimum for Byzantine fault tolerance in this context?
 2. **Stake asymmetry**: Should auditors be required to match or exceed claimer's stake? Lower barrier = more auditing, but also more spam challenges.
-3. **Reputation decay integration**: Should claim validity contribute to Game 3 reputation score directly?
-4. **Cross-game disputes**: Can Module 1 serve as the universal dispute layer for Games 5 and 12, or does each need its own resolution mechanism?
+3. **Reputation decay integration**: Should claim validity contribute to Module 3 reputation score directly?
+4. **cross-module disputes**: Can Module 1 serve as the universal dispute layer for Games 5 and 12, or does each need its own resolution mechanism?
 5. **Dynamic parameters**: Should MIN_CLAIM_STAKE adjust based on network activity (higher when more agents, lower when bootstrapping)?
 6. **Jury compensation**: Is 10% of loser's stake sufficient to attract jurors? Alternative: fixed fee from protocol treasury.
 

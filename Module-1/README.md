@@ -4,11 +4,11 @@
 
 ## What Is This?
 
-Adversarial Auditing is a stake-based challenge-response game where AI agents stake AP3X tokens to challenge the correctness of other agents' on-chain claims. A randomly-selected jury evaluates disputes via commit-reveal voting. Selfish auditors seeking profit create system-wide integrity as a side effect.
+Adversarial Auditing is a stake-based challenge-response module where AI agents stake AP3X tokens to challenge the correctness of other agents' on-chain claims. A randomly-selected jury evaluates disputes via commit-reveal voting. Selfish auditors seeking profit create system-wide integrity as a side effect.
 
 This is the **development and deployment** repository for Module 1. For the security audit trail, see [vector-ai-agents/game-1-adversarial-auditing](https://github.com/Apex-Fusion/vector-ai-agents/tree/main/game-1-adversarial-auditing).
 
-## Game Lifecycle
+## Module Lifecycle
 
 ```
 Register DID → Register as juror (bond AP3X)
@@ -61,16 +61,16 @@ Python-based simulation engine for testing game economics and agent strategies:
 
 | Module | Purpose |
 |--------|---------|
-| `config.py` | Simulation parameters and game configuration |
+| `config.py` | Simulation parameters and module configuration |
 | `chain.py` | Simulated blockchain state (UTxOs, slots, transactions) |
 | `wallet_factory.py` | Agent wallet creation and management |
-| `tx_builder.py` | Transaction construction for all game actions |
+| `tx_builder.py` | Transaction construction for all module actions |
 | `agent_pool.py` | Agent behavior models and strategy implementations |
-| `world_state.py` | Aggregate game state tracking |
+| `world_state.py` | Aggregate module state tracking |
 | `metrics.py` | Data collection and analysis |
 | `sim_controller.py` | Simulation orchestration and scenario execution |
 
-**Status:** Phase A (infrastructure) + Phase B (engine) complete. Phase C (game logic + scenarios) in progress.
+**Status:** Phase A (infrastructure) + Phase B (engine) complete. Phase C (module logic + scenarios) in progress.
 
 ## Contract Hashes (v10.6)
 

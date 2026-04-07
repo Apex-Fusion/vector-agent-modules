@@ -1,6 +1,6 @@
 /// Protocol parameters for Module 1: Adversarial Auditing
 ///
-/// All parameters are governance-adjustable (Game 6 pathway).
+/// All parameters are governance-adjustable (Module 6 pathway).
 /// Stored in a reference UTXO at a governance-controlled address.
 /// Validators read params via reference inputs — no redeployment needed.
 ///

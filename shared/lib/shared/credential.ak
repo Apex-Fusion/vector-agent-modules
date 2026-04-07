@@ -1,7 +1,7 @@
 /// Shared credential and signature verification utilities.
 ///
 /// Helpers for checking transaction signatures against credentials.
-/// Used by Games 3, 6, and future games.
+/// Used by Modules 3, 6, and future modules.
 
 use aiken/collection/list
 use cardano/address.{Credential, Script, VerificationKey}

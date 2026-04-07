@@ -23,7 +23,7 @@ Modules are designed to interlock:
 
 - **Language:** Aiken (Plutus V3) for smart contracts
 - **Network:** Vector Testnet (Cardano eUTxO L2)
-- **Simulation:** Python-based mathematical game theory simulation engines
+- **Simulation:** Python-based formal game theory simulation engines
 - **SDK:** Python ([agent-sdk-py](https://github.com/Apex-Fusion/agent-sdk-py)) for agent interactions
 - **Shared:** [shared/](shared/) — cross-modules Aiken utility library (DID verification, oracle, credentials)
 - **Tokens:** AP3X native token for staking and incentives

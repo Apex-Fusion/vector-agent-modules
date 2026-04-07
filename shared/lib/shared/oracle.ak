@@ -1,7 +1,7 @@
 /// Shared Foundation oracle verification utilities.
 ///
 /// Verifies that the Foundation oracle is active and has signed
-/// a transaction. Used by Game 6 and future games with oracle actions.
+/// a transaction. Used by Module 6 and future modules with oracle actions.
 
 use aiken/builtin
 use aiken/collection/list

@@ -245,7 +245,7 @@ def run_simulation(scenario_name: str = "baseline",
 
     # Load deployment
     if deployment_path is None:
-        deployment_path = str(SIM_DIR.parent / "testnet" / "game1-v10-deployment.json")
+        deployment_path = str(SIM_DIR.parent / "testnet" / "module1-v10-deployment.json")
     with open(deployment_path) as f:
         deploy_json = json.load(f)
     deployment = DeploymentState(deploy_json)

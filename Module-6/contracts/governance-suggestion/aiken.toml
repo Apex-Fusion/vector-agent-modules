@@ -1,0 +1,18 @@
+name = "vector/governance-suggestion"
+version = "0.1.0"
+compiler = "v1.1.21"
+plutus = "v3"
+license = "Apache-2.0"
+description = "Game 6: Governance Suggestion Engine — advisory governance for Vector L2"
+
+[repository]
+user = "vector"
+project = "governance-suggestion"
+platform = "github"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.0.0"
+source = "github"
+
+[config]

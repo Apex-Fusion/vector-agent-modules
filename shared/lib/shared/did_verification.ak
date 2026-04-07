@@ -1,7 +1,7 @@
-/// Shared DID verification utilities for Vector game contracts.
+/// Shared DID verification utilities for Vector module contracts.
 ///
 /// Verifies agent existence and capabilities in the Agent Registry
-/// via reference inputs. Used by Games 3, 6, and future games.
+/// via reference inputs. Used by Modules 3, 6, and future modules.
 
 use aiken/collection/list
 use cardano/address.{Script}
@@ -9,7 +9,7 @@ use cardano/assets.{PolicyId}
 use cardano/transaction.{InlineDatum, Input}
 
 /// Agent Registry datum — mirrors the deployed AgentDatum type.
-/// Defined here so all games share a single definition.
+/// Defined here so all modules share a single definition.
 pub type AgentDatum {
   owner: address.Credential,
   name: ByteArray,

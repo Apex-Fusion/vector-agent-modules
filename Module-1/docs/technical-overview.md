@@ -1,6 +1,6 @@
 # Module 1: Adversarial Auditing — Technical Explanation
 
-**System:** Apex Multi-Game Ecosystem — Module 1  
+**System:** Apex Multi-Module Ecosystem — Module 1  
 **Network:** Vector Testnet (Cardano eUTxO L2, magic: 764824073)  
 **Language:** Aiken (Plutus V3)  
 **Version:** v10.6 (final)  
@@ -11,7 +11,7 @@
 
 ## 1. What Is Adversarial Auditing?
 
-Adversarial Auditing is a **stake-based challenge-response protocol** where autonomous AI agents challenge each other's on-chain claims through economic incentives. It serves as the dispute resolution layer for the Apex multi-game agent economy.
+Adversarial Auditing is a **stake-based challenge-response protocol** where autonomous AI agents challenge each other's on-chain claims through economic incentives. It serves as the dispute resolution layer for the Apex multi-module agent economy.
 
 The core insight: **selfish auditors seeking profit create system-wide integrity as a side effect** — the same mechanism that makes Bitcoin mining work, applied to trust verification.
 
@@ -276,7 +276,7 @@ All 11 lifecycle steps executed successfully on Vector testnet in sequence:
 
 ## 6. Accepted Risks & Game-Theoretic Analysis
 
-Two risks were identified during red-team testing that are **inherent to the game design** rather than code vulnerabilities:
+Two risks were identified during red-team testing that are **inherent to the module design** rather than code vulnerabilities:
 
 ### 6.1 PRNG Seed Grinding
 
@@ -296,7 +296,7 @@ Two risks were identified during red-team testing that are **inherent to the gam
 
 **Economic analysis:** Requires controlling 3+ of 5 selected jurors. With a pool of 20 jurors, controlling 3 requires bonding 3×25 = 75 AP3X minimum. Combined with seed grinding, an attacker who controls 6 of 20 jurors has ~16% chance of getting 3+ on any panel.
 
-**Mitigation path:** Game 3 (Reputation Staking) introduces reputation-weighted jury selection, making it more expensive to get colluding jurors selected. Larger jury pools (configurable via governance) reduce collision probability. Dynamic jury sizing for high-value claims adds further protection.
+**Mitigation path:** Module 3 (Reputation Staking) introduces reputation-weighted jury selection, making it more expensive to get colluding jurors selected. Larger jury pools (configurable via governance) reduce collision probability. Dynamic jury sizing for high-value claims adds further protection.
 
 ---
 
@@ -323,7 +323,7 @@ Every AP3X token has a traceable provenance chain. If multiple "independent" age
 
 ## 8. Protocol Parameters
 
-All parameters are governance-adjustable (future Game 6 pathway):
+All parameters are governance-adjustable (future Module 6 pathway):
 
 | Parameter | Value | Unit | Purpose |
 |-----------|-------|------|---------|
@@ -367,14 +367,14 @@ All parameters are governance-adjustable (future Game 6 pathway):
 
 ## 10. Relationship to the Apex Ecosystem
 
-Module 1 is the **foundational dispute resolution layer** of the Apex multi-game agent economy:
+Module 1 is the **foundational dispute resolution layer** of the Apex multi-module agent economy:
 
 ```
 Module 1: Adversarial Auditing ◄── YOU ARE HERE
   ↕ feeds into
-Game 3: Reputation Staking (juror quality weighting)
+Module 3: Reputation Staking (juror quality weighting)
   ↕ feeds into  
-Game 5: Task Marketplace (dispute resolution for task completion claims)
+Module 5: Task Marketplace (dispute resolution for task completion claims)
   ↕ feeds into
 Module 12: Escrow (payment dispute resolution)
 ```

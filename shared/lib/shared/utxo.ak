@@ -1,7 +1,7 @@
 /// Shared UTXO search and counting utilities.
 ///
 /// Common patterns for finding inputs/outputs by token or script address.
-/// Used by Games 3, 6, and future games.
+/// Used by Modules 3, 6, and future modules.
 
 use aiken/collection/list
 use cardano/address.{Script}
