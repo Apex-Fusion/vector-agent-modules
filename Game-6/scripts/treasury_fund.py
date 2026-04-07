@@ -129,7 +129,9 @@ async def fund_treasury(num_batches: int, batch_size_apex: int, dry_run: bool):
             tx_cbor = tx.to_cbor()
             tx_hash = str(tx.id)
 
-            await agent.context.submit_tx_cbor(tx_cbor)
+            if isinstance(tx_cbor, bytes):
+                tx_cbor = tx_cbor.hex()
+            await agent.context.async_submit_tx_cbor(tx_cbor)
             print(f"  [{key}] Created: {tx_hash}")
 
             # Update deploy_state
