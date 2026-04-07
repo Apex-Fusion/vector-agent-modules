@@ -91,7 +91,7 @@ nix-shell shell.nix --run "python scripts/smoke_test.py"
 
 - **Module 1** (Adversarial Auditing): Disputed critiques can escalate to Module 1 for resolution. Proposals can change Module 1 parameters.
 - **Module 3** (Reputation Staking): Proposer reputation serves as quality signal for Foundation review priority. Adopted proposals grant +10 AP3X history bonus.
-- **Shared oracle pattern**: Foundation oracle identical across Games 1, 3, and 6.
+- **Shared oracle pattern**: Foundation oracle identical across Modules 1, 3, and 6.
 
 ## Folder Structure
 

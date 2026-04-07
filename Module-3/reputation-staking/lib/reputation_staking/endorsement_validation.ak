@@ -2,7 +2,7 @@
 ///
 /// Validates endorsement operations: MintEndorsementToken, IncreaseEndorsement,
 /// and WithdrawEndorsement.
-/// See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.3, 6.3b, 6.4.
+/// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.3, 6.3b, 6.4.
 
 use aiken/collection/list
 use cardano/address.{Script}

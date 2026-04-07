@@ -4,7 +4,7 @@
 /// params contract and read via reference input. This stub contains only the
 /// Module 3 fields needed by the reputation validators.
 ///
-/// See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 10 and 11.2b.
+/// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 10 and 11.2b.
 
 use aiken/collection/list
 use cardano/address.{Script}

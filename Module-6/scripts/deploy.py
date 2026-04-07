@@ -4,7 +4,7 @@ Module 6: Full Testnet Deployment Script
 Handles the complete deployment flow:
   1. Apply GovernanceConfig parameter to all validators via `aiken blueprint apply`
   2. Deploy holder reference scripts (params/oracle/treasury)
-  3. Deploy Game-6 validator reference scripts (CIP-33)
+  3. Deploy Module-6 validator reference scripts (CIP-33)
   4. Create infrastructure UTxOs (GovernanceParams, Oracle, Treasury)
   5. Mint refs NFT and deploy GovernanceCrossRefs datum
   6. Save full deployment state
@@ -101,7 +101,7 @@ def build_governance_config_cbor(
         bytes.fromhex(ZEROED_28),               # prediction_validator_hash
         bytes.fromhex(AGENT_REGISTRY_HASH),     # registry_policy_id
         bytes.fromhex(AGENT_REGISTRY_HASH),     # registry_script_hash
-        bytes.fromhex(ZEROED_28),               # reputation_validator_hash (Game-3 not deployed)
+        bytes.fromhex(ZEROED_28),               # reputation_validator_hash (Module-3 not deployed)
         bytes.fromhex(ZEROED_28),               # jury_pool_hash (Phase 1.2)
         bytes.fromhex(oracle_holder_hash),      # governance_oracle_hash
         bytes.fromhex(params_holder_hash),      # governance_params_hash
@@ -130,7 +130,7 @@ def apply_holder_tag(holder_blueprint: Path, tag: int) -> dict:
 
 
 def apply_governance_config(config_cbor_hex: str) -> dict:
-    """Apply GovernanceConfig to all Game-6 validators, return applied blueprint."""
+    """Apply GovernanceConfig to all Module-6 validators, return applied blueprint."""
     # Start from the raw blueprint
     current = str(BLUEPRINT_PATH)
     validators_to_apply = [
@@ -333,7 +333,7 @@ async def deploy():
     print(f"VKey Hash: {wallet['vkey_hash']}")
 
     if not BLUEPRINT_PATH.exists():
-        print("ERROR: Game-6 blueprint not found. Run 'aiken build' in contracts/governance-suggestion/")
+        print("ERROR: Module-6 blueprint not found. Run 'aiken build' in contracts/governance-suggestion/")
         return
     if not HOLDER_BLUEPRINT_PATH.exists():
         print("ERROR: Holder blueprint not found. Run 'aiken build' in shared/holder-scripts/")
@@ -428,8 +428,8 @@ async def deploy():
             tx_hashes[key] = tx
             await asyncio.sleep(TX_WAIT)
 
-        # 4b: Deploy Game-6 validator reference scripts
-        print("\n  4b. Deploying Game-6 validator reference scripts...")
+        # 4b: Deploy Module-6 validator reference scripts
+        print("\n  4b. Deploying Module-6 validator reference scripts...")
         ref_script_keys = [
             ("proposal.proposal_mint.mint", "proposal_mint"),
             ("proposal.proposal_spend.spend", "proposal_spend"),

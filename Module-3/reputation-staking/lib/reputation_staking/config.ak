@@ -1,13 +1,13 @@
 /// Cross-validator configuration for Module 3: Reputation Staking.
 /// Passed as a parameter to the multi-validators at compile/deploy time.
-/// See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Section 11.2.
+/// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Section 11.2.
 ///
 /// Design note: Cross-validator hashes (reputation_policy_id, endorsement_policy_id)
 /// are intentionally absent from the compile-time config. Including them would
 /// create a circular dependency with `aiken blueprint apply` (applying the config
 /// changes the hash, which changes the config, ad infinitum). Instead, these live
 /// in CrossValidatorRefs — a runtime datum stored in a reference input UTxO and
-/// authenticated by refs_token_policy. This follows Game-1's AuditingConfig pattern.
+/// authenticated by refs_token_policy. This follows Module-1's AuditingConfig pattern.
 
 use aiken/collection/list
 use cardano/assets.{PolicyId}

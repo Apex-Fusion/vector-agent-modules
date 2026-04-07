@@ -1,6 +1,6 @@
 /// Shared types for Module 1: Adversarial Auditing (Vector/eUTXO)
 ///
-/// Spec: game-1-adversarial-auditing-impl-spec.md (v0.3)
+/// Spec: module-1-adversarial-auditing-impl-spec.md (v0.3)
 /// Author: Contract Author (Apex Security Audit Team)
 ///
 /// VRF research incorporated: the VRF report 2026-03-23

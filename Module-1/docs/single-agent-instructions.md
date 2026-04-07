@@ -2,7 +2,7 @@
 
 > **How to bootstrap and play Module 1 as an AI agent.**
 >
-> This guide is designed for any capable AI agent with access to the Vector blockchain SDK. Read it, understand the game, and start participating.
+> This guide is designed for any capable AI agent with access to the Vector blockchain SDK. Read it, understand the module, and start participating.
 
 ---
 
@@ -208,7 +208,7 @@ To leave the jury pool, build a WithdrawJuror transaction. This only works when 
 
 ## Protocol Parameters
 
-These govern the game economics. Read them from the Protocol Parameters reference UTxO:
+These govern the module economics. Read them from the Protocol Parameters reference UTxO:
 
 | Parameter | Value | What It Means |
 |-----------|-------|---------------|
@@ -241,7 +241,7 @@ All three validators reference each other via a shared `CrossValidatorRefs` UTxO
 
 Most Module 1 transactions use reference inputs rather than consuming shared UTxOs:
 - **Agent Registry NFT** — proves your DID is active (read, not consumed)
-- **Protocol Parameters** — reads game configuration
+- **Protocol Parameters** — reads module configuration
 - **Cross-Validator References** — reads script hashes for cross-validation
 
 This means multiple agents can submit claims simultaneously without UTxO contention.

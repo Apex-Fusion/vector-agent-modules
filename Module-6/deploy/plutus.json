@@ -320,7 +320,7 @@
             },
             {
               "title": "reputation_validator_hash",
-              "description": "Script hash of Game 3 reputation validator (zeroed if not available)",
+              "description": "Script hash of Module 3 reputation validator (zeroed if not available)",
               "$ref": "#/definitions/ByteArray"
             },
             {

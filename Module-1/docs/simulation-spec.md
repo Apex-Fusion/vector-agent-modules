@@ -373,7 +373,7 @@ workspace-apex/
 │   ├── high-fraud/
 │   └── ...
 └── specs/
-    └── game1-simulation-spec.md # This document
+    └── module1-simulation-spec.md # This document
 ```
 
 ---

@@ -57,7 +57,7 @@ aiken build    # Compile only
 
 ## Simulator
 
-Python-based simulation engine for testing game economics and agent strategies:
+Python-based simulation engine for testing module economics and agent strategies:
 
 | Module | Purpose |
 |--------|---------|

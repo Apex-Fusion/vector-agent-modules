@@ -734,7 +734,7 @@
             },
             {
               "title": "history_points",
-              "description": "Accumulated history bonus points (from winning challenges, cross-game bonuses)",
+              "description": "Accumulated history bonus points (from winning challenges, cross-module bonuses)",
               "$ref": "#/definitions/Int"
             }
           ]
@@ -761,7 +761,7 @@
         },
         {
           "title": "MintHistoryBonus",
-          "description": "Mint a history bonus token for a qualifying cross-game event",
+          "description": "Mint a history bonus token for a qualifying cross-module event",
           "dataType": "constructor",
           "index": 2,
           "fields": []

@@ -2,7 +2,7 @@
 ///
 /// Validates all self-stake operations: CreateStake, IncreaseStake,
 /// DecreaseStake, and UpdateCapabilities.
-/// See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.1, 6.2, 6.5.
+/// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.1, 6.2, 6.5.
 
 use aiken/collection/list
 use cardano/address.{Script}

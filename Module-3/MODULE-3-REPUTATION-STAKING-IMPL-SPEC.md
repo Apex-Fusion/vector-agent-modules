@@ -851,7 +851,7 @@ Implemented via the ProtocolParams UTXO (governance-adjustable).
 
 Agents earn implicit reputation through participation in other modules:
 
-| Game Activity | Reputation Effect |
+| Module Activity | Reputation Effect |
 |---------------|-------------------|
 | Module 1: Won audit challenge (as claimer) | +10% of challenge stake as history bonus |
 | Module 1: Served as juror (voted with majority) | +2 AP3X equivalent history bonus |
@@ -1614,5 +1614,5 @@ INCENTIVE: Submitter earns DEFAULT_JUDGMENT_FEE (1% of challenger stake).
 - `02-AFI-FORMAL-MODEL.md` — Formal game-theoretic model (Game G₃ definition)
 - `03-POSITIVE-SUM-GAMES.md` — Game catalog (Module 3 high-level design)
 - `agent-infrastructure/contracts/agent-registry/` — Agent Registry contract (dependency)
-- `GAME-1-ADVERSARIAL-AUDITING-IMPL-SPEC.md` — Module 1 spec (dispute escalation target)
+- `MODULE-1-ADVERSARIAL-AUDITING-IMPL-SPEC.md` — Module 1 spec (dispute escalation target)
 - CIP-31 (Reference Inputs): https://cips.cardano.org/cip/CIP-0031

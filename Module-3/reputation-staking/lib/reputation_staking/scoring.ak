@@ -4,7 +4,7 @@
 /// The full reputation score is computed off-chain by the indexer, but
 /// tier boundaries are useful on-chain for access control.
 ///
-/// See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Section 5.4.
+/// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Section 5.4.
 
 use reputation_staking/types.{
   Elite, Established, Novice, ReputationTier, Trusted, Unverified,

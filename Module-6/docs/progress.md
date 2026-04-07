@@ -1,6 +1,6 @@
 # Module 6: Governance Suggestion Engine — Progress Tracker
 
-Spec reference: `Module-6/docs/GAME-6-GOVERNANCE-SUGGESTION-ENGINE-IMPL-SPEC.md` (v0.4)
+Spec reference: `Module-6/docs/MODULE-6-GOVERNANCE-SUGGESTION-ENGINE-IMPL-SPEC.md` (v0.4)
 
 ---
 

@@ -4,7 +4,7 @@
 /// any agent can earn a collector fee by processing decay on inactive agents.
 ///
 /// Phase 1.0: Foundation oracle attests inactivity.
-/// See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 5.2 and 6.6.
+/// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 5.2 and 6.6.
 
 use aiken/collection/list
 use cardano/address.{Script}

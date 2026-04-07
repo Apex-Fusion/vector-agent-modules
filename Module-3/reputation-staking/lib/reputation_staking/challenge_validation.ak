@@ -2,7 +2,7 @@
 ///
 /// Validates challenge operations: MintChallengeToken, RespondToChallenge,
 /// ResolveChallenge, DefaultJudgment, and DistributeOutcome.
-/// See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.8–6.11.
+/// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.8–6.11.
 
 use aiken/builtin
 use aiken/collection/list

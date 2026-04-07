@@ -1,7 +1,7 @@
 {
   "preamble": {
     "title": "vector/shared",
-    "description": "Shared utilities for Vector game contracts",
+    "description": "Shared utilities for Vector module contracts",
     "version": "0.1.0",
     "plutusVersion": "v3",
     "compiler": {

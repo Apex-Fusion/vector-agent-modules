@@ -3,7 +3,7 @@ version = "0.1.0"
 compiler = "v1.1.21"
 plutus = "v3"
 license = "Apache-2.0"
-description = "Game 3: Reputation Staking — economically-secured agent curation for Vector"
+description = "Module 3: Reputation Staking — economically-secured agent curation for Vector"
 
 [repository]
 user = "vector"

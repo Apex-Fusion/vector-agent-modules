@@ -54,7 +54,7 @@ The mechanism design strongly favors quality proposals over spam:
 │  Proposals → Foundation Council → Adoption Signal      │
 │       ↑                                ↓               │
 │  Chain Metrics                    AP3X Rewards          │
-│  (from Games 1,3,5,9,12)         (to proposers)        │
+│  (from Modules 1,3,5,9,12)         (to proposers)        │
 │                                                        │
 │  Integration points:                                    │
 │  - Module 3: Proposer reputation as quality signal        │
@@ -723,7 +723,7 @@ one from a Novice (off-chain evaluation, not enforced on-chain).
 
 The following parameters can be proposed for change. Each parameter belongs to a module or system component:
 
-| Parameter | Current Source | Game/System |
+| Parameter | Current Source | Module/System |
 |-----------|---------------|-------------|
 | `MIN_CLAIM_STAKE` | ProtocolParams UTXO | Module 1 |
 | `MIN_CHALLENGE_WINDOW` | ProtocolParams UTXO | Module 1 |
@@ -736,7 +736,7 @@ The following parameters can be proposed for change. Each parameter belongs to a
 | `MIN_PROPOSAL_STAKE` | GovernanceParams UTXO | Module 6 |
 | `ADOPTION_REWARD_BASE` | GovernanceParams UTXO | Module 6 |
 | Treasury allocation limits | Treasury UTXO | System |
-| Game activation flags | ProtocolParams UTXO | System |
+| Module activation flags | ProtocolParams UTXO | System |
 
 ### 6.2 Chain Metrics for Analysis
 
@@ -746,7 +746,7 @@ Agents analyze on-chain data to produce data-driven proposals. Key data sources:
 |-----------------|------------|-----------------|
 | **Transaction Volume** | Indexer: block data | "Tx volume up 300% — increase block size?" |
 | **Fee Patterns** | Indexer: fee history | "Avg fee 2x target — adjust fee algorithm?" |
-| **Game Participation** | Indexer: module UTXOs | "Only 3 jurors active — lower MIN_JUROR_BOND?" |
+| **Module Participation** | Indexer: module UTXOs | "Only 3 jurors active — lower MIN_JUROR_BOND?" |
 | **Claim/Challenge Ratios** | Module 1 UTXOs | "Challenge rate too low — lower MIN_CHALLENGE_WINDOW?" |
 | **Reputation Distribution** | Module 3 UTXOs | "90% agents at Novice — lower tier thresholds?" |
 | **Treasury Balance** | Treasury UTXO | "Treasury at 100K AP3X — fund developer grants?" |
@@ -1048,7 +1048,7 @@ SYBIL IRRELEVANCE:
 ```
 PROPOSAL SPAM PREVENTION:
   - MIN_PROPOSAL_STAKE = 25 AP3X locks capital for entire review window (~3-28 days)
-  - Opportunity cost: 25 AP3X locked for 3 days cannot be used in Games 1, 3, etc.
+  - Opportunity cost: 25 AP3X locked for 3 days cannot be used in Modules 1, 3, etc.
   - No reward for non-adopted proposals (only capital return)
   - An agent spamming 10 proposals locks 250 AP3X with zero expected return
 
@@ -1360,7 +1360,7 @@ contracts/governance-suggestion/
 │       ├── emergency.ak             # Emergency proposal validation
 │       ├── prediction.ak            # Pari-mutuel prediction market logic (Phase 1.2)
 │       ├── stale_detection.ak       # ExpireStaleProposal validation (Phase 1.1)
-│       └── utils.ak             # Game-specific helpers (param name validation, etc.)
+│       └── utils.ak             # Module-specific helpers (param name validation, etc.)
 │                                  # NOTE: DID verification, oracle verification now in vector/shared
 └── tests/
     ├── proposal_tests.ak
@@ -1405,7 +1405,7 @@ pub type GovernanceConfig {
 
 ### 11.3 DID Verification
 
-Uses the same pattern as Games 1 and 3 — reference input to Agent Registry:
+Uses the same pattern as Modules 1 and 3 — reference input to Agent Registry:
 
 ```aiken
 /// Verify that a DID is active in the Agent Registry.
@@ -1921,7 +1921,7 @@ class GovernanceClient:
 ### 11.8 Shared Utility Library
 
 ```
-DESIGN NOTE: Games 1, 3, and 6 share identical patterns for:
+DESIGN NOTE: Modules 1, 3, and 6 share identical patterns for:
   - DID verification (verify_active_did)
   - ProtocolParams reading
   - CrossGameBonus UTXO minting
@@ -1932,7 +1932,7 @@ These should be extracted to a shared library rather than duplicated:
 contracts/shared/
 ├── lib/
 │   └── vector_shared/
-│       ├── did_verification.ak    # verify_active_did() — identical in Games 1/3/6
+│       ├── did_verification.ak    # verify_active_did() — identical in Modules 1/3/6
 │       ├── params_reader.ak       # Read ProtocolParams + GovernanceParams via ref input
 │       ├── oracle_verification.ak # Verify Foundation oracle signature + active status
 │       ├── cross_game_bonus.ak    # Mint CrossGameBonus UTXOs at reputation validator
@@ -1944,7 +1944,7 @@ Aiken supports cross-project dependencies via aiken.toml:
   version = "0.1.0"
   source = "github"
 
-This eliminates code duplication and ensures security fixes propagate to all games.
+This eliminates code duplication and ensures security fixes propagate to all modules.
 v0.3 NOTE: Track this as a Phase 1.0 deliverable — implement shared lib before Module 6.
 ```
 
@@ -1952,7 +1952,7 @@ v0.3 NOTE: Track this as a Phase 1.0 deliverable — implement shared lib before
 
 ## 13. Foundation Commitment Protocol
 
-The governance game only works if the Foundation commits to reviewing proposals. This is a social/operational commitment, not an on-chain enforcement:
+The governance module only works if the Foundation commits to reviewing proposals. This is a social/operational commitment, not an on-chain enforcement:
 
 ### 13.1 Foundation Review SLA
 
@@ -2292,7 +2292,7 @@ response_time = avg(adoption_slot - problem_detection_slot)
 - [ ] GovernanceParams UTXO type and deployment
 - [ ] ProposerActivity UTXO tracking (rate limiting + cooldown)
 - [ ] Proposal validator (submit + withdraw + expire + extend_review)
-- [ ] Foundation oracle adoption/rejection (same pattern as Games 1/3)
+- [ ] Foundation oracle adoption/rejection (same pattern as Modules 1/3)
 - [ ] Basic critique validator (submit + withdraw)
 - [ ] Governance treasury batch UTXO setup (5 initial batches × 500 AP3X = 2,500 AP3X initial)
 - [ ] Foundation seed treasury with 10,000 AP3X
@@ -2301,7 +2301,7 @@ response_time = avg(adoption_slot - problem_detection_slot)
 - [ ] Foundation review dashboard (basic: priority queue + adoption/rejection)
 - [ ] 5 unit tests per validator, 3 integration tests
 
-**Why this is an early quick win**: Only 2 validators + activity tracker, simple flow (propose → Foundation decides), no jury/voting complexity. The Foundation oracle pattern is already implemented in Games 1 and 3. Shared utility library benefits all future modules.
+**Why this is an early quick win**: Only 2 validators + activity tracker, simple flow (propose → Foundation decides), no jury/voting complexity. The Foundation oracle pattern is already implemented in Modules 1 and 3. Shared utility library benefits all future modules.
 
 ### Phase 1.1 — Full Critique & Amendment System (+5 weeks)
 
@@ -2865,7 +2865,7 @@ RESULT:
 
 - **Governance → Auditing**: Proposals can change Module 1 parameters (MIN_CLAIM_STAKE, etc.)
 - **Auditing → Governance**: Disputed critiques can escalate to Module 1 for resolution
-- **Shared oracle**: Foundation oracle pattern identical across Games 1, 3, 6
+- **Shared oracle**: Foundation oracle pattern identical across Modules 1, 3, 6
 
 ### B.2 Module 3 (Reputation Staking) Integration
 
@@ -2887,7 +2887,7 @@ RESULT:
 ### B.5 ProtocolParams UTXO (Shared Infrastructure)
 
 - **Adoption pathway**: Adopted parameter changes update the ProtocolParams UTXO
-- **All games read from same params**: Parameter change in Module 6 takes effect across all modules simultaneously via reference inputs
+- **All modules read from same params**: Parameter change in Module 6 takes effect across all modules simultaneously via reference inputs
 
 ---
 
@@ -2896,8 +2896,8 @@ RESULT:
 - `01-SPECIFICATION.md` — System specification v0.1
 - `02-AFI-FORMAL-MODEL.md` — Formal game-theoretic model (Game G₆ definition)
 - `03-POSITIVE-SUM-GAMES.md` — Game catalog (Module 6 high-level design)
-- `GAME-1-ADVERSARIAL-AUDITING-IMPL-SPEC.md` — Module 1 spec (dispute escalation, oracle pattern)
-- `GAME-3-REPUTATION-STAKING-IMPL-SPEC.md` — Module 3 spec (reputation integration, cross-module bonuses)
+- `MODULE-1-ADVERSARIAL-AUDITING-IMPL-SPEC.md` — Module 1 spec (dispute escalation, oracle pattern)
+- `MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md` — Module 3 spec (reputation integration, cross-module bonuses)
 - `agent-infrastructure/contracts/agent-registry/` — Agent Registry contract (dependency)
 - CIP-31 (Reference Inputs): https://cips.cardano.org/cip/CIP-0031
 - CIP-33 (Reference Scripts): https://cips.cardano.org/cip/CIP-0033

@@ -1,7 +1,7 @@
 /// On-chain types for Module 3: Reputation Staking.
 ///
 /// Defines all datum and redeemer types for the reputation and endorsement
-/// multi-validators. See GAME-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 4.1–4.5.
+/// multi-validators. See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 4.1–4.5.
 
 use cardano/address.{Credential}
 use cardano/assets.{PolicyId}

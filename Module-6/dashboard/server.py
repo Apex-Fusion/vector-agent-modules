@@ -5,7 +5,7 @@ FastAPI backend serving the governance review dashboard.
 Connects to Vector testnet via the governance SDK.
 
 Usage:
-    cd Game-6/dashboard
+    cd Module-6/dashboard
     uvicorn server:app --reload --port 8000
 """
 
@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-# Add SDK and Game-6 root to path
+# Add SDK and Module-6 root to path
 GAME6_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(GAME6_ROOT))
 load_dotenv(GAME6_ROOT / ".env")

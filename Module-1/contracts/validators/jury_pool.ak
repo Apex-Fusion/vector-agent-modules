@@ -822,7 +822,7 @@ fn validate_distribute_rewards(
                 updated.cases_resolved == juror.cases_resolved + 1,
                 updated.active_case == None,
                 // fix: RT-008 — verify bond_amount and majority_votes immutability.
-                // Without these checks, a juror could inflate bond_amount or game stats.
+                // Without these checks, a juror could inflate bond_amount or module stats.
                 updated.bond_amount == juror.bond_amount,
                 updated.majority_votes == juror.majority_votes,
                 // Commit-reveal fields must be cleared after distribution.
