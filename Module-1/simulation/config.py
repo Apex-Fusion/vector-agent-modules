@@ -1,5 +1,5 @@
 """
-Simulation Configuration — Game 1 Adversarial Auditing
+Simulation Configuration — Module 1 Adversarial Auditing
 """
 from dataclasses import dataclass, field
 import os
@@ -46,7 +46,7 @@ WALLET_SKEY = str(TESTNET_DIR / "wallet.skey")
 
 @dataclass
 class GameParams:
-    """On-chain ProtocolParams for Game 1."""
+    """On-chain ProtocolParams for Module 1."""
     min_claim_stake: int = 50_000_000       # 50 AP3X
     min_challenge_window: int = 1_800_000   # 30 min
     max_challenge_window: int = 64_800_000  # 18 hours

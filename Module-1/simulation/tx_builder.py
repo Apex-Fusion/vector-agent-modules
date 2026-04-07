@@ -1,5 +1,5 @@
 """
-TX Builder Library — Reusable transaction constructors for all Game 1 actions.
+TX Builder Library — Reusable transaction constructors for all Module 1 actions.
 
 Each function builds, evaluates, and submits one transaction type.
 Extracted from testnet/deploy_and_run_v10.py and generalized for simulation use.

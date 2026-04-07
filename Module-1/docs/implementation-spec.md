@@ -1,4 +1,4 @@
-# Game 1: Adversarial Auditing — Implementation Specification
+# Module 1: Adversarial Auditing — Implementation Specification
 
 **Status**: DRAFT v0.3
 **Author**: Apex Fusion Team, with AI-assisted design
@@ -647,7 +647,7 @@ pub type ProtocolParams {
 # vector_agent_sdk/games/auditing.py
 
 class AuditingClient:
-    """Client for Game 1: Adversarial Auditing"""
+    """Client for Module 1: Adversarial Auditing"""
 
     def submit_claim(
         self,
@@ -883,9 +883,9 @@ Auditing is profitable when:
 
 ## 11. AFI Integration
 
-Game 1 contributes to the AFI via:
+Module 1 contributes to the AFI via:
 
-| AFI Component | Measurement from Game 1 |
+| AFI Component | Measurement from Module 1 |
 |---------------|------------------------|
 | Security Score | Challenges resolved correctly (false claims caught) |
 | Reputation Capital | Total AP3X staked in active claims |
@@ -927,7 +927,7 @@ audit_health = (challenges_resolved × avg_stake) / total_claims
 - [ ] Dynamic stake pricing (higher stakes for repeated auditor-claimer pairs)
 - [ ] Claim type-specific validation rules
 - [ ] Integration with Game 3 (Reputation Staking) for juror eligibility
-- [ ] Integration with Game 12 (Escrow) as dispute resolution backend
+- [ ] Integration with Module 12 (Escrow) as dispute resolution backend
 - [ ] AFI component reporting
 - [ ] Comprehensive test suite (50+ tests)
 
@@ -938,7 +938,7 @@ audit_health = (challenges_resolved × avg_stake) / total_claims
 1. **Jury size optimization**: Is 5 jurors sufficient for reliable resolution? What's the minimum for Byzantine fault tolerance in this context?
 2. **Stake asymmetry**: Should auditors be required to match or exceed claimer's stake? Lower barrier = more auditing, but also more spam challenges.
 3. **Reputation decay integration**: Should claim validity contribute to Game 3 reputation score directly?
-4. **Cross-game disputes**: Can Game 1 serve as the universal dispute layer for Games 5 and 12, or does each need its own resolution mechanism?
+4. **Cross-game disputes**: Can Module 1 serve as the universal dispute layer for Games 5 and 12, or does each need its own resolution mechanism?
 5. **Dynamic parameters**: Should MIN_CLAIM_STAKE adjust based on network activity (higher when more agents, lower when bootstrapping)?
 6. **Jury compensation**: Is 10% of loser's stake sufficient to attract jurors? Alternative: fixed fee from protocol treasury.
 
@@ -1153,7 +1153,7 @@ RESULT:
 
 - `01-SPECIFICATION.md` — System specification v0.1
 - `02-AFI-FORMAL-MODEL.md` — Formal game-theoretic model (Game G₁ definition)
-- `03-POSITIVE-SUM-GAMES.md` — Game catalog (Game 1 high-level design)
+- `03-POSITIVE-SUM-GAMES.md` — Game catalog (Module 1 high-level design)
 - `04-EUTXO-SECURITY.md` — Circuit breaker security architecture
 - `05-OPEN-QUESTIONS.md` — Tracked open questions (Q1, Q16, Q22 relevant)
 - `agent-infrastructure/contracts/agent-registry/` — Agent Registry contract (dependency)

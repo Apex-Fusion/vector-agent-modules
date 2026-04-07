@@ -1,4 +1,4 @@
-# Game 1: Adversarial Auditing — Testnet Simulation Specification
+# Module 1: Adversarial Auditing — Testnet Simulation Specification
 
 **Author:** Jelisaveta  
 **Date:** 2026-03-25  
@@ -9,7 +9,7 @@
 
 ## 1. Purpose
 
-Simulate a multi-agent economy playing Game 1 (Adversarial Auditing) on the Vector testnet. The simulation proves that the on-chain dispute mechanism works at scale, measures economic dynamics, and identifies emergent behaviors that unit tests cannot capture.
+Simulate a multi-agent economy playing Module 1 (Adversarial Auditing) on the Vector testnet. The simulation proves that the on-chain dispute mechanism works at scale, measures economic dynamics, and identifies emergent behaviors that unit tests cannot capture.
 
 This is NOT a load test. It is an **economic simulation** — a population of agents with diverse strategies interacting through smart contracts, producing measurable outcomes that validate (or invalidate) the game-theoretic design.
 
@@ -331,14 +331,14 @@ Recommend Option B — it's how real agents would work.
 
 ## 9. Expected Outcomes
 
-### 9.1 If Game 1 is well-designed:
+### 9.1 If Module 1 is well-designed:
 - Honest agents accumulate AP3X over time (positive ROI)
 - Adversaries lose AP3X over time (negative ROI)
 - Fraud detection rate correlates with auditor population fraction
 - System reaches economic equilibrium within ~50 epochs
 - AP3X conservation law holds exactly (sum = constant)
 
-### 9.2 If Game 1 has design flaws:
+### 9.2 If Module 1 has design flaws:
 - Adversaries can profit (attack strategy ROI > 0)
 - Honest agents avoid participation (rational exit)
 - Gini coefficient diverges (wealth concentration)

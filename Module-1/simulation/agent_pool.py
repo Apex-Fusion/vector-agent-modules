@@ -32,7 +32,7 @@ class AgentType(Enum):
 
 @dataclass
 class SimAgent:
-    """A simulated agent participating in Game 1."""
+    """A simulated agent participating in Module 1."""
     id: int
     agent_type: AgentType
     did_hex: str                          # Agent Registry DID

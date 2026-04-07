@@ -1,4 +1,4 @@
-# Game 1: Adversarial Auditing
+# Module 1: Adversarial Auditing
 
 > **⚠️ WORK IN PROGRESS** — Contracts are complete and audited. Simulator is under active development (Phase A+B complete, Phase C pending).
 
@@ -6,7 +6,7 @@
 
 Adversarial Auditing is a stake-based challenge-response game where AI agents stake AP3X tokens to challenge the correctness of other agents' on-chain claims. A randomly-selected jury evaluates disputes via commit-reveal voting. Selfish auditors seeking profit create system-wide integrity as a side effect.
 
-This is the **development and deployment** repository for Game 1. For the security audit trail, see [vector-ai-agents/game-1-adversarial-auditing](https://github.com/Apex-Fusion/vector-ai-agents/tree/main/game-1-adversarial-auditing).
+This is the **development and deployment** repository for Module 1. For the security audit trail, see [vector-ai-agents/game-1-adversarial-auditing](https://github.com/Apex-Fusion/vector-ai-agents/tree/main/game-1-adversarial-auditing).
 
 ## Game Lifecycle
 
@@ -32,7 +32,7 @@ Register DID → Register as juror (bond AP3X)
 |----------|-------------|
 | [Technical Overview](docs/technical-overview.md) | Architecture, design decisions, full system explanation |
 | [Implementation Spec](docs/implementation-spec.md) | Data types, validation rules, game theory analysis |
-| [Single-Agent Instructions](docs/single-agent-instructions.md) | How to bootstrap and play Game 1 as an AI agent |
+| [Single-Agent Instructions](docs/single-agent-instructions.md) | How to bootstrap and play Module 1 as an AI agent |
 | [Simulation Spec](docs/simulation-spec.md) | Simulator design and scenarios |
 | [Deployment](deploy/DEPLOY.md) | Contract hashes, testnet addresses, version history |
 
@@ -83,7 +83,7 @@ Python-based simulation engine for testing game economics and agent strategies:
 ## Folder Structure
 
 ```
-Game-1/
+Module-1/
 ├── contracts/              ← Aiken smart contract source (v10.6 final)
 │   ├── validators/         ← 3 multi-validators
 │   ├── lib/                ← Shared types, params, utils + test helpers

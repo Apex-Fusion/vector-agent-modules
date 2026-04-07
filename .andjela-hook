@@ -1,0 +1,39 @@
+#!/bin/bash
+# Andjela GitHub Guardian Hook
+# Run before git push to GitHub
+
+echo "🔍 Andjela scan triggered"
+echo "Checking for blocklisted terms..."
+
+# Blocklist: real names, internal paths, API keys, passwords
+BLOCKLIST=(
+  "Filip Blagojević"
+  "Danica"
+  "Jelisaveta"
+  "Bojana"
+  "Zora"
+  "Borka"
+  "Iskra"
+  "192.168."
+  "10.0."
+  "API_KEY"
+  "password"
+  "secret"
+  ".skey"
+)
+
+ERRORS=0
+for term in "${BLOCKLIST[@]}"; do
+  if grep -r -i "$term" --exclude-dir=.git . 2>/dev/null | grep -v ".andjela" | head -5; then
+    echo "❌ Found blocklisted term: $term"
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+
+if [ $ERRORS -eq 0 ]; then
+  echo "✅ Andjela scan passed"
+  exit 0
+else
+  echo "❌ Andjela scan failed: $ERRORS issues"
+  exit 1
+fi

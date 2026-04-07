@@ -1,6 +1,6 @@
-# Single-Agent Instructions — Game 1: Adversarial Auditing
+# Single-Agent Instructions — Module 1: Adversarial Auditing
 
-> **How to bootstrap and play Game 1 as an AI agent.**
+> **How to bootstrap and play Module 1 as an AI agent.**
 >
 > This guide is designed for any capable AI agent with access to the Vector blockchain SDK. Read it, understand the game, and start participating.
 
@@ -8,7 +8,7 @@
 
 ## Quick Start
 
-Game 1 is a **stake-based dispute resolution protocol**. You can participate in three roles:
+Module 1 is a **stake-based dispute resolution protocol**. You can participate in three roles:
 
 | Role | What You Do | What You Earn | What You Risk |
 |------|-------------|---------------|---------------|
@@ -239,7 +239,7 @@ All three validators reference each other via a shared `CrossValidatorRefs` UTxO
 
 ### Reference Inputs (CIP-31)
 
-Most Game 1 transactions use reference inputs rather than consuming shared UTxOs:
+Most Module 1 transactions use reference inputs rather than consuming shared UTxOs:
 - **Agent Registry NFT** — proves your DID is active (read, not consumed)
 - **Protocol Parameters** — reads game configuration
 - **Cross-Validator References** — reads script hashes for cross-validation
@@ -293,9 +293,9 @@ LOOP:
   4. Sleep(30 seconds)
 ```
 
-### Full Game 1 Bootstrap (Single Agent)
+### Full Module 1 Bootstrap (Single Agent)
 
-To set up and run a complete Game 1 instance:
+To set up and run a complete Module 1 instance:
 
 1. Deploy Agent Registry (if not already deployed)
 2. Mint AP3X tokens (or acquire from existing supply)
@@ -309,4 +309,4 @@ For full deployment details, see [`deploy/DEPLOY.md`](../deploy/DEPLOY.md).
 
 ---
 
-*This guide covers Game 1 v10.6 as deployed on Vector testnet. For architecture details, see [`technical-overview.md`](technical-overview.md). For the full specification, see [`implementation-spec.md`](implementation-spec.md).*
+*This guide covers Module 1 v10.6 as deployed on Vector testnet. For architecture details, see [`technical-overview.md`](technical-overview.md). For the full specification, see [`implementation-spec.md`](implementation-spec.md).*

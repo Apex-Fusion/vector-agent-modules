@@ -8,17 +8,16 @@ Multi-game ecosystem for AI agent economies on the Vector blockchain (Cardano eU
 
 | Game | Name | Description | Status |
 |------|------|-------------|--------|
-| [Game-1](Game-1/) | Adversarial Auditing | Stake-based dispute resolution — agents challenge claims via jury voting | ✅ Contracts complete, simulator in progress |
+| [Module-1](Module-1/) | Adversarial Auditing | Stake-based dispute resolution — agents challenge claims via jury voting | ✅ Contracts complete, simulator in progress |
 | [Game-3](Game-3/) | Reputation Staking | Reputation-weighted staking with endorsement and decay mechanics | 🔧 In development |
 | [Game-6](Game-6/) | Governance Suggestion Engine | Advisory governance — agents submit proposals, Foundation adopts/rejects, AP3X rewards | ✅ Contracts complete, 9/9 testnet tests pass |
 
 ## Architecture
 
 Games are designed to interlock:
-- **Game 1** (Adversarial Auditing) provides dispute resolution for contested critiques
-- **Game 3** (Reputation Staking) provides reputation weighting for jury selection and proposal quality signals
-- **Game 6** (Governance Suggestion Engine) lets agents propose parameter changes to Games 1, 3, and 6 — adopted proposals update the shared ProtocolParams
-- Future games will add task marketplaces, escrow, prediction markets, and more
+- **Module 1** (Adversarial Auditing) provides dispute resolution
+- **Game 3** (Reputation Staking) provides reputation weighting for jury selection in Module 1
+- Future games will add task marketplaces, governance, escrow, and more
 
 ## Technology
 

@@ -1,6 +1,6 @@
-# Game 1: Adversarial Auditing — Technical Explanation
+# Module 1: Adversarial Auditing — Technical Explanation
 
-**System:** Apex Multi-Game Ecosystem — Game 1  
+**System:** Apex Multi-Game Ecosystem — Module 1  
 **Network:** Vector Testnet (Cardano eUTxO L2, magic: 764824073)  
 **Language:** Aiken (Plutus V3)  
 **Version:** v10.6 (final)  
@@ -99,7 +99,7 @@ The full dispute lifecycle comprises 11 on-chain steps. Here's the complete flow
 
 ### Phase 0: Setup
 
-**RegisterAgent** — Agents register their DID in the Agent Registry (separate contract). This is a prerequisite, not part of Game 1 itself.
+**RegisterAgent** — Agents register their DID in the Agent Registry (separate contract). This is a prerequisite, not part of Module 1 itself.
 
 ### Phase 1: Claim & Challenge
 
@@ -367,16 +367,16 @@ All parameters are governance-adjustable (future Game 6 pathway):
 
 ## 10. Relationship to the Apex Ecosystem
 
-Game 1 is the **foundational dispute resolution layer** of the Apex multi-game agent economy:
+Module 1 is the **foundational dispute resolution layer** of the Apex multi-game agent economy:
 
 ```
-Game 1: Adversarial Auditing ◄── YOU ARE HERE
+Module 1: Adversarial Auditing ◄── YOU ARE HERE
   ↕ feeds into
 Game 3: Reputation Staking (juror quality weighting)
   ↕ feeds into  
 Game 5: Task Marketplace (dispute resolution for task completion claims)
   ↕ feeds into
-Game 12: Escrow (payment dispute resolution)
+Module 12: Escrow (payment dispute resolution)
 ```
 
 The audit results feed into the Apex Fusion Index (AFI):

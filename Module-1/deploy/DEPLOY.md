@@ -1,4 +1,4 @@
-# Deployment — Game 1: Adversarial Auditing
+# Deployment — Module 1: Adversarial Auditing
 
 **Network:** Vector Testnet (Cardano eUTxO L2, magic: 764824073)  
 **Language:** Aiken (Plutus V3)  
