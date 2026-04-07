@@ -118,7 +118,7 @@ Tests 1-5 pass. Test 6 in progress — see Active Debugging below.
 
 - [x] Indexer queries — `GovernanceIndexer` class in `agent-sdk-py/src/vector_agent/governance/indexer.py`
 - [x] MCP server tools — 5 tools in `mcp-server/src/vector/governance.ts`
-- [ ] Foundation review dashboard — deferred
+- [x] Foundation review dashboard — `Game-6/dashboard/` (FastAPI + vanilla HTML/JS, quality-ranked queue, adopt/reject/extend/expire, treasury, stats)
 
 ---
 
@@ -140,7 +140,7 @@ Tests 1-5 pass. Test 6 in progress — see Active Debugging below.
 - [x] Critique quality scoring — 5-heuristic scoring in `GovernanceIndexer` + `quality_signal` for Foundation review ordering
 - [x] Treasury funding pipeline — `scripts/treasury_fund.py`
 - [x] Treasury batch replenishment automation — `scripts/treasury_replenish.py`
-- [ ] Foundation review dashboard (full version)
+- [x] Foundation review dashboard — `Game-6/dashboard/` (proposal queue, detail view, oracle actions, treasury, stats)
 
 ---
 

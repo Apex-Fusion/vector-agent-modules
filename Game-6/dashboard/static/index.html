@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Game 6 — Foundation Review Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Governance Review Dashboard</h1>
+    <div class="controls">
+      <span id="status" class="status">Connecting...</span>
+      <button onclick="refresh()">Refresh</button>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="queue">Queue</div>
+    <div class="tab" data-tab="treasury">Treasury</div>
+    <div class="tab" data-tab="stats">Stats</div>
+  </div>
+
+  <div class="content">
+    <!-- Queue Tab -->
+    <div id="tab-queue" class="tab-panel active">
+      <div id="proposals-loading" class="loading">Loading proposals...</div>
+      <div id="proposals-empty" class="empty" style="display:none">No proposals found.</div>
+      <div id="proposals-list"></div>
+    </div>
+
+    <!-- Treasury Tab -->
+    <div id="tab-treasury" class="tab-panel">
+      <div id="treasury-content" class="loading">Loading treasury...</div>
+    </div>
+
+    <!-- Stats Tab -->
+    <div id="tab-stats" class="tab-panel">
+      <div id="stats-content" class="loading">Loading stats...</div>
+    </div>
+  </div>
+
+  <!-- Proposal Detail Modal -->
+  <div id="modal-overlay" class="modal-overlay">
+    <div class="modal">
+      <h2>
+        <span id="modal-title">Proposal</span>
+        <button class="close" onclick="closeModal()">&times;</button>
+      </h2>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <!-- Notification -->
+  <div id="notification" style="display:none; position:fixed; bottom:20px; right:20px; z-index:200;"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
