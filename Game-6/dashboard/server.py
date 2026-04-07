@@ -12,12 +12,26 @@ Usage:
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import sys
+import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+# File logging
+LOG_FILE = Path(__file__).parent / "dashboard.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(),
+    ],
+)
+logger = logging.getLogger("dashboard")
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -342,12 +356,13 @@ async def adopt_proposal(req: AdoptRequest):
     if not target:
         raise HTTPException(404, "Proposal not found")
 
-    proposer_did = target.get("proposer_did", b"")
+    proposer_did = _ensure_did_bytes(target.get("proposer_did", b""))
     activity_ref = await _find_activity_utxo(proposer_did)
     if not activity_ref:
         raise HTTPException(404, "Activity UTxO not found for proposer")
 
     try:
+        logger.info(f"ADOPT: tx={req.tx_hash}#{req.output_index} reward={req.reward_amount} activity={activity_ref}")
         result = await gov_client.validated_adopt_proposal(
             utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
             activity_utxo_ref=activity_ref,
@@ -355,8 +370,10 @@ async def adopt_proposal(req: AdoptRequest):
             reasoning_hash=reasoning_hash,
             reward_amount=req.reward_amount,
         )
+        logger.info(f"ADOPT OK: {result['tx_hash']}")
         return {"status": "ok", "tx_hash": result["tx_hash"], "reward": result["reward"]}
     except Exception as e:
+        logger.error(f"ADOPT FAILED: {traceback.format_exc()}")
         raise HTTPException(500, f"Adopt failed: {e}")
 
 
@@ -368,12 +385,15 @@ async def reject_proposal(req: RejectRequest):
     reasoning_hash = hashlib.blake2b(req.reasoning.encode(), digest_size=32).digest()
 
     try:
+        logger.info(f"REJECT: tx={req.tx_hash}#{req.output_index}")
         result = await gov_client.reject_proposal(
             utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
             reasoning_hash=reasoning_hash,
         )
+        logger.info(f"REJECT OK: {result['tx_hash']}")
         return {"status": "ok", "tx_hash": result["tx_hash"]}
     except Exception as e:
+        logger.error(f"REJECT FAILED: {traceback.format_exc()}")
         raise HTTPException(500, f"Reject failed: {e}")
 
 
@@ -383,12 +403,15 @@ async def extend_review(req: ExtendRequest):
         raise HTTPException(400, "Direct signing not enabled.")
 
     try:
+        logger.info(f"EXTEND: tx={req.tx_hash}#{req.output_index} additional_ms={req.additional_ms}")
         result = await gov_client.extend_review(
             utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
             additional_slots=req.additional_ms,
         )
+        logger.info(f"EXTEND OK: {result['tx_hash']}")
         return {"status": "ok", "tx_hash": result["tx_hash"]}
     except Exception as e:
+        logger.error(f"EXTEND FAILED: {traceback.format_exc()}")
         raise HTTPException(500, f"Extend failed: {e}")
 
 
@@ -399,23 +422,38 @@ async def expire_proposal(req: ExpireRequest):
     if not target:
         raise HTTPException(404, "Proposal not found")
 
-    proposer_did = target.get("proposer_did", b"")
+    proposer_did = _ensure_did_bytes(target.get("proposer_did", b""))
     activity_ref = await _find_activity_utxo(proposer_did)
     if not activity_ref:
         raise HTTPException(404, "Activity UTxO not found for proposer")
 
     try:
+        logger.info(f"EXPIRE: tx={req.tx_hash}#{req.output_index} activity={activity_ref} proposer_did={proposer_did!r}")
         result = await gov_client.validated_expire_proposal(
             utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
             activity_utxo_ref=activity_ref,
             proposer_did=proposer_did,
         )
+        logger.info(f"EXPIRE OK: {result['tx_hash']}")
         return {"status": "ok", "tx_hash": result["tx_hash"]}
     except Exception as e:
+        logger.error(f"EXPIRE FAILED: {traceback.format_exc()}")
         raise HTTPException(500, f"Expire failed: {e}")
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
+def _ensure_did_bytes(did) -> bytes:
+    """Convert proposer_did to bytes. The indexer may return it as a hex string."""
+    if isinstance(did, bytes):
+        return did
+    if isinstance(did, str):
+        try:
+            return bytes.fromhex(did)
+        except ValueError:
+            return did.encode("utf-8")
+    return b""
+
 
 def _find_proposal(proposals, tx_hash, output_index):
     for p in proposals:
