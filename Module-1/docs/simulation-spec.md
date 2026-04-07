@@ -1,6 +1,6 @@
 # Module 1: Adversarial Auditing — Testnet Simulation Specification
 
-**Author:** Jelisaveta  
+**Author:** AI Research Lead  
 **Date:** 2026-03-25  
 **Version:** 1.0  
 **Status:** Draft  

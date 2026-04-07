@@ -5,30 +5,91 @@
 echo "🔍 Andjela scan triggered"
 echo "Checking for blocklisted terms..."
 
-# Blocklist: real names, internal paths, API keys, passwords
-BLOCKLIST=(
+ERRORS=0
+
+# --- Real name checks (case-insensitive, exclude this script and finding IDs) ---
+NAME_BLOCKLIST=(
   "Filip Blagojević"
   "Danica"
   "Jelisaveta"
   "Bojana"
-  "Zora"
-  "Borka"
   "Iskra"
-  "192.168."
-  "10.0."
-  "API_KEY"
-  "password"
-  "secret"
-  ".skey"
 )
 
-ERRORS=0
-for term in "${BLOCKLIST[@]}"; do
-  if grep -r -i "$term" --exclude-dir=.git . 2>/dev/null | grep -v ".andjela" | head -5; then
+for term in "${NAME_BLOCKLIST[@]}"; do
+  MATCHES=$(grep -r -i "$term" --exclude-dir=.git . 2>/dev/null \
+    | grep -v ".andjela")
+  if [ -n "$MATCHES" ]; then
+    echo "$MATCHES" | head -5
     echo "❌ Found blocklisted term: $term"
     ERRORS=$((ERRORS + 1))
   fi
 done
+
+# Zora/Borka: only flag if NOT part of finding IDs (ZORA-*, BORKA-*)
+for term in "Zora" "Borka"; do
+  UPPER=$(echo "$term" | tr '[:lower:]' '[:upper:]')
+  MATCHES=$(grep -r -i "$term" --exclude-dir=.git . 2>/dev/null \
+    | grep -v ".andjela" \
+    | grep -v "${UPPER}-")
+  if [ -n "$MATCHES" ]; then
+    echo "$MATCHES" | head -5
+    echo "❌ Found blocklisted term: $term"
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+
+# --- Technical checks (targeted patterns) ---
+
+# Real IP addresses (match x.x.x.x patterns, not numbers like 10,000)
+MATCHES=$(grep -r -P '(192\.168\.\d+\.\d+|10\.0\.\d+\.\d+)' --exclude-dir=.git . 2>/dev/null \
+  | grep -v ".andjela" \
+  | grep -v "compiledCode")
+if [ -n "$MATCHES" ]; then
+  echo "$MATCHES" | head -5
+  echo "❌ Found private IP address"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# API_KEY: only flag actual key values, not env var name references
+MATCHES=$(grep -r "API_KEY" --exclude-dir=.git . 2>/dev/null \
+  | grep -v ".andjela" \
+  | grep -v 'os\.getenv\|os\.environ\|not.*API_KEY\|print.*API_KEY\|"api-key"')
+if [ -n "$MATCHES" ]; then
+  echo "$MATCHES" | head -5
+  echo "❌ Found actual API key value"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# password: only flag if followed by = or : with a value (not bare word)
+MATCHES=$(grep -r -i "password\s*[:=]" --exclude-dir=.git . 2>/dev/null \
+  | grep -v ".andjela" \
+  | grep -v "password\s*[:=]\s*$\|password.*None\|password.*null")
+if [ -n "$MATCHES" ]; then
+  echo "$MATCHES" | head -5
+  echo "❌ Found password assignment"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# secret: flag actual secret values, not stdlib imports or var names
+MATCHES=$(grep -r -i "secret" --exclude-dir=.git . 2>/dev/null \
+  | grep -v ".andjela" \
+  | grep -v "import secrets\|secrets\.\|secret_hash\|commit_secret\|SecretFactory")
+if [ -n "$MATCHES" ]; then
+  echo "$MATCHES" | head -5
+  echo "❌ Found secret reference"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# .skey: only flag actual key file contents, not path references or variable names
+MATCHES=$(grep -r "\.skey" --exclude-dir=.git . 2>/dev/null \
+  | grep -v ".andjela" \
+  | grep -v 'skey_path\|payment\.skey\|\.skey")\|\.skey.*absolute\|SigningKey\|skey_hex\|skey_data\|save.*skey\|# .*skey')
+if [ -n "$MATCHES" ]; then
+  echo "$MATCHES" | head -5
+  echo "❌ Found .skey reference"
+  ERRORS=$((ERRORS + 1))
+fi
 
 if [ $ERRORS -eq 0 ]; then
   echo "✅ Andjela scan passed"

@@ -551,10 +551,10 @@ The contract suite was subjected to a structured multi-agent security audit span
 
 | Role | Responsibility |
 |------|----------------|
-| **Contract Author (Iskra)** | Implementation and remediation across 10 versions |
-| **Code Reviewer (Zora)** | Static analysis: 6 independent review passes |
-| **Red Team Specialist (Borka)** | Adversarial analysis: 4 red-team engagements |
-| **Test Engineer (Bojana)** | 213 Aiken unit tests + 8 Python stateful lifecycle tests |
+| **Contract Author (CA)** | Implementation and remediation across 10 versions |
+| **Code Reviewer (CR)** | Static analysis: 6 independent review passes |
+| **Red Team Specialist (RT)** | Adversarial analysis: 4 red-team engagements |
+| **Test Engineer (TE)** | 213 Aiken unit tests + 8 Python stateful lifecycle tests |
 
 Each review cycle followed a fixed protocol: (1) static analysis producing a finding report with CVSS-analogous severity classifications, (2) author remediation of all blocking findings, (3) red-team adversarial analysis with explicit exploit construction attempts, (4) author remediation of new findings, (5) joint verification, (6) regression test extension. This cycle iterated 6 times, producing an audit trail of formal finding cards and six independent review reports.
 
@@ -570,18 +570,18 @@ A total of 16 security findings were identified across the v1–v10.6 lifecycle.
 | F-003 | Challenge token name derivation mismatch (Aiken vs Python CBOR encoding) | Critical | Lifecycle test | v4 |
 | F-004 | Active case / challenge ref mismatch in 2-TX flow | Critical | Lifecycle test | v4 |
 | F-005 | Seconds/milliseconds time constant confusion — effective window 1.8 s | Critical | Lifecycle test | v4 |
-| ZORA-v10-F1 | ForfeitClaim gate: Resolved state not verified, only spent | Critical | Zora | v10.1 |
-| BORKA-001 | Fake Resolved output bypass in ForfeitClaim | Critical | Borka | v10.2 |
-| BORKA-002 | ResolveJury accepts unauthenticated votes from redeemer | Critical | Borka | v10.2 |
+| ZORA-v10-F1 | ForfeitClaim gate: Resolved state not verified, only spent | Critical | CR | v10.1 |
+| BORKA-001 | Fake Resolved output bypass in ForfeitClaim | Critical | RT | v10.2 |
+| BORKA-002 | ResolveJury accepts unauthenticated votes from redeemer | Critical | RT | v10.2 |
 | F-006 | CrossValidatorRefs poisoning via AP3X policy collision | High | Red team | v4 |
-| BORKA-008 | Vote fabrication via redeemer manipulation | High | Borka | v10.2 |
+| BORKA-008 | Vote fabrication via redeemer manipulation | High | RT | v10.2 |
 | F-002 | DistributeRewards unreachable (challenge burned before distribution) | Medium | Lifecycle test | v10 |
-| ZORA-CR-01 | Commit-reveal timing enforcement absent | Medium | Zora | v10.3 |
-| ZORA-CR-02 | Juror token authentication in commit/reveal missing | Medium | Zora | v10.3 |
-| ZORA-P11-01 | SelectJury did not require Voting state | Medium | Zora | v10.6 |
-| BORKA-V5 | Minimum pool size not enforced at SelectJury | Low | Borka | v10.6 |
-| ZORA-P11-04 | CleanupResolved juror protection absent | Low | Zora | v10.6 |
-| BORKA-V7 | Cleanup buffer timing not enforced | Low | Borka | v10.6 |
+| ZORA-CR-01 | Commit-reveal timing enforcement absent | Medium | CR | v10.3 |
+| ZORA-CR-02 | Juror token authentication in commit/reveal missing | Medium | CR | v10.3 |
+| ZORA-P11-01 | SelectJury did not require Voting state | Medium | CR | v10.6 |
+| BORKA-V5 | Minimum pool size not enforced at SelectJury | Low | RT | v10.6 |
+| ZORA-P11-04 | CleanupResolved juror protection absent | Low | CR | v10.6 |
+| BORKA-V7 | Cleanup buffer timing not enforced | Low | RT | v10.6 |
 
 ### 6.3 Critical Finding Analysis
 
@@ -595,9 +595,9 @@ A total of 16 security findings were identified across the v1–v10.6 lifecycle.
 
 Two game-theoretic risks were accepted as inherent to the current design:
 
-**PRNG Seed Grinding.** The jury selection seed is derived from the challenge token name, which is fixed at `OpenChallenge` creation time. An adversary with sufficient computation can enumerate output references until they find a seed that selects a favorable jury configuration. Borka's analysis classified this as INCONCLUSIVE — economically feasible for high-value claims but requiring significant block-timing manipulation. The accepted mitigation is economic: the grinding cost must exceed the expected gain from a rigged jury. The documented upgrade path replaces the PRNG with an on-chain VRF (Verifiable Random Function) using block hash incorporation, available in a future phase.
+**PRNG Seed Grinding.** The jury selection seed is derived from the challenge token name, which is fixed at `OpenChallenge` creation time. An adversary with sufficient computation can enumerate output references until they find a seed that selects a favorable jury configuration. RT's analysis classified this as INCONCLUSIVE — economically feasible for high-value claims but requiring significant block-timing manipulation. The accepted mitigation is economic: the grinding cost must exceed the expected gain from a rigged jury. The documented upgrade path replaces the PRNG with an on-chain VRF (Verifiable Random Function) using block hash incorporation, available in a future phase.
 
-**Juror Collusion.** A coordinated supermajority of selected jurors can control any verdict, regardless of claim validity. This is inherent to any n-of-m voting system and is not a code vulnerability. Borka confirmed this as exploitable in economic analysis (colluding jurors can extract stake by coordinating false verdicts). The mitigations are systemic: larger jury pools dilute coordination probability; Module 3 Reputation Staking adds a reputation cost to collusion; the commit-reveal protocol prevents synchronization of votes in the same transaction.
+**Juror Collusion.** A coordinated supermajority of selected jurors can control any verdict, regardless of claim validity. This is inherent to any n-of-m voting system and is not a code vulnerability. RT confirmed this as exploitable in economic analysis (colluding jurors can extract stake by coordinating false verdicts). The mitigations are systemic: larger jury pools dilute coordination probability; Module 3 Reputation Staking adds a reputation cost to collusion; the commit-reveal protocol prevents synchronization of votes in the same transaction.
 
 ### 6.5 Test Coverage
 

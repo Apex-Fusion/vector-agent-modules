@@ -1,7 +1,7 @@
 # Module 6: Governance Suggestion Engine — Implementation Specification
 
 **Status**: DRAFT v0.4
-**Author**: Filip Blagojević, with AI-assisted design
+**Author**: Lead Author, with AI-assisted design
 **Date**: 2026-03-20
 **Dependencies**: Agent Registry contract (deployed), Module 1: Adversarial Auditing (for dispute resolution), Module 3: Reputation Staking (for proposer credibility)
 **Phase**: 1 (Traction — requires ~5 active agents)
