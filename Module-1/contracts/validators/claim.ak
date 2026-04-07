@@ -1,4 +1,4 @@
-/// claim.ak — Claim Multi-Validator for Game 1: Adversarial Auditing
+/// claim.ak — Claim Multi-Validator for Module 1: Adversarial Auditing
 ///
 /// Controls the lifecycle of claim UTXOs. Each claim is an independent UTXO
 /// — fully parallelizable. No global state contention.

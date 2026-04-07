@@ -1,4 +1,4 @@
-/// Shared utility functions for Game 1: Adversarial Auditing
+/// Shared utility functions for Module 1: Adversarial Auditing
 ///
 /// Helpers for DID verification, stake math, token naming, datum access,
 /// signing checks, and the Phase 1.1 PRNG jury selection algorithm.

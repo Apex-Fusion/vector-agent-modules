@@ -1,4 +1,4 @@
-/// integration_tests.ak — Full lifecycle tests for Game 1: Adversarial Auditing
+/// integration_tests.ak — Full lifecycle tests for Module 1: Adversarial Auditing
 ///
 /// Tests the complete flows end-to-end:
 ///   - Happy path: SubmitClaim → WithdrawClaim (no challenge)

@@ -1,4 +1,4 @@
-/// Protocol parameters for Game 1: Adversarial Auditing
+/// Protocol parameters for Module 1: Adversarial Auditing
 ///
 /// All parameters are governance-adjustable (Game 6 pathway).
 /// Stored in a reference UTXO at a governance-controlled address.

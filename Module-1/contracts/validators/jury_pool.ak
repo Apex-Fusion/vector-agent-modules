@@ -1,4 +1,4 @@
-/// jury_pool.ak — Jury Pool Multi-Validator for Game 1: Adversarial Auditing
+/// jury_pool.ak — Jury Pool Multi-Validator for Module 1: Adversarial Auditing
 ///
 /// Controls juror registration, selection, voting, and reward distribution.
 ///

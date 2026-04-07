@@ -1,4 +1,4 @@
-/// challenge.ak — Challenge Multi-Validator for Game 1: Adversarial Auditing
+/// challenge.ak — Challenge Multi-Validator for Module 1: Adversarial Auditing
 ///
 /// Controls the lifecycle of challenge UTXOs.
 /// Each challenge is an independent UTXO referencing a specific claim.
