@@ -2,7 +2,7 @@
 
 let pollInterval = null;
 const POLL_MS = 30000;
-const EXPLORER = 'https://vector.testnet.apexscan.org';
+const EXPLORER = 'https://vector.testnet.apexscan.org/en/transaction';
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
@@ -351,7 +351,7 @@ async function viewProposal(txHash, outputIndex) {
         <dt>State</dt><dd>${p.state}</dd>
         <dt>Document</dt><dd><a href="${p.storage_uri || '#'}" target="_blank">${p.storage_uri || 'none'} &#8599;</a></dd>
         <dt>Proposal hash</dt><dd style="font-family:monospace;font-size:12px">${p.proposal_hash || ''}</dd>
-        <dt>UTxO</dt><dd style="font-family:monospace;font-size:12px"><a href="${EXPLORER}/tx/${txHash}" target="_blank">${shortHash(txHash)}#${outputIndex}</a></dd>
+        <dt>UTxO</dt><dd style="font-family:monospace;font-size:12px"><a href="${EXPLORER}/${txHash}" target="_blank">${shortHash(txHash)}#${outputIndex}</a></dd>
       </dl>
 
       <hr class="section-divider">
