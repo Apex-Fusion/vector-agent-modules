@@ -488,6 +488,11 @@ async def _find_activity_utxo(proposer_did):
             for pid, assets in u.output.amount.multi_asset.items():
                 for aname in assets:
                     if aname.payload[:5] == b"pact_":
+                        # Must have count >= 1 so expire can decrement to >= 0
+                        if u.output.datum:
+                            count = u.output.datum.data.value[2]
+                            if count < 1:
+                                continue
                         return {
                             "tx_hash": str(u.input.transaction_id),
                             "output_index": u.input.index,
