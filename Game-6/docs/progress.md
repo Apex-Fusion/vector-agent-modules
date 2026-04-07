@@ -144,13 +144,38 @@ Tests 1-5 pass. Test 6 in progress — see Active Debugging below.
 
 ---
 
+## Foundation Review Dashboard (2026-04-07)
+
+### Features
+
+- [x] FastAPI backend with REST API (`Game-6/dashboard/server.py`)
+- [x] Quality-ranked proposal queue — proposals sorted by quality_signal (reputation, endorsements, controversy, track record)
+- [x] Emergency proposals highlighted with countdown timer
+- [x] Proposal detail modal — critiques, endorsements, proposer track record, reward calculator
+- [x] One-click oracle actions — adopt (with reward amount), reject, extend review, expire
+- [x] Treasury view — batch count, total balance, runway estimate
+- [x] Governance stats — adoption rate, proposal counts, chain health
+- [x] Auto-poll every 30 seconds
+- [x] Dual signing mode — `direct` (skey on server, testnet) / `external` (unsigned tx export, production)
+- [x] File logging (`dashboard.log`) for debugging action failures
+- [x] Orphan filtering — tokenless lock-only proposals excluded from all views
+- [x] Activity UTxO selection — picks activity with `count >= 1` for expire/adopt
+
+### Infrastructure (2026-04-06)
+
+- [x] Recreated GovernanceParams, Oracle, CrossRefs NFT UTxOs (`scripts/recreate_infra.py`) — all 3 holder addresses had 0 UTxOs
+- [x] Redeployed GovernanceParams UTXO with corrected POSIX ms values (`scripts/update_params.py`)
+- [x] Full smoke test re-run (8/8 pass) with temporarily lowered cooldown, then restored to 24h
+
+---
+
 ## Phase 1.2 — Prediction Market & Accountability (deferred)
 
 Types defined, logic not implemented.
 
 ---
 
-## Bug History (15 bugs found and fixed)
+## Bug History (18 bugs found and fixed)
 
 | Bug | Issue | Fix | Status |
 |-----|-------|-----|--------|
@@ -169,10 +194,13 @@ Types defined, logic not implemented.
 | M | **Oracle datum crash on CrossRefs**: `verify_oracle_signature` crashed parsing CrossRefs NFT datum as `GovernanceOracleDatum` when both sit at oracle holder address | Added `is_oracle_datum` field-count guard in `shared/oracle.ak` | Fixed |
 | N | **Redeploy CrossRefs target**: `redeploy_proposal.py` minted CrossRefs NFT at wallet instead of oracle holder — smoke test found stale CrossRefs | Added `target_address=oracle_holder_addr` to redeploy script | Fixed |
 | O | **Temporal units mismatch**: Bug F converted `submitted_at` to POSIX ms, but Bug G kept `review_window` in raw slots/seconds. On-chain expire check `current_slot > submitted_at + review_window` added ~604,800 to ~1.77 trillion ms — effective review window was ~10 minutes instead of ~7 days. All temporal GovernanceParams fields affected: `min_review_window`, `max_review_window`, `proposal_cooldown`, `emergency_review_window`, `param_execution_delay` | Converted all temporal GovernanceParams values and SDK defaults to POSIX ms. Updated `datums.py`, `client.py`, `params.ak`, and all test fixtures. Redeployed GovernanceParams UTXO with corrected values. | Fixed |
+| P | **Dashboard proposer_did hex→bytes**: Indexer returned `proposer_did` as hex string; SDK's `_activity_token_name()` encoded hex chars as UTF-8, producing wrong token name → `InputUTxODepletedException` during coin selection | Added `_ensure_did_bytes()` in `server.py` to convert hex strings from indexer back to raw bytes before passing to `GovernanceClient` | Fixed |
+| Q | **Orphaned tokenless proposals**: Proposals created via simple `submit_proposal()` (smoke test Phase 1) had no `prop_*` token. Dashboard showed them; clicking expire failed with "No proposal token found". These UTxOs are permanently locked (no validator recovery path). | Added `has_proposal_token` field to `GovernanceIndexer`; dashboard filters out tokenless UTxOs from all views | Fixed |
+| R | **Activity UTxO count=0**: `_find_activity_utxo()` picked the first `pact_` UTxO it found, which could have `count=0` (already decremented from prior expire). Expire tried to decrement to -1, failing validator's `active_proposal_count >= 0` check | Skip activity UTxOs with `count < 1` in `_find_activity_utxo()` | Fixed |
 
 ### Smoke Test Results (2026-04-06)
 
-Tests 1-8: **PASS** (8/8)
+Tests 1-8: **PASS** (8/8) — full re-run with temporarily lowered cooldown (1s), then restored to 24h
 Test 9: **PASS** — `test_expire_e2e.py` full lifecycle: submit → wait → expire (tx `f4acccac91edd7dc...`)
 
 All 9/9 tests pass.
