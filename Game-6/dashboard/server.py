@@ -218,6 +218,9 @@ class ExpireRequest(BaseModel):
 async def get_proposals(state: str | None = None, type: str | None = None):
     proposals = await gov_indexer.get_proposals(state=state, proposal_type=type)
 
+    # Filter out orphaned UTxOs (lock-only, no proposal token)
+    proposals = [p for p in proposals if p.get("has_proposal_token", True)]
+
     # Compute quality signal for each
     for p in proposals:
         try:
@@ -250,7 +253,7 @@ async def get_proposal_detail(tx_hash: str, output_index: int):
             target = p
             break
 
-    if not target:
+    if not target or not target.get("has_proposal_token", True):
         raise HTTPException(status_code=404, detail="Proposal not found")
 
     # Quality signal
@@ -292,6 +295,7 @@ async def get_treasury():
 @app.get("/api/stats")
 async def get_stats():
     all_proposals = await gov_indexer.get_proposals()
+    all_proposals = [p for p in all_proposals if p.get("has_proposal_token", True)]
 
     by_state = {}
     unique_proposers = set()
