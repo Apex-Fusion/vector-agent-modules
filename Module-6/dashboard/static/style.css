@@ -121,6 +121,20 @@ button.warn:hover { background: var(--yellow); }
   font-weight: 600;
 }
 
+.card-type {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+.card-summary {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
 .card-meta {
   display: flex;
   gap: 16px;

@@ -371,12 +371,18 @@ function qualityClass(q) {
 
 function proposalTypeLabel(p) {
   const t = p.proposal_type || 'Unknown';
-  if (t === 'ParameterChange') {
-    const params = p.type_params || {};
-    return `Parameter: ${params.param_name || '?'} &rarr; ${params.new_value || '?'}`;
-  }
-  if (t === 'TreasurySpend') return `Treasury: ${((p.type_params || {}).amount || 0) / 1000000} AP3X`;
   return t.replace(/([A-Z])/g, ' $1').trim();
+}
+
+function proposalTitle(p) {
+  if (p.ipfs_title) return escapeHtml(p.ipfs_title);
+  return proposalTypeLabel(p);
+}
+
+function proposalSummary(p) {
+  if (!p.ipfs_summary) return '';
+  const s = p.ipfs_summary.length > 140 ? p.ipfs_summary.slice(0, 140) + '...' : p.ipfs_summary;
+  return escapeHtml(s);
 }
 
 function shortDid(did) {
@@ -395,21 +401,22 @@ function renderCard(p, isEmergency) {
   const cs = p.critique_summary || {};
   const ref = p.utxo_ref || {};
 
+  const summary = proposalSummary(p);
+
   return `
     <div class="card ${isEmergency ? 'emergency' : ''}">
       <div class="card-header">
-        <div class="card-title">${proposalTypeLabel(p)}</div>
+        <div class="card-title">${proposalTitle(p)}</div>
         <span class="quality-badge ${qualityClass(p.quality_signal)} has-tooltip" data-tip="${escapeHtml(TIPS['Quality Signal'])}">${q}</span>
       </div>
+      ${p.ipfs_title ? `<div class="card-type">${proposalTypeLabel(p)}</div>` : ''}
+      ${summary ? `<div class="card-summary">${summary}</div>` : ''}
       <div class="card-meta">
         <span>Stake: ${(p.stake_amount || 0) / 1000000} AP3X</span>
         <span class="time-remaining ${tr.cls}">${tr.text}</span>
         <span>Critiques: ${cs.supporting_critiques || 0}S / ${cs.opposing_critiques || 0}O</span>
         <span>Endorsements: ${cs.endorsement_count || 0}</span>
         <span>Proposer: ${shortDid(p.proposer_did)}</span>
-      </div>
-      <div class="card-meta">
-        <span>URI: <a href="${ipfsHttpUrl(p.storage_uri)}" target="_blank">${p.storage_uri || 'none'}</a></span>
       </div>
       <div class="card-actions">
         <button onclick="viewProposal('${ref.tx_hash}', ${ref.output_index})">View Details</button>
@@ -423,7 +430,7 @@ function renderExpiredCard(p) {
   return `
     <div class="card">
       <div class="card-header">
-        <div class="card-title">${proposalTypeLabel(p)}</div>
+        <div class="card-title">${proposalTitle(p)}</div>
         <span class="quality-badge quality-low">expired</span>
       </div>
       <div class="card-meta">
@@ -443,7 +450,7 @@ function renderTerminalCard(p) {
   return `
     <div class="card">
       <div class="card-header">
-        <div class="card-title">${proposalTypeLabel(p)}</div>
+        <div class="card-title">${proposalTitle(p)}</div>
         <span class="quality-badge ${stateClass}">${p.state}</span>
       </div>
       <div class="card-meta">
@@ -563,6 +570,8 @@ async function loadTimeline() {
 
 function relativeTime(ts) {
   if (!ts) return 'unknown';
+  // Slot numbers are < 1 trillion; POSIX ms timestamps are > 1 trillion
+  if (ts < 1_000_000_000_000) return `slot ${ts.toLocaleString()}`;
   const diff = Date.now() - ts;
   if (diff < 0) return 'just now';
   const mins = Math.floor(diff / 60000);

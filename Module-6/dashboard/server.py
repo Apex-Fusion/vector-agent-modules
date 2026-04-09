@@ -1,5 +1,5 @@
 """
-Vector Governance Explorer — API Server
+Self-Improvement Dashboard — API Server
 
 FastAPI backend serving the public governance explorer dashboard.
 Connects to Vector testnet via the governance SDK.
@@ -101,7 +101,7 @@ async def lifespan(app: FastAPI):
     await shutdown()
 
 
-app = FastAPI(title="Vector Governance Explorer", lifespan=lifespan)
+app = FastAPI(title="Self-Improvement Dashboard", lifespan=lifespan)
 
 # Serve static files
 STATIC_DIR = Path(__file__).parent / "static"
@@ -111,6 +111,47 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/")
 async def index():
     return FileResponse(str(STATIC_DIR / "index.html"))
+
+
+# ── IPFS title cache ───────────────────────────────────────────────────────
+
+_ipfs_cache: dict[str, dict] = {}  # CID -> {"title": ..., "summary": ...}
+
+IPFS_GATEWAYS = [
+    "https://ipfs.filebase.io/ipfs/",
+    "https://ipfs.io/ipfs/",
+    "https://cloudflare-ipfs.com/ipfs/",
+    "https://dweb.link/ipfs/",
+]
+
+
+async def _fetch_ipfs_meta(storage_uri: str) -> dict:
+    """Fetch title and summary from an IPFS document. Returns cached result if available."""
+    if not storage_uri or not storage_uri.startswith("ipfs://"):
+        return {}
+    cid = storage_uri.replace("ipfs://", "")
+    if cid in _ipfs_cache:
+        return _ipfs_cache[cid]
+
+    import httpx
+
+    for gw in IPFS_GATEWAYS:
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(gw + cid)
+                if resp.status_code == 200:
+                    doc = resp.json()
+                    meta = {
+                        "title": doc.get("title", ""),
+                        "summary": doc.get("summary", ""),
+                    }
+                    _ipfs_cache[cid] = meta
+                    return meta
+        except Exception:
+            continue
+
+    _ipfs_cache[cid] = {}
+    return {}
 
 
 # ── Read-only Endpoints ────────────────────────────────────────────────────
@@ -136,6 +177,19 @@ async def get_proposals(state: str | None = None, type: str | None = None):
             p["critique_summary"] = signal
         except Exception:
             p["critique_summary"] = {}
+
+    # Fetch IPFS titles/summaries in parallel
+    import asyncio
+
+    async def _enrich(p):
+        uri = p.get("storage_uri", "")
+        if isinstance(uri, bytes):
+            uri = uri.decode("utf-8", errors="replace")
+        meta = await _fetch_ipfs_meta(uri)
+        p["ipfs_title"] = meta.get("title", "")
+        p["ipfs_summary"] = meta.get("summary", "")
+
+    await asyncio.gather(*[_enrich(p) for p in proposals], return_exceptions=True)
 
     proposals.sort(key=lambda p: p.get("quality_signal", 0), reverse=True)
 
