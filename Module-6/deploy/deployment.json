@@ -2,6 +2,18 @@
   "version": "v6",
   "network": "vector-testnet",
   "date": "2026-04-06",
+  "endpoints": {
+    "ogmios": "https://ogmios.vector.testnet.apexfusion.org",
+    "submit": "https://submit.vector.testnet.apexfusion.org/api/submit/tx",
+    "koios": "https://v2.koios.vector.testnet.apexfusion.org/",
+    "explorer": "https://vector.testnet.apexscan.org",
+    "faucet": "https://faucet.vector.testnet.apexfusion.org/faucet/request"
+  },
+  "addresses": {
+    "proposal_spend": "addr1wxn5l324axcy262mux3xhhy3x95pa7ntv9ecgyatnvk8afq0g8924",
+    "critique_spend": "addr1w8mg4qa5y34u7hzsgzqp2cxrvlpuhvclh4np0ksh0ucsw24cqprgx",
+    "endorsement_spend": "addr1w9073fyfr2cpusg0090ztjk0etd8rwh0904yl9yqvzhxd5ag6lq57"
+  },
   "hashes": {
     "proposal_spend": "a74fc555e9b045695be1a26bdc9131681efa6b61738413ab9b2c7ea4",
     "proposal_mint": "e8f38052352a3d20c5fe025e2a02d615826a154b26f2239286b8d565",

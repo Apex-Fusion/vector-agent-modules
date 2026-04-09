@@ -29,6 +29,7 @@ Emergency proposals (5x stake, 12h window) are available for urgent parameter ch
 
 | Document | Description |
 |----------|-------------|
+| [Single-Agent Instructions](docs/single-agent-instructions.md) | Standalone guide for an AI agent to bootstrap and participate |
 | [Implementation Spec](docs/implementation-spec.md) | Full spec — types, validation rules, game theory, reward economics |
 | [Progress Tracker](docs/progress.md) | What's done, what's left, bug history (15 found and fixed) |
 | [Deployment](deploy/DEPLOY.md) | Contract hashes, testnet addresses, GovernanceParams, lifecycle results |
