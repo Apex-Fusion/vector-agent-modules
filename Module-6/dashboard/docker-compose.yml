@@ -1,0 +1,27 @@
+services:
+  traefik:
+    image: traefik:v3.2
+    environment:
+      - DOCKER_API_VERSION=1.45
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--accesslog=true"
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`module-6.vector.testnet.apexfusion.org`)"
+      - "traefik.http.routers.dashboard.entrypoints=web"
+      - "traefik.http.services.dashboard.loadbalancer.server.port=8000"
+    environment:
+      - VECTOR_OGMIOS_URL=https://ogmios.vector.testnet.apexfusion.org
+      - GOVERNANCE_WALLET_ADDRESS=addr1vxt9kdayzu20uyjju4mc0eyrd68dnudwey5wnauqgrw9vmqlz2935
+    restart: unless-stopped

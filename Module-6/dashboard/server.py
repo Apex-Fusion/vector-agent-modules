@@ -34,116 +34,53 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-# Add SDK and Module-6 root to path
-GAME6_ROOT = Path(__file__).parent.parent
+# Module root: defaults to parent.parent for local dev, override with GAME6_ROOT for Docker
+GAME6_ROOT = Path(os.getenv("GAME6_ROOT", str(Path(__file__).parent.parent)))
 sys.path.insert(0, str(GAME6_ROOT))
 load_dotenv(GAME6_ROOT / ".env")
 
-DEPLOY_STATE_FILE = GAME6_ROOT / "wallets" / "deploy_state.json"
-SKEY_PATH = GAME6_ROOT / "wallets" / "payment.skey"
+DEPLOY_STATE_FILE = GAME6_ROOT / "deploy" / "deployment.json"
 
 # ── Global state ────────────────────────────────────────────────────────────
 
-agent = None
-gov_client = None
+chain_context = None
+ogmios_client = None
 gov_indexer = None
 deploy_state = None
+governance_wallet_address = None
 
 
 async def startup():
-    global agent, gov_client, gov_indexer, deploy_state
+    global chain_context, ogmios_client, gov_indexer, deploy_state, governance_wallet_address
 
-    from vector_agent import VectorAgent
-    from vector_agent.governance import GovernanceClient
+    from vector_agent.chain.ogmios import OgmiosClient
+    from vector_agent.chain.submit import SubmitClient
+    from vector_agent.chain.context import VectorChainContext
     from vector_agent.governance.indexer import GovernanceIndexer
 
     deploy_state = json.load(open(DEPLOY_STATE_FILE))
-    validators = deploy_state.get("validators", {})
+    endpoints = deploy_state.get("endpoints", {})
+    hashes = deploy_state.get("hashes", {})
     holders = deploy_state.get("holders", {})
 
-    ogmios_url = deploy_state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
-    submit_url = deploy_state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
-    skey_path = str(SKEY_PATH.absolute()) if SKEY_PATH.exists() else None
+    ogmios_url = os.getenv("VECTOR_OGMIOS_URL", endpoints.get("ogmios", ""))
+    submit_url = os.getenv("VECTOR_SUBMIT_URL", endpoints.get("submit", ""))
 
-    agent = VectorAgent(
-        ogmios_url=ogmios_url,
-        submit_url=submit_url,
-        skey_path=skey_path,
-    )
-    await agent.__aenter__()
+    ogmios_client = OgmiosClient(ogmios_url)
+    submit_client = SubmitClient(submit_url) if submit_url else SubmitClient(ogmios_url)
+    chain_context = VectorChainContext(ogmios_client, submit_client)
 
-    proposal_cbor = validators.get("proposal.proposal_spend.spend", {}).get("compiled_code", "")
-    proposal_mint_cbor = validators.get("proposal.proposal_mint.mint", {}).get("compiled_code", "")
-    critique_cbor = validators.get("critique.critique_spend.spend", {}).get("compiled_code", "")
-    endorsement_cbor = validators.get("critique.endorsement_spend.spend", {}).get("compiled_code", "")
+    # Governance wallet address for balance display (optional env var)
+    governance_wallet_address = os.getenv("GOVERNANCE_WALLET_ADDRESS", "")
 
-    gov_client = GovernanceClient(
-        agent,
-        proposal_script_cbor=proposal_cbor,
-        proposal_mint_cbor=proposal_mint_cbor,
-        critique_script_cbor=critique_cbor,
-        endorsement_script_cbor=endorsement_cbor,
-    )
-
-    # Configure reference inputs
-    ref_inputs = []
-    tx_hashes = deploy_state.get("tx_hashes", {})
-    refs_policy = deploy_state.get("refs_token_policy", "")
-
-    from pycardano import Address as PycAddr
-
-    for holder_name, utxo_key in [("params", "params_utxo"), ("oracle", "oracle_utxo")]:
-        addr = holders.get(holder_name, {}).get("address", "")
-        expected_tx = tx_hashes.get(utxo_key, "")
-        if addr and expected_tx:
-            try:
-                utxos = await agent.context.async_utxos(PycAddr.from_primitive(addr))
-                for u in utxos:
-                    if u.output.datum is not None:
-                        tx_hash = str(u.input.transaction_id)
-                        if tx_hash == expected_tx:
-                            ref_inputs.append({"tx_hash": tx_hash, "output_index": u.input.index, "address": addr})
-                            break
-            except Exception:
-                pass
-
-    # CrossRefs NFT
-    oracle_addr = holders.get("oracle", {}).get("address", "")
-    if oracle_addr:
-        try:
-            utxos = await agent.context.async_utxos(PycAddr.from_primitive(oracle_addr))
-            for u in utxos:
-                if hasattr(u.output.amount, 'multi_asset') and u.output.amount.multi_asset:
-                    for pid in u.output.amount.multi_asset:
-                        if pid.payload.hex() == refs_policy:
-                            ref_inputs.append({
-                                "tx_hash": str(u.input.transaction_id),
-                                "output_index": u.input.index,
-                                "address": oracle_addr,
-                            })
-                            break
-        except Exception:
-            pass
-
-    if ref_inputs:
-        gov_client.set_governance_reference_inputs(ref_inputs)
-
-    # Reference script for CIP-33
-    proposal_spend_ref_tx = tx_hashes.get("proposal_spend_ref", "")
-    if proposal_spend_ref_tx:
-        wallet = json.load(open(GAME6_ROOT / "wallets" / "governance_wallet.json"))
-        gov_client.set_reference_utxos({
-            "proposal": {"tx_hash": proposal_spend_ref_tx, "output_index": 0, "address": wallet["address"]}
-        })
-
-    # Indexer
-    proposal_hash = validators.get("proposal.proposal_spend.spend", {}).get("hash", "")
-    critique_hash = validators.get("critique.critique_spend.spend", {}).get("hash", "")
-    endorsement_hash = validators.get("critique.endorsement_spend.spend", {}).get("hash", "")
+    # Indexer — read-only, needs only script hashes
+    proposal_hash = hashes.get("proposal_spend", "")
+    critique_hash = hashes.get("critique_spend", "")
+    endorsement_hash = hashes.get("endorsement_spend", "")
     treasury_addr = holders.get("treasury", {}).get("address", "")
 
     gov_indexer = GovernanceIndexer(
-        context=agent.context,
+        context=chain_context,
         proposal_spend_hash=proposal_hash,
         critique_spend_hash=critique_hash,
         endorsement_spend_hash=endorsement_hash,
@@ -151,13 +88,10 @@ async def startup():
     )
 
     print(f"[OK] Dashboard connected to {ogmios_url}")
-    print(f"[OK] {len(ref_inputs)} reference inputs configured")
 
 
 async def shutdown():
-    global agent
-    if agent:
-        await agent.__aexit__(None, None, None)
+    pass
 
 
 @asynccontextmanager
@@ -347,13 +281,24 @@ async def get_agent(did: str):
 @app.get("/api/health")
 async def health():
     try:
-        tip = await agent.context._ogmios.query_network_tip()
-        balance = await agent.get_balance()
+        from pycardano import Address as PycAddr
+
+        tip = await ogmios_client.query_network_tip()
+
+        # Query governance wallet balance (read-only, no skey needed)
+        wallet_balance = 0
+        if governance_wallet_address:
+            try:
+                utxos = await chain_context.async_utxos(PycAddr.from_primitive(governance_wallet_address))
+                wallet_balance = sum(u.output.amount.coin if hasattr(u.output.amount, 'coin') else u.output.amount for u in utxos)
+            except Exception:
+                pass
+
         return {
             "status": "ok",
             "slot": tip.get("slot", 0),
-            "wallet_balance_lovelace": balance.lovelace,
-            "wallet_balance_apex": balance.ada,
+            "wallet_balance_lovelace": wallet_balance,
+            "wallet_balance_apex": round(wallet_balance / 1_000_000, 2),
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
