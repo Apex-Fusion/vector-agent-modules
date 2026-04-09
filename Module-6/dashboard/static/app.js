@@ -47,6 +47,94 @@ async function api(path, opts) {
   return res.json();
 }
 
+// ─── IPFS Document Fetching ──────────────────────────────────────────────
+
+async function fetchIpfsDocument(storageUri, expectedHash) {
+  if (!storageUri || !storageUri.startsWith('ipfs://')) return null;
+  const cid = storageUri.replace('ipfs://', '');
+  const params = new URLSearchParams();
+  if (expectedHash) params.set('expected_hash', expectedHash);
+  try {
+    return await api(`/api/ipfs/${cid}?${params.toString()}`);
+  } catch (err) {
+    console.error('IPFS fetch failed:', err);
+    return { error: err.message };
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = String(text);
+  return div.innerHTML;
+}
+
+function renderDocumentContent(doc) {
+  if (typeof doc === 'string') {
+    return `<pre class="doc-content">${escapeHtml(doc)}</pre>`;
+  }
+  let html = '<div class="doc-content">';
+  if (doc.title) html += `<div class="doc-title">${escapeHtml(doc.title)}</div>`;
+  if (doc.summary) html += `<p class="doc-summary">${escapeHtml(doc.summary)}</p>`;
+  if (doc.rationale) html += `<div class="doc-section"><strong>Rationale:</strong> ${escapeHtml(doc.rationale)}</div>`;
+  if (doc.analysis) {
+    html += '<div class="doc-section"><strong>Analysis:</strong>';
+    if (doc.analysis.findings && Array.isArray(doc.analysis.findings)) {
+      html += '<ul>' + doc.analysis.findings.map(f => `<li>${escapeHtml(f)}</li>`).join('') + '</ul>';
+    }
+    html += '</div>';
+  }
+  if (doc.recommendation) {
+    html += '<div class="doc-section"><strong>Recommendation:</strong>';
+    if (typeof doc.recommendation === 'string') {
+      html += ` ${escapeHtml(doc.recommendation)}`;
+    } else if (doc.recommendation.suggested_change) {
+      html += ` ${escapeHtml(doc.recommendation.suggested_change)}`;
+    }
+    html += '</div>';
+  }
+  html += `<details><summary style="cursor:pointer;color:var(--text-muted);font-size:12px;margin-top:8px">Raw JSON</summary>`;
+  html += `<pre class="doc-raw">${escapeHtml(JSON.stringify(doc, null, 2))}</pre></details>`;
+  html += '</div>';
+  return html;
+}
+
+function renderDocumentLink(storageUri, ipfsResult, proposalHash) {
+  if (!storageUri) return 'none';
+  let html = `<a href="${storageUri}" target="_blank">${escapeHtml(storageUri)} &#8599;</a>`;
+  if (!ipfsResult) return html;
+  if (ipfsResult.error) {
+    html += `<div class="alert warning" style="margin-top:8px;font-size:12px">IPFS fetch failed: ${escapeHtml(ipfsResult.error)}</div>`;
+    return html;
+  }
+  if (ipfsResult.verified === true) {
+    html += ' <span class="quality-badge quality-high" title="blake2b_256 hash matches on-chain proposal_hash">verified</span>';
+  } else if (ipfsResult.verified === false) {
+    html += ' <span class="quality-badge quality-low" title="Hash does NOT match on-chain proposal_hash">hash mismatch</span>';
+  }
+  if (ipfsResult.content) {
+    html += `<div class="ipfs-document">${renderDocumentContent(ipfsResult.content)}</div>`;
+  }
+  return html;
+}
+
+async function loadCritiqueDoc(btn, storageUri, expectedHash) {
+  const container = btn.nextElementSibling;
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  const result = await fetchIpfsDocument(storageUri, expectedHash);
+  if (result && !result.error) {
+    let badge = '';
+    if (result.verified === true) badge = '<span class="quality-badge quality-high">verified</span>';
+    else if (result.verified === false) badge = '<span class="quality-badge quality-low">hash mismatch</span>';
+    container.innerHTML = `${badge}<div class="ipfs-document">${renderDocumentContent(result.content)}</div>`;
+    btn.style.display = 'none';
+  } else {
+    container.innerHTML = `<div class="alert warning" style="font-size:12px">Failed: ${escapeHtml(result?.error || 'unknown')}</div>`;
+    btn.textContent = 'Retry';
+    btn.disabled = false;
+  }
+}
+
 async function loadHealth() {
   try {
     const h = await api('/api/health');
@@ -311,6 +399,12 @@ async function viewProposal(txHash, outputIndex) {
 
     title.textContent = proposalTypeLabel(p);
 
+    // Fetch IPFS document if storage_uri is an ipfs:// URI
+    let ipfsResult = null;
+    if (p.storage_uri && p.storage_uri.startsWith('ipfs://')) {
+      ipfsResult = await fetchIpfsDocument(p.storage_uri, p.proposal_hash);
+    }
+
     const expiry = new Date(p.submitted_at + p.review_window);
     const submitted = new Date(p.submitted_at);
 
@@ -319,11 +413,13 @@ async function viewProposal(txHash, outputIndex) {
       const typeClass = `critique-type-${(c.critique_type || '').toLowerCase()}`;
       const icon = c.critique_type === 'Supportive' ? '&#10003;' : c.critique_type === 'Opposing' ? '&#10007;' : '&#9998;';
       const q = c.quality ? (c.quality.total || 0).toFixed(2) : '?';
+      const hasIpfsDoc = c.storage_uri && c.storage_uri.startsWith('ipfs://');
       critiqueHtml += `
         <div class="critique-item">
           <span class="${typeClass}">${icon} ${c.critique_type || 'Unknown'}</span>
           &mdash; ${shortDid(c.critic_did)} (${(c.stake_amount || 0) / 1000000} AP3X)
           <span style="float:right;color:var(--text-muted)">Quality: ${q}</span>
+          ${hasIpfsDoc ? `<br><button onclick="loadCritiqueDoc(this, '${c.storage_uri}', '${c.critique_hash || ''}')" style="font-size:11px;margin-top:4px;cursor:pointer">View Document</button><div class="critique-doc-container"></div>` : ''}
         </div>
       `;
     });
@@ -349,7 +445,7 @@ async function viewProposal(txHash, outputIndex) {
         <dt>Stake</dt><dd>${(p.stake_amount || 0) / 1000000} AP3X</dd>
         <dt>Quality signal</dt><dd><span class="quality-badge ${qualityClass(p.quality_signal)}">${(p.quality_signal || 0).toFixed(3)}</span></dd>
         <dt>State</dt><dd>${p.state}</dd>
-        <dt>Document</dt><dd><a href="${p.storage_uri || '#'}" target="_blank">${p.storage_uri || 'none'} &#8599;</a></dd>
+        <dt>Document</dt><dd>${renderDocumentLink(p.storage_uri, ipfsResult, p.proposal_hash)}</dd>
         <dt>Proposal hash</dt><dd style="font-family:monospace;font-size:12px">${p.proposal_hash || ''}</dd>
         <dt>UTxO</dt><dd style="font-family:monospace;font-size:12px"><a href="${EXPLORER}/tx/${txHash}" target="_blank">${shortHash(txHash)}#${outputIndex}</a></dd>
       </dl>

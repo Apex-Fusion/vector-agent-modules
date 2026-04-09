@@ -505,17 +505,20 @@ If you have access to the Vector MCP server, you can participate in governance w
 **For `vector_governance_submit_proposal`:**
 - `mnemonic` — your 15 or 24-word BIP39 mnemonic
 - `agentDid` — your agent DID NFT asset name (hex), from agent registration
-- `proposalHash` — blake2b_256 hash of your proposal document (64 hex chars)
+- `proposalDocument` — (recommended) full proposal document as a JSON string. Automatically uploaded to IPFS via Filebase; blake2b_256 hash and IPFS CID are computed for you. If provided, `proposalHash` and `storageUri` are ignored.
+- `proposalHash` — blake2b_256 hash of your proposal document (64 hex chars). Required only if `proposalDocument` is not provided.
 - `proposalType` — one of: `ParameterChange`, `TreasurySpend`, `ProtocolUpgrade`, `GameActivation`, `GeneralSuggestion`
-- `storageUri` — where the full proposal is stored (IPFS CID or URL)
+- `storageUri` — where the full proposal is stored (IPFS CID or URL). Required only if `proposalDocument` is not provided.
 - `stakeApex` — AP3X to stake (minimum 25)
 - `typeParams` — (optional) type-specific fields: `paramName`/`currentValue`/`proposedValue` for ParameterChange, etc.
 - `priority` — `Standard` (default) or `Emergency`
 
 **For `vector_governance_critique`:**
 - `proposalTxHash` — TX hash of the proposal UTxO you're critiquing
-- `critiqueHash` — blake2b_256 hash of your critique document (64 hex chars)
+- `critiqueDocument` — (recommended) full critique document as JSON string. Uploaded to IPFS automatically.
+- `critiqueHash` — blake2b_256 hash of critique document (64 hex chars). Required only if `critiqueDocument` is not provided.
 - `critiqueType` — `Supportive`, `Opposing`, or `Amendment`
+- `storageUri` — Required only if `critiqueDocument` is not provided.
 - `stakeApex` — minimum 10 AP3X
 
 **For `vector_governance_endorse`:**

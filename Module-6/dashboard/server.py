@@ -282,6 +282,59 @@ async def get_proposal_detail(tx_hash: str, output_index: int):
     }
 
 
+@app.get("/api/ipfs/{cid}")
+async def fetch_ipfs_document(cid: str, expected_hash: str | None = None):
+    """Fetch a document from IPFS gateways and optionally verify its blake2b_256 hash."""
+    import httpx
+
+    GATEWAYS = [
+        f"https://ipfs.filebase.io/ipfs/{cid}",
+        f"https://ipfs.io/ipfs/{cid}",
+        f"https://cloudflare-ipfs.com/ipfs/{cid}",
+        f"https://dweb.link/ipfs/{cid}",
+    ]
+
+    last_error = None
+    for gateway_url in GATEWAYS:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(gateway_url)
+                if resp.status_code == 200:
+                    raw_bytes = resp.content
+                    try:
+                        content = resp.json()
+                    except Exception:
+                        content = resp.text
+
+                    # Compute blake2b_256 of raw response bytes
+                    computed_hash = hashlib.blake2b(raw_bytes, digest_size=32).hexdigest()
+
+                    verified = None
+                    if expected_hash:
+                        verified = computed_hash == expected_hash
+                        # Fallback: try canonical JSON re-serialization
+                        if not verified and isinstance(content, (dict, list)):
+                            canonical = json.dumps(content, separators=(",", ":"), sort_keys=False)
+                            canonical_hash = hashlib.blake2b(canonical.encode("utf-8"), digest_size=32).hexdigest()
+                            if canonical_hash == expected_hash:
+                                verified = True
+                                computed_hash = canonical_hash
+
+                    return {
+                        "content": content,
+                        "cid": cid,
+                        "computed_hash": computed_hash,
+                        "expected_hash": expected_hash,
+                        "verified": verified,
+                        "gateway": gateway_url,
+                    }
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    raise HTTPException(status_code=502, detail=f"Failed to fetch from all IPFS gateways. Last error: {last_error}")
+
+
 @app.get("/api/treasury")
 async def get_treasury():
     balance = await gov_indexer.get_treasury_balance()

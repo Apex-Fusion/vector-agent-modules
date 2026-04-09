@@ -301,3 +301,12 @@ button.warn:hover { background: var(--yellow); }
 
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+
+/* IPFS Document Display */
+.ipfs-document { margin-top: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; max-height: 400px; overflow-y: auto; }
+.doc-content { font-size: 13px; line-height: 1.6; }
+.doc-title { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.doc-summary { color: var(--text); margin-bottom: 8px; }
+.doc-section { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+pre.doc-raw { font-size: 11px; color: var(--text-muted); white-space: pre-wrap; word-break: break-all; margin-top: 4px; max-height: 300px; overflow-y: auto; }
+.critique-doc-container { margin-top: 4px; }

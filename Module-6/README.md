@@ -82,11 +82,11 @@ nix-shell shell.nix --run "python scripts/smoke_test.py"
 
 | Validator | Script Hash |
 |-----------|-------------|
-| proposal_spend | `a74fc555e9b045695be1a26bdc9131681efa6b61738413ab9b2c7ea4` |
-| proposal_mint | `e8f38052352a3d20c5fe025e2a02d615826a154b26f2239286b8d565` |
-| critique_spend | `ced52074861af95e2082004d6061b0fc4bb30fded61f9605bfc20e55` |
-| critique_mint | `2e252a89894d379ce5c0023a57de4627056e4a96da72bd8fedba04bd` |
-| endorsement_spend | `5fc449848d85f30287e5bc0bd2b3e95d872ef97be27f1480c12f1a9d` |
+| proposal_spend | `40fe1895df7bfd4a732cecd3c6f56b942fd36690c0cff9358dc8a0f8` |
+| proposal_mint | `10dff07bb98b5c88b488522c0b7d8bf9ad335907cb20a479ba3b3166` |
+| critique_spend | `9e9aaf7ea0e03695fbe1bf60429e2a715cbc40da82b17f8a52dedeb1` |
+| critique_mint | `1f5614b709a30e35034666dbe13599786d39b3db24471b88c468c74c` |
+| endorsement_spend | `1fac8b35509d379c304fcafdf12b8ed0845af5543dd5a6490fb75b7b` |
 
 ## Cross-Module Integration
 
