@@ -1,7 +1,7 @@
 """
-Module 6: Foundation Review Dashboard — API Server
+Vector Governance Explorer — API Server
 
-FastAPI backend serving the governance review dashboard.
+FastAPI backend serving the public governance explorer dashboard.
 Connects to Vector testnet via the governance SDK.
 
 Usage:
@@ -9,13 +9,11 @@ Usage:
     uvicorn server:app --reload --port 8000
 """
 
-import asyncio
 import hashlib
 import json
 import logging
 import os
 import sys
-import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -35,7 +33,6 @@ logger = logging.getLogger("dashboard")
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 # Add SDK and Module-6 root to path
 GAME6_ROOT = Path(__file__).parent.parent
@@ -44,9 +41,6 @@ load_dotenv(GAME6_ROOT / ".env")
 
 DEPLOY_STATE_FILE = GAME6_ROOT / "wallets" / "deploy_state.json"
 SKEY_PATH = GAME6_ROOT / "wallets" / "payment.skey"
-
-# Signing mode: "direct" (skey on server) or "external" (unsigned tx export)
-SIGNING_MODE = os.getenv("SIGNING_MODE", "direct")
 
 # ── Global state ────────────────────────────────────────────────────────────
 
@@ -157,7 +151,6 @@ async def startup():
     )
 
     print(f"[OK] Dashboard connected to {ogmios_url}")
-    print(f"[OK] Signing mode: {SIGNING_MODE}")
     print(f"[OK] {len(ref_inputs)} reference inputs configured")
 
 
@@ -174,7 +167,7 @@ async def lifespan(app: FastAPI):
     await shutdown()
 
 
-app = FastAPI(title="Module 6: Foundation Review Dashboard", lifespan=lifespan)
+app = FastAPI(title="Vector Governance Explorer", lifespan=lifespan)
 
 # Serve static files
 STATIC_DIR = Path(__file__).parent / "static"
@@ -184,32 +177,6 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/")
 async def index():
     return FileResponse(str(STATIC_DIR / "index.html"))
-
-
-# ── Request Models ──────────────────────────────────────────────────────────
-
-class AdoptRequest(BaseModel):
-    tx_hash: str
-    output_index: int
-    reasoning: str
-    reward_amount: int  # in lovelace
-
-
-class RejectRequest(BaseModel):
-    tx_hash: str
-    output_index: int
-    reasoning: str
-
-
-class ExtendRequest(BaseModel):
-    tx_hash: str
-    output_index: int
-    additional_ms: int
-
-
-class ExpireRequest(BaseModel):
-    tx_hash: str
-    output_index: int
 
 
 # ── Read-only Endpoints ────────────────────────────────────────────────────
@@ -387,170 +354,114 @@ async def health():
             "slot": tip.get("slot", 0),
             "wallet_balance_lovelace": balance.lovelace,
             "wallet_balance_apex": balance.ada,
-            "signing_mode": SIGNING_MODE,
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
-@app.get("/api/signing-mode")
-async def signing_mode():
-    return {"mode": SIGNING_MODE}
+@app.get("/api/timeline")
+async def get_timeline(limit: int = 50):
+    """Chronological feed of all governance events."""
+    events = []
 
-
-# ── Oracle Action Endpoints ────────────────────────────────────────────────
-
-@app.post("/api/adopt")
-async def adopt_proposal(req: AdoptRequest):
-    if SIGNING_MODE != "direct":
-        raise HTTPException(400, "Direct signing not enabled. Use /api/build-tx instead.")
-
-    reasoning_hash = hashlib.blake2b(req.reasoning.encode(), digest_size=32).digest()
-
-    # Find the activity UTxO for this proposal's proposer
     proposals = await gov_indexer.get_proposals()
-    target = _find_proposal(proposals, req.tx_hash, req.output_index)
-    if not target:
-        raise HTTPException(404, "Proposal not found")
+    proposals = [p for p in proposals if p.get("has_proposal_token", True)]
+    for p in proposals:
+        ref = p.get("utxo_ref", {})
+        did = p.get("proposer_did", "")
+        events.append({
+            "type": "proposal",
+            "timestamp": p.get("submitted_at", 0),
+            "agent_did": did.hex() if isinstance(did, bytes) else did,
+            "proposal_type": p.get("proposal_type", "Unknown"),
+            "state": p.get("state", "Unknown"),
+            "stake": (p.get("stake_amount", 0)) / 1_000_000,
+            "tx_hash": ref.get("tx_hash", ""),
+            "output_index": ref.get("output_index", 0),
+        })
 
-    proposer_did = _ensure_did_bytes(target.get("proposer_did", b""))
-    activity_ref = await _find_activity_utxo(proposer_did)
-    if not activity_ref:
-        raise HTTPException(404, "Activity UTxO not found for proposer")
+    # Gather critiques and endorsements for all proposals
+    for p in proposals:
+        ref = p.get("utxo_ref", {})
+        tx_hash = ref.get("tx_hash", "")
+        output_index = ref.get("output_index", 0)
 
-    try:
-        logger.info(f"ADOPT: tx={req.tx_hash}#{req.output_index} reward={req.reward_amount} activity={activity_ref}")
-        result = await gov_client.validated_adopt_proposal(
-            utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
-            activity_utxo_ref=activity_ref,
-            proposer_did=proposer_did,
-            reasoning_hash=reasoning_hash,
-            reward_amount=req.reward_amount,
-        )
-        logger.info(f"ADOPT OK: {result['tx_hash']}")
-        return {"status": "ok", "tx_hash": result["tx_hash"], "reward": result["reward"]}
-    except Exception as e:
-        logger.error(f"ADOPT FAILED: {traceback.format_exc()}")
-        raise HTTPException(500, f"Adopt failed: {e}")
+        try:
+            critiques = await gov_indexer.get_critiques(tx_hash, output_index)
+            for c in critiques:
+                cref = c.get("utxo_ref", {})
+                cdid = c.get("critic_did", "")
+                events.append({
+                    "type": "critique",
+                    "timestamp": c.get("submitted_at", 0),
+                    "agent_did": cdid.hex() if isinstance(cdid, bytes) else cdid,
+                    "critique_type": c.get("critique_type", "Unknown"),
+                    "proposal_tx_hash": tx_hash,
+                    "stake": (c.get("stake_amount", 0)) / 1_000_000,
+                    "tx_hash": cref.get("tx_hash", ""),
+                    "output_index": cref.get("output_index", 0),
+                })
+        except Exception:
+            pass
 
+        try:
+            endorsements = await gov_indexer.get_endorsements(tx_hash, output_index)
+            for e in endorsements:
+                eref = e.get("utxo_ref", {})
+                edid = e.get("endorser_did", "")
+                events.append({
+                    "type": "endorsement",
+                    "timestamp": e.get("created_at", e.get("submitted_at", 0)),
+                    "agent_did": edid.hex() if isinstance(edid, bytes) else edid,
+                    "proposal_tx_hash": tx_hash,
+                    "stake": (e.get("stake_amount", 0)) / 1_000_000,
+                    "tx_hash": eref.get("tx_hash", ""),
+                    "output_index": eref.get("output_index", 0),
+                })
+        except Exception:
+            pass
 
-@app.post("/api/reject")
-async def reject_proposal(req: RejectRequest):
-    if SIGNING_MODE != "direct":
-        raise HTTPException(400, "Direct signing not enabled. Use /api/build-tx instead.")
-
-    reasoning_hash = hashlib.blake2b(req.reasoning.encode(), digest_size=32).digest()
-
-    try:
-        logger.info(f"REJECT: tx={req.tx_hash}#{req.output_index}")
-        result = await gov_client.reject_proposal(
-            utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
-            reasoning_hash=reasoning_hash,
-        )
-        logger.info(f"REJECT OK: {result['tx_hash']}")
-        return {"status": "ok", "tx_hash": result["tx_hash"]}
-    except Exception as e:
-        logger.error(f"REJECT FAILED: {traceback.format_exc()}")
-        raise HTTPException(500, f"Reject failed: {e}")
-
-
-@app.post("/api/extend")
-async def extend_review(req: ExtendRequest):
-    if SIGNING_MODE != "direct":
-        raise HTTPException(400, "Direct signing not enabled.")
-
-    try:
-        logger.info(f"EXTEND: tx={req.tx_hash}#{req.output_index} additional_ms={req.additional_ms}")
-        result = await gov_client.extend_review(
-            utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
-            additional_slots=req.additional_ms,
-        )
-        logger.info(f"EXTEND OK: {result['tx_hash']}")
-        return {"status": "ok", "tx_hash": result["tx_hash"]}
-    except Exception as e:
-        logger.error(f"EXTEND FAILED: {traceback.format_exc()}")
-        raise HTTPException(500, f"Extend failed: {e}")
+    events.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+    return events[:limit]
 
 
-@app.post("/api/expire")
-async def expire_proposal(req: ExpireRequest):
-    proposals = await gov_indexer.get_proposals()
-    target = _find_proposal(proposals, req.tx_hash, req.output_index)
-    if not target:
-        raise HTTPException(404, "Proposal not found")
+@app.get("/api/leaderboard")
+async def get_leaderboard():
+    """Agent leaderboard ranked by governance participation."""
+    all_proposals = await gov_indexer.get_proposals()
+    all_proposals = [p for p in all_proposals if p.get("has_proposal_token", True)]
 
-    proposer_did = _ensure_did_bytes(target.get("proposer_did", b""))
-    activity_ref = await _find_activity_utxo(proposer_did)
-    if not activity_ref:
-        raise HTTPException(404, "Activity UTxO not found for proposer")
+    # Collect unique agent DIDs (proposers + critics)
+    agent_dids = set()
+    for p in all_proposals:
+        did = p.get("proposer_did", "")
+        if did:
+            agent_dids.add(did.hex() if isinstance(did, bytes) else did)
 
-    try:
-        logger.info(f"EXPIRE: tx={req.tx_hash}#{req.output_index} activity={activity_ref} proposer_did={proposer_did!r}")
-        result = await gov_client.validated_expire_proposal(
-            utxo_ref={"tx_hash": req.tx_hash, "output_index": req.output_index},
-            activity_utxo_ref=activity_ref,
-            proposer_did=proposer_did,
-        )
-        logger.info(f"EXPIRE OK: {result['tx_hash']}")
-        return {"status": "ok", "tx_hash": result["tx_hash"]}
-    except Exception as e:
-        logger.error(f"EXPIRE FAILED: {traceback.format_exc()}")
-        raise HTTPException(500, f"Expire failed: {e}")
+    leaderboard = []
+    for did in agent_dids:
+        try:
+            record = await gov_indexer.get_agent_track_record(did)
+            by_state = record.get("by_state", {})
+            total = record.get("total_proposals", 0)
+            adopted = by_state.get("Adopted", 0)
+            leaderboard.append({
+                "agent_did": did,
+                "total_proposals": total,
+                "adopted": adopted,
+                "rejected": by_state.get("Rejected", 0),
+                "expired": by_state.get("Expired", 0),
+                "open": by_state.get("Open", 0) + by_state.get("Amended", 0),
+                "adoption_rate": adopted / total if total > 0 else 0.0,
+            })
+        except Exception:
+            pass
+
+    leaderboard.sort(key=lambda a: (a["adopted"], a["total_proposals"]), reverse=True)
+    return leaderboard
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
-
-def _ensure_did_bytes(did) -> bytes:
-    """Convert proposer_did to bytes. The indexer may return it as a hex string."""
-    if isinstance(did, bytes):
-        return did
-    if isinstance(did, str):
-        try:
-            return bytes.fromhex(did)
-        except ValueError:
-            return did.encode("utf-8")
-    return b""
-
-
-def _find_proposal(proposals, tx_hash, output_index):
-    for p in proposals:
-        ref = p.get("utxo_ref", {})
-        if ref.get("tx_hash") == tx_hash and ref.get("output_index") == output_index:
-            return p
-    return None
-
-
-async def _find_activity_utxo(proposer_did):
-    """Find the activity UTxO for a proposer at the proposal script address."""
-    from pycardano import Address as PycAddr
-    from pycardano.hash import ScriptHash
-    from pycardano.network import Network
-
-    proposal_hash = deploy_state.get("validators", {}).get(
-        "proposal.proposal_spend.spend", {}
-    ).get("hash", "")
-    if not proposal_hash:
-        return None
-
-    sh = ScriptHash.from_primitive(bytes.fromhex(proposal_hash))
-    addr = PycAddr(payment_part=sh, network=Network.MAINNET)
-
-    utxos = await agent.context.async_utxos(str(addr))
-    for u in utxos:
-        if hasattr(u.output.amount, 'multi_asset') and u.output.amount.multi_asset:
-            for pid, assets in u.output.amount.multi_asset.items():
-                for aname in assets:
-                    if aname.payload[:5] == b"pact_":
-                        # Must have count >= 1 so expire can decrement to >= 0
-                        if u.output.datum:
-                            count = u.output.datum.data.value[2]
-                            if count < 1:
-                                continue
-                        return {
-                            "tx_hash": str(u.input.transaction_id),
-                            "output_index": u.input.index,
-                        }
-    return None
 
 
 def _serialize_proposal(p: dict) -> dict:

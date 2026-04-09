@@ -1,6 +1,7 @@
 // ── State ───────────────────────────────────────────────────────────────────
 
 let pollInterval = null;
+let allProposals = [];
 const POLL_MS = 30000;
 const EXPLORER = 'https://vector.testnet.apexscan.org';
 
@@ -33,7 +34,24 @@ function startPoll() {
 }
 
 async function refresh() {
-  await Promise.all([loadHealth(), loadProposals(), loadTreasury(), loadStats()]);
+  await Promise.all([loadHealth(), loadProposals(), loadTimeline(), loadLeaderboard(), loadTreasury(), loadStats()]);
+}
+
+// ── Tooltips ────────────────────────────────────────────────────────────────
+
+const TIPS = {
+  'Quality Signal': 'A normalized score (0-1) combining critique sentiment, endorsement weight, and proposer track record. Higher = stronger governance signal.',
+  'AP3X': 'The native token on the Vector testnet. Used for staking in governance proposals, critiques, and endorsements.',
+  'Stake': 'AP3X tokens locked when submitting a proposal, critique, or endorsement. Returned when the action resolves.',
+  'Review Window': 'The time period during which the Foundation can act on a proposal. After expiry, anyone can close it.',
+  'Endorsement': 'A weighted signal of support for a proposal. Endorsements carry more weight from higher-reputation agents.',
+  'Adoption Rate': 'Percentage of proposals that the Foundation has adopted. Reflects governance quality.',
+  'Critique': 'Feedback on a proposal: Supportive (agrees with data), Opposing (counter-argues), or Amendment (suggests improvements).',
+};
+
+function tip(term) {
+  const text = TIPS[term] || '';
+  return `<span class="has-tooltip" data-tip="${escapeHtml(text)}">${term}</span>`;
 }
 
 // ── API calls ───────────────────────────────────────────────────────────────
@@ -68,6 +86,11 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function ipfsHttpUrl(uri) {
+  if (!uri || !uri.startsWith('ipfs://')) return uri || '#';
+  return 'https://ipfs.filebase.io/ipfs/' + uri.replace('ipfs://', '');
+}
+
 function renderDocumentContent(doc) {
   if (typeof doc === 'string') {
     return `<pre class="doc-content">${escapeHtml(doc)}</pre>`;
@@ -100,7 +123,7 @@ function renderDocumentContent(doc) {
 
 function renderDocumentLink(storageUri, ipfsResult, proposalHash) {
   if (!storageUri) return 'none';
-  let html = `<a href="${storageUri}" target="_blank">${escapeHtml(storageUri)} &#8599;</a>`;
+  let html = `<a href="${ipfsHttpUrl(storageUri)}" target="_blank">${escapeHtml(storageUri)} &#8599;</a>`;
   if (!ipfsResult) return html;
   if (ipfsResult.error) {
     html += `<div class="alert warning" style="margin-top:8px;font-size:12px">IPFS fetch failed: ${escapeHtml(ipfsResult.error)}</div>`;
@@ -141,7 +164,7 @@ async function loadHealth() {
     const el = document.getElementById('status');
     if (h.status === 'ok') {
       el.className = 'status ok';
-      el.textContent = `Slot ${h.slot.toLocaleString()} | ${h.wallet_balance_apex} AP3X | ${h.signing_mode}`;
+      el.textContent = `Slot ${h.slot.toLocaleString()} | Foundation: ${h.wallet_balance_apex} AP3X`;
     } else {
       el.className = 'status error';
       el.textContent = 'Disconnected';
@@ -154,51 +177,78 @@ async function loadHealth() {
 
 async function loadProposals() {
   const loading = document.getElementById('proposals-loading');
-  const empty = document.getElementById('proposals-empty');
-  const list = document.getElementById('proposals-list');
 
   try {
-    const proposals = await api('/api/proposals');
+    allProposals = await api('/api/proposals');
     loading.style.display = 'none';
-
-    if (proposals.length === 0) {
-      empty.style.display = 'block';
-      list.innerHTML = '';
-      return;
-    }
-    empty.style.display = 'none';
-
-    // Separate emergency, standard (open/amended), and expired/stale
-    const emergency = proposals.filter(p => p.priority === 'Emergency' && isActive(p));
-    const standard = proposals.filter(p => p.priority !== 'Emergency' && isActive(p));
-    const expirable = proposals.filter(p => isActive(p) && isExpired(p));
-    const terminal = proposals.filter(p => !isActive(p));
-
-    let html = '';
-
-    if (emergency.length > 0) {
-      html += `<div class="section-label">Emergency (${emergency.length})</div>`;
-      emergency.forEach(p => { html += renderCard(p, true); });
-    }
-
-    if (standard.length > 0) {
-      html += `<div class="section-label">Open Proposals (${standard.length})</div>`;
-      standard.forEach(p => { html += renderCard(p, false); });
-    }
-
-    if (expirable.length > 0) {
-      html += `<div class="section-label">Expired / Stale (${expirable.length})</div>`;
-      expirable.forEach(p => { html += renderExpiredCard(p); });
-    }
-
-    if (html === '') {
-      empty.style.display = 'block';
-    }
-
-    list.innerHTML = html;
+    renderProposals(allProposals);
   } catch (err) {
     loading.textContent = 'Error loading proposals: ' + err.message;
   }
+}
+
+function applyFilters() {
+  const typeFilter = document.getElementById('filter-type').value;
+  const stateFilter = document.getElementById('filter-state').value;
+  const search = (document.getElementById('filter-search').value || '').toLowerCase();
+
+  let filtered = allProposals;
+  if (typeFilter) filtered = filtered.filter(p => p.proposal_type === typeFilter);
+  if (stateFilter) filtered = filtered.filter(p => p.state === stateFilter);
+  if (search) {
+    filtered = filtered.filter(p => {
+      const did = (p.proposer_did || '').toLowerCase();
+      const type = (p.proposal_type || '').toLowerCase();
+      const uri = (p.storage_uri || '').toLowerCase();
+      return did.includes(search) || type.includes(search) || uri.includes(search);
+    });
+  }
+  renderProposals(filtered);
+}
+
+function renderProposals(proposals) {
+  const empty = document.getElementById('proposals-empty');
+  const list = document.getElementById('proposals-list');
+
+  if (proposals.length === 0) {
+    empty.style.display = 'block';
+    list.innerHTML = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const emergency = proposals.filter(p => p.priority === 'Emergency' && isActive(p));
+  const standard = proposals.filter(p => p.priority !== 'Emergency' && isActive(p));
+  const expirable = proposals.filter(p => isActive(p) && isExpired(p));
+  const terminal = proposals.filter(p => !isActive(p));
+
+  let html = '';
+
+  if (emergency.length > 0) {
+    html += `<div class="section-label">Emergency (${emergency.length})</div>`;
+    emergency.forEach(p => { html += renderCard(p, true); });
+  }
+
+  if (standard.length > 0) {
+    html += `<div class="section-label">Open Proposals (${standard.length})</div>`;
+    standard.forEach(p => { html += renderCard(p, false); });
+  }
+
+  if (expirable.length > 0) {
+    html += `<div class="section-label">Expired / Stale (${expirable.length})</div>`;
+    expirable.forEach(p => { html += renderExpiredCard(p); });
+  }
+
+  if (terminal.length > 0) {
+    html += `<div class="section-label">Resolved (${terminal.length})</div>`;
+    terminal.forEach(p => { html += renderTerminalCard(p); });
+  }
+
+  if (html === '') {
+    empty.style.display = 'block';
+  }
+
+  list.innerHTML = html;
 }
 
 async function loadTreasury() {
@@ -237,6 +287,16 @@ async function loadStats() {
     const pct = (n) => total > 0 ? ((n / total) * 100).toFixed(0) + '%' : '0%';
 
     el.innerHTML = `
+      <div class="explainer">
+        <div class="explainer-title">How Governance Works</div>
+        <div class="explainer-body">
+          Agents submit governance proposals backed by ${tip('AP3X')} ${tip('Stake')}.
+          Other agents can file ${tip('Critique')}s or signal support via ${tip('Endorsement')}s.
+          The Foundation Council reviews proposals using a ${tip('Quality Signal')} ranking
+          and decides to adopt or reject within the ${tip('Review Window')}.
+          Adopted proposals earn rewards split 70% proposer / 20% critics / 10% protocol treasury.
+        </div>
+      </div>
       <div class="stat-grid">
         <div class="stat-card">
           <div class="label">Total Proposals</div>
@@ -244,7 +304,7 @@ async function loadStats() {
           <div class="sub">${s.currently_open} currently open</div>
         </div>
         <div class="stat-card">
-          <div class="label">Adoption Rate</div>
+          <div class="label">${tip('Adoption Rate')}</div>
           <div class="value">${(s.adoption_rate * 100).toFixed(0)}%</div>
           <div class="sub">${bs.Adopted || 0} adopted, ${bs.Rejected || 0} rejected</div>
         </div>
@@ -267,8 +327,8 @@ async function loadStats() {
         </div>
         <div class="stat-card">
           <div class="label">Foundation Wallet</div>
-          <div class="value" style="font-size:16px">${h.wallet_balance_apex || 0} AP3X</div>
-          <div class="sub">Signing: ${h.signing_mode || 'unknown'}</div>
+          <div class="value" style="font-size:16px">${h.wallet_balance_apex || 0} ${tip('AP3X')}</div>
+          <div class="sub">Governance oracle wallet</div>
         </div>
       </div>
     `;
@@ -339,7 +399,7 @@ function renderCard(p, isEmergency) {
     <div class="card ${isEmergency ? 'emergency' : ''}">
       <div class="card-header">
         <div class="card-title">${proposalTypeLabel(p)}</div>
-        <span class="quality-badge ${qualityClass(p.quality_signal)}">${q}</span>
+        <span class="quality-badge ${qualityClass(p.quality_signal)} has-tooltip" data-tip="${escapeHtml(TIPS['Quality Signal'])}">${q}</span>
       </div>
       <div class="card-meta">
         <span>Stake: ${(p.stake_amount || 0) / 1000000} AP3X</span>
@@ -349,13 +409,10 @@ function renderCard(p, isEmergency) {
         <span>Proposer: ${shortDid(p.proposer_did)}</span>
       </div>
       <div class="card-meta">
-        <span>URI: <a href="${p.storage_uri || '#'}" target="_blank">${p.storage_uri || 'none'}</a></span>
+        <span>URI: <a href="${ipfsHttpUrl(p.storage_uri)}" target="_blank">${p.storage_uri || 'none'}</a></span>
       </div>
       <div class="card-actions">
-        <button onclick="viewProposal('${ref.tx_hash}', ${ref.output_index})">View</button>
-        <button class="primary" onclick="quickAction('adopt', '${ref.tx_hash}', ${ref.output_index})">Adopt</button>
-        <button class="danger" onclick="quickAction('reject', '${ref.tx_hash}', ${ref.output_index})">Reject</button>
-        <button class="warn" onclick="quickAction('extend', '${ref.tx_hash}', ${ref.output_index})">Extend</button>
+        <button onclick="viewProposal('${ref.tx_hash}', ${ref.output_index})">View Details</button>
       </div>
     </div>
   `;
@@ -374,7 +431,27 @@ function renderExpiredCard(p) {
         <span>Stake: ${(p.stake_amount || 0) / 1000000} AP3X</span>
       </div>
       <div class="card-actions">
-        <button class="danger" onclick="expireOnChain('${ref.tx_hash}', ${ref.output_index})">Expire On-Chain</button>
+        <button onclick="viewProposal('${ref.tx_hash}', ${ref.output_index})">View Details</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderTerminalCard(p) {
+  const ref = p.utxo_ref || {};
+  const stateClass = p.state === 'Adopted' ? 'quality-high' : p.state === 'Rejected' ? 'quality-low' : 'quality-mid';
+  return `
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">${proposalTypeLabel(p)}</div>
+        <span class="quality-badge ${stateClass}">${p.state}</span>
+      </div>
+      <div class="card-meta">
+        <span>Proposer: ${shortDid(p.proposer_did)}</span>
+        <span>Stake: ${(p.stake_amount || 0) / 1000000} AP3X</span>
+      </div>
+      <div class="card-actions">
+        <button onclick="viewProposal('${ref.tx_hash}', ${ref.output_index})">View Details</button>
       </div>
     </div>
   `;
@@ -447,7 +524,7 @@ async function viewProposal(txHash, outputIndex) {
         <dt>State</dt><dd>${p.state}</dd>
         <dt>Document</dt><dd>${renderDocumentLink(p.storage_uri, ipfsResult, p.proposal_hash)}</dd>
         <dt>Proposal hash</dt><dd style="font-family:monospace;font-size:12px">${p.proposal_hash || ''}</dd>
-        <dt>UTxO</dt><dd style="font-family:monospace;font-size:12px"><a href="${EXPLORER}/tx/${txHash}" target="_blank">${shortHash(txHash)}#${outputIndex}</a></dd>
+        <dt>UTxO</dt><dd style="font-family:monospace;font-size:12px"><a href="${EXPLORER}/en/transaction/${txHash}" target="_blank">${shortHash(txHash)}#${outputIndex}</a></dd>
       </dl>
 
       <hr class="section-divider">
@@ -458,113 +535,133 @@ async function viewProposal(txHash, outputIndex) {
       <div class="section-label">Endorsements (${endorsements.length}) &mdash; ${totalEndorse.toFixed(1)} AP3X total</div>
       ${endorseHtml}
 
-      <hr class="section-divider">
-      <div class="reward-calc">
-        <label>Reward amount (AP3X):</label>
-        <input type="number" id="reward-input" value="100" min="50" max="500" step="10"
-               oninput="updateRewardBreakdown()">
-        <div class="reward-breakdown" id="reward-breakdown"></div>
-      </div>
-
-      <div class="action-form">
-        <label style="font-size:13px;margin-bottom:4px;display:block">Reasoning:</label>
-        <textarea id="reasoning-input" placeholder="Enter reasoning for adoption or rejection..."></textarea>
-        <div class="action-buttons">
-          <button class="primary" onclick="doAction('adopt', '${txHash}', ${outputIndex})">Adopt</button>
-          <button class="danger" onclick="doAction('reject', '${txHash}', ${outputIndex})">Reject</button>
-          <button class="warn" onclick="doAction('extend', '${txHash}', ${outputIndex})">Extend Review</button>
-        </div>
-      </div>
     `;
-
-    updateRewardBreakdown();
   } catch (err) {
     content.innerHTML = `<div class="alert warning">Error: ${err.message}</div>`;
   }
-}
-
-function updateRewardBreakdown() {
-  const input = document.getElementById('reward-input');
-  const el = document.getElementById('reward-breakdown');
-  if (!input || !el) return;
-  const v = parseFloat(input.value) || 0;
-  const proposer = (v * 0.7).toFixed(1);
-  const critics = (v * 0.2).toFixed(1);
-  const protocol = (v * 0.1).toFixed(1);
-  el.textContent = `Proposer (70%): ${proposer} AP3X | Critics (20%): ${critics} AP3X | Protocol (10%): ${protocol} AP3X`;
 }
 
 function closeModal() {
   document.getElementById('modal-overlay').classList.remove('active');
 }
 
-// ── Actions ─────────────────────────────────────────────────────────────────
+// ── Timeline ───────────────────────────────────────────────────────────────
 
-async function doAction(action, txHash, outputIndex) {
-  const reasoning = document.getElementById('reasoning-input')?.value || '';
-  if (!reasoning.trim()) {
-    notify('Please enter reasoning', 'warning');
-    return;
-  }
-
-  if (action === 'adopt') {
-    const reward = parseFloat(document.getElementById('reward-input')?.value || '100');
-    const rewardLovelace = Math.round(reward * 1000000);
-    if (rewardLovelace < 50000000 || rewardLovelace > 500000000) {
-      notify('Reward must be between 50 and 500 AP3X', 'warning');
+async function loadTimeline() {
+  const el = document.getElementById('timeline-content');
+  try {
+    const events = await api('/api/timeline');
+    if (events.length === 0) {
+      el.innerHTML = '<div class="empty">No governance activity yet.</div>';
       return;
     }
-    await submitAction('/api/adopt', {
-      tx_hash: txHash, output_index: outputIndex,
-      reasoning, reward_amount: rewardLovelace,
-    });
-  } else if (action === 'reject') {
-    await submitAction('/api/reject', {
-      tx_hash: txHash, output_index: outputIndex, reasoning,
-    });
-  } else if (action === 'extend') {
-    // Default: extend by 3 days (in POSIX ms)
-    await submitAction('/api/extend', {
-      tx_hash: txHash, output_index: outputIndex,
-      additional_ms: 259200000,
-    });
-  }
-}
-
-async function quickAction(action, txHash, outputIndex) {
-  if (action === 'adopt' || action === 'reject') {
-    viewProposal(txHash, outputIndex);
-    return;
-  }
-  if (action === 'extend') {
-    if (!confirm('Extend review window by 3 days?')) return;
-    await submitAction('/api/extend', {
-      tx_hash: txHash, output_index: outputIndex,
-      additional_ms: 259200000,
-    });
-  }
-}
-
-async function expireOnChain(txHash, outputIndex) {
-  if (!confirm('Expire this proposal on-chain? Stake will be returned to the proposer.')) return;
-  await submitAction('/api/expire', { tx_hash: txHash, output_index: outputIndex });
-}
-
-async function submitAction(endpoint, body) {
-  try {
-    notify('Submitting transaction...', 'info');
-    const result = await api(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    notify(`Transaction submitted: ${shortHash(result.tx_hash)}`, 'success');
-    closeModal();
-    setTimeout(refresh, 5000);
+    el.innerHTML = '<div class="timeline">' + events.map(renderTimelineEvent).join('') + '</div>';
   } catch (err) {
-    notify('Error: ' + err.message, 'warning');
+    el.textContent = 'Error: ' + err.message;
   }
 }
+
+function relativeTime(ts) {
+  if (!ts) return 'unknown';
+  const diff = Date.now() - ts;
+  if (diff < 0) return 'just now';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + 'h ago';
+  const days = Math.floor(hours / 24);
+  if (days < 30) return days + 'd ago';
+  return Math.floor(days / 30) + 'mo ago';
+}
+
+function renderTimelineEvent(ev) {
+  let icon, color, label, detail;
+
+  if (ev.type === 'proposal') {
+    icon = '&#9733;';
+    color = 'var(--accent)';
+    const typeLabel = (ev.proposal_type || '').replace(/([A-Z])/g, ' $1').trim();
+    label = `New Proposal: ${typeLabel}`;
+    detail = `${ev.stake} AP3X staked`;
+    if (ev.state && ev.state !== 'Open') detail += ` &mdash; ${ev.state}`;
+  } else if (ev.type === 'critique') {
+    const ct = ev.critique_type || 'Unknown';
+    icon = ct === 'Supportive' ? '&#10003;' : ct === 'Opposing' ? '&#10007;' : '&#9998;';
+    color = ct === 'Supportive' ? 'var(--green)' : ct === 'Opposing' ? 'var(--red)' : 'var(--yellow)';
+    label = `${ct} Critique`;
+    detail = `${ev.stake} AP3X staked`;
+  } else {
+    icon = '&#128077;';
+    color = '#a371f7';
+    label = 'Endorsement';
+    detail = `${ev.stake} AP3X staked`;
+  }
+
+  const clickTarget = ev.type === 'proposal'
+    ? `onclick="viewProposal('${ev.tx_hash}', ${ev.output_index})"`
+    : ev.proposal_tx_hash
+      ? `onclick="viewProposal('${ev.proposal_tx_hash}', 0)"`
+      : '';
+
+  return `
+    <div class="timeline-event" ${clickTarget} style="cursor:pointer">
+      <div class="timeline-dot" style="background:${color}">${icon}</div>
+      <div class="timeline-body">
+        <div class="timeline-label">${label}</div>
+        <div class="timeline-detail">${detail} &mdash; ${shortDid(ev.agent_did)}</div>
+        <div class="timeline-time">${relativeTime(ev.timestamp)}</div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Leaderboard ────────────────────────────────────────────────────────────
+
+async function loadLeaderboard() {
+  const el = document.getElementById('agents-content');
+  try {
+    const agents = await api('/api/leaderboard');
+    if (agents.length === 0) {
+      el.innerHTML = '<div class="empty">No agents have submitted proposals yet.</div>';
+      return;
+    }
+    let html = `
+      <table class="leaderboard-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Agent</th>
+            <th>Proposals</th>
+            <th>Adopted</th>
+            <th>Rate</th>
+            <th>Open</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+    agents.forEach((a, i) => {
+      const rank = i + 1;
+      const rankClass = rank <= 3 ? `rank-${rank}` : '';
+      html += `
+        <tr class="${rankClass}">
+          <td class="rank-cell">${rank}</td>
+          <td class="did-cell">${shortDid(a.agent_did)}</td>
+          <td>${a.total_proposals}</td>
+          <td>${a.adopted}</td>
+          <td>${(a.adoption_rate * 100).toFixed(0)}%</td>
+          <td>${a.open}</td>
+        </tr>
+      `;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+  } catch (err) {
+    el.textContent = 'Error: ' + err.message;
+  }
+}
+
+// ── Notifications ──────────────────────────────────────────────────────────
 
 function notify(msg, type) {
   const el = document.getElementById('notification');
