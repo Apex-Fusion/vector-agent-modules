@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hashes": {
+    "reputation": "8ea064c20e2981bb828fb06c7e8df5a8df1c458c613e29a81603e7f4",
+    "endorsement": "5bb00153807ddb087bb34839dbaec2ab35ed1553c692adbbe838c1f7"
+  },
+  "addresses": {
+    "reputation": "addr1wx82qexzpc5crwuz37cxcl5d7k5d78z933snu2dgzcp70aqpd8yyj",
+    "endorsement": "addr1w9dmqq2nsp7akzrmkdyrnkawc24ntmg420rf9tdmaquvrac68nn6a"
+  },
+  "reputation_spend_ref_utxo": "ebd93ef0a923daa99d3957210fea835d8b1bcd2fca8618b4bc8d08231681ecaa#0",
+  "endorsement_spend_ref_utxo": "c2f72cfc8ff373361b6c175f80a1f3ffc8553bbe4873f08ebf72f2ebe0d24479#0",
+  "params_utxo": "3b04fab2fe9e83d4321a62ab18f4476f5c529bd116f9c231f78b35fcb54920e1#0",
+  "cross_refs_utxo": "5d528a75f1ee2fe0c660d55085db289f44aee0399eeb68c4d4a8141dfd043297#0"
+}

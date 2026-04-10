@@ -1,0 +1,35 @@
+{
+  "network": "vector-testnet",
+  "wallet_address": "addr1vyh0wlkyxsq9wd3u8qjfrxnpmdcwa95ra6dh69fg8253jvgvwc585",
+  "wallet_vkey_hash": "2ef77ec4340057363c3824919a61db70ee9683ee9b7d15283aa91931",
+  "refs_token_policy": "b07ad1a1244a388d54463fce3c68aa8d4ddc5a3297159d20590d574f",
+  "reputation_validator_hash": "8ea064c20e2981bb828fb06c7e8df5a8df1c458c613e29a81603e7f4",
+  "endorsement_validator_hash": "5bb00153807ddb087bb34839dbaec2ab35ed1553c692adbbe838c1f7",
+  "reputation_address": "addr1wx82qexzpc5crwuz37cxcl5d7k5d78z933snu2dgzcp70aqpd8yyj",
+  "endorsement_address": "addr1w9dmqq2nsp7akzrmkdyrnkawc24ntmg420rf9tdmaquvrac68nn6a",
+  "params_holder_address": "addr1w8uc78dvuxkgq4s4enqr276wevmr5saegl7fnudxvxzssecjx7n6t",
+  "agent_registry_hash": "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01",
+  "ap3x_policy_id": "",
+  "ap3x_asset_name": "",
+  "module1_refs_token_policy": "205d5f77ffebf60b764ba4f1873eff3764f3d1d594e5dac477a928f9",
+  "tx_hashes": {
+    "params_utxo": "3b04fab2fe9e83d4321a62ab18f4476f5c529bd116f9c231f78b35fcb54920e1",
+    "reputation_spend_ref": "ebd93ef0a923daa99d3957210fea835d8b1bcd2fca8618b4bc8d08231681ecaa",
+    "endorsement_spend_ref": "c2f72cfc8ff373361b6c175f80a1f3ffc8553bbe4873f08ebf72f2ebe0d24479",
+    "cross_refs_nft": "5d528a75f1ee2fe0c660d55085db289f44aee0399eeb68c4d4a8141dfd043297"
+  },
+  "validators": {
+    "endorsement.endorsement.mint": {
+      "hash": "5bb00153807ddb087bb34839dbaec2ab35ed1553c692adbbe838c1f7"
+    },
+    "endorsement.endorsement.spend": {
+      "hash": "5bb00153807ddb087bb34839dbaec2ab35ed1553c692adbbe838c1f7"
+    },
+    "reputation.reputation.mint": {
+      "hash": "8ea064c20e2981bb828fb06c7e8df5a8df1c458c613e29a81603e7f4"
+    },
+    "reputation.reputation.spend": {
+      "hash": "8ea064c20e2981bb828fb06c7e8df5a8df1c458c613e29a81603e7f4"
+    }
+  }
+}
