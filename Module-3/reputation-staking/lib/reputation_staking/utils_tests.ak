@@ -85,8 +85,8 @@ test derive_stake_token_name_has_prefix() {
 
 test derive_stake_token_name_correct_length() {
   let name = derive_stake_token_name("agent_did_123")
-  // "rstk_" is 5 bytes + 28 hash bytes = 33 bytes total
-  builtin.length_of_bytearray(name) == 5 + 28
+  // "rstk_" is 5 bytes + 27 hash bytes = 32 bytes (Cardano max asset name)
+  builtin.length_of_bytearray(name) == 5 + 27
 }
 
 test derive_stake_token_name_deterministic() {
@@ -108,8 +108,8 @@ test derive_endorsement_token_name_has_prefix() {
 
 test derive_endorsement_token_name_correct_length() {
   let name = derive_endorsement_token_name("endorser_did", "target_did")
-  // "rend_" is 5 bytes + 28 hash bytes = 33 bytes total
-  builtin.length_of_bytearray(name) == 5 + 28
+  // "rend_" is 5 bytes + 27 hash bytes = 32 bytes (Cardano max asset name)
+  builtin.length_of_bytearray(name) == 5 + 27
 }
 
 test derive_endorsement_token_name_order_matters() {

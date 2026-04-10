@@ -203,7 +203,7 @@ fn validate_endorsement_slash(
             ) == 1
           if has_token {
             expect InlineDatum(raw_out) = output.datum
-            expect out_datum: EndorsementDatum = raw_out
+            expect Endorsement(out_datum): EndorsementValidatorDatum = raw_out
             // F-NEW-4 fix: Verify AP3X value matches datum claim
             let ap3x =
               get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
@@ -300,7 +300,7 @@ validator endorsement(cfg: ReputationConfig) {
         expect Some(output) =
           find_endorsement_output(tx, policy_id)
         expect InlineDatum(raw_out) = output.datum
-        expect out_datum: EndorsementDatum = raw_out
+        expect Endorsement(out_datum): EndorsementValidatorDatum = raw_out
         endorsement_validation.validate_mint_endorsement(
           tx, cfg, refs, params, out_datum, output,
         )
@@ -315,11 +315,10 @@ validator endorsement(cfg: ReputationConfig) {
           },
         )
       MintChallengeToken -> {
-        // Use policy_id (== own hash) for self-referential checks
         expect Some(output) =
           find_challenge_output(tx, policy_id)
         expect InlineDatum(raw_out) = output.datum
-        expect out_datum: ReputationChallengeDatum = raw_out
+        expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
         challenge_validation.validate_mint_challenge(
           tx, cfg, refs, params, out_datum, output,
         )
@@ -369,7 +368,7 @@ validator endorsement(cfg: ReputationConfig) {
                 endorsement_datum.target_did,
               )
             expect InlineDatum(raw_out) = output.datum
-        expect out_datum: EndorsementDatum = raw_out
+        expect Endorsement(out_datum): EndorsementValidatorDatum = raw_out
             endorsement_validation.validate_increase_endorsement(
               tx, cfg, refs, endorsement_datum, out_datum, output,
             )
@@ -400,7 +399,7 @@ validator endorsement(cfg: ReputationConfig) {
                 challenge_datum.challenged_capability,
               )
             expect InlineDatum(raw_out) = output.datum
-        expect out_datum: ReputationChallengeDatum = raw_out
+        expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
             challenge_validation.validate_respond_to_challenge(
               tx, params, challenge_datum, out_datum,
               counter_evidence_hash, counter_evidence_uri, current_slot,
@@ -416,7 +415,7 @@ validator endorsement(cfg: ReputationConfig) {
                 challenge_datum.challenged_capability,
               )
             expect InlineDatum(raw_out) = output.datum
-            expect out_datum: ReputationChallengeDatum = raw_out
+            expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
             // Extract the audit_claim_ref from the output's Escalated state
             expect Escalated { audit_claim_ref } = out_datum.state
             challenge_validation.validate_escalate_to_audit(
@@ -434,7 +433,7 @@ validator endorsement(cfg: ReputationConfig) {
                 challenge_datum.challenged_capability,
               )
             expect InlineDatum(raw_out) = output.datum
-            expect out_datum: ReputationChallengeDatum = raw_out
+            expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
             challenge_validation.validate_resolve_escalation(
               tx, cfg, challenge_datum, out_datum,
             )
@@ -449,7 +448,7 @@ validator endorsement(cfg: ReputationConfig) {
                 challenge_datum.challenged_capability,
               )
             expect InlineDatum(raw_out) = output.datum
-        expect out_datum: ReputationChallengeDatum = raw_out
+        expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
             challenge_validation.validate_resolve_challenge(
               tx, cfg, challenge_datum, out_datum, outcome,
             )
@@ -464,7 +463,7 @@ validator endorsement(cfg: ReputationConfig) {
                 challenge_datum.challenged_capability,
               )
             expect InlineDatum(raw_out) = output.datum
-        expect out_datum: ReputationChallengeDatum = raw_out
+        expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
             challenge_validation.validate_default_judgment(
               tx, cfg, challenge_datum, out_datum, params, current_slot,
             )

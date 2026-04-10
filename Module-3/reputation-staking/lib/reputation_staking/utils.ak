@@ -1,66 +1,48 @@
-/// Shared utility functions for Module 3: Reputation Staking.
+/// Utility functions for Module 3: Reputation Staking.
 ///
-/// DID verification, capability matching, token name derivation, and
-/// common validation helpers used across all validators.
+/// DID verification, capability matching, credential checks, and byte helpers
+/// delegate to the shared library (shared/). Token name derivation and AP3X
+/// helpers remain Module 3–specific.
+///
+/// This module re-exports shared functions with Module 3's config-based
+/// signatures so that all validation code can import from a single place.
 
 use aiken/builtin
 use aiken/collection/list
 use cardano/address.{Credential, Script, VerificationKey}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, OutputReference, Transaction}
+use cardano/transaction.{Input, OutputReference, Transaction}
 use reputation_staking/config.{ReputationConfig}
 use reputation_staking/types.{
   challenge_token_prefix, endorsement_token_prefix, history_bonus_token_prefix,
   stake_token_prefix,
 }
+use shared/bytearray as shared_bytearray
+use shared/credential as shared_credential
+use shared/did_verification
+use shared/token_naming
+use shared/utxo
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Agent DID verification
+// Agent DID verification (delegates to shared/did_verification)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Agent Registry datum — mirrors the deployed AgentDatum type.
-/// Defined here to avoid a cross-project dependency.
-pub type AgentDatum {
-  owner: Credential,
-  name: ByteArray,
-  description: ByteArray,
-  capabilities: List<ByteArray>,
-  framework: ByteArray,
-  endpoint: ByteArray,
-  registered_at: Int,
-}
+/// Agent Registry datum type — re-exported from shared for backwards compatibility.
+pub type AgentDatum =
+  did_verification.AgentDatum
 
-/// Verify that an agent with the given DID (NFT asset name) exists in the
-/// Agent Registry. Returns the AgentDatum if found.
-///
-/// The DID is the NFT asset name at the registry script address.
-/// An agent is "active" if the UTXO exists (no `active` field in datum).
+/// Find and return the AgentDatum for a given DID from reference inputs.
 pub fn find_agent_registry_datum(
   reference_inputs: List<Input>,
   cfg: ReputationConfig,
   agent_did: ByteArray,
 ) -> AgentDatum {
-  expect Some(registry_input) =
-    list.find(
-      reference_inputs,
-      fn(input) {
-        let is_at_registry =
-          when input.output.address.payment_credential is {
-            Script(hash) -> hash == cfg.registry_script_hash
-            _ -> False
-          }
-        let has_nft =
-          assets.quantity_of(
-            input.output.value,
-            cfg.registry_policy_id,
-            agent_did,
-          ) == 1
-        is_at_registry && has_nft
-      },
-    )
-  expect InlineDatum(raw) = registry_input.output.datum
-  expect datum: AgentDatum = raw
-  datum
+  did_verification.find_agent_registry_datum(
+    reference_inputs,
+    cfg.registry_script_hash,
+    cfg.registry_policy_id,
+    agent_did,
+  )
 }
 
 /// Verify that an agent DID exists in the registry (boolean check).
@@ -69,27 +51,16 @@ pub fn verify_agent_exists(
   cfg: ReputationConfig,
   agent_did: ByteArray,
 ) -> Bool {
-  list.any(
+  did_verification.verify_agent_exists(
     reference_inputs,
-    fn(input) {
-      let is_at_registry =
-        when input.output.address.payment_credential is {
-          Script(hash) -> hash == cfg.registry_script_hash
-          _ -> False
-        }
-      let has_nft =
-        assets.quantity_of(
-          input.output.value,
-          cfg.registry_policy_id,
-          agent_did,
-        ) == 1
-      is_at_registry && has_nft
-    },
+    cfg.registry_script_hash,
+    cfg.registry_policy_id,
+    agent_did,
   )
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Capability matching
+// Capability matching (delegates to shared/did_verification)
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Verify that claimed capabilities are a subset of the agent's registered
@@ -100,25 +71,13 @@ pub fn verify_capabilities_match(
   agent_did: ByteArray,
   claimed_capabilities: List<ByteArray>,
 ) -> Bool {
-  let agent_datum = find_agent_registry_datum(reference_inputs, cfg, agent_did)
-  // Every claimed capability must exist in the registry
-  list.all(
+  did_verification.verify_capabilities_match(
+    reference_inputs,
+    cfg.registry_script_hash,
+    cfg.registry_policy_id,
+    agent_did,
     claimed_capabilities,
-    fn(cap) { list.has(agent_datum.capabilities, cap) },
   )
-}
-
-/// Verify that a list is non-empty.
-pub fn is_non_empty(items: List<a>) -> Bool {
-  when items is {
-    [] -> False
-    _ -> True
-  }
-}
-
-/// Verify that all items in `subset` also appear in `superset`.
-pub fn is_subset(subset: List<ByteArray>, superset: List<ByteArray>) -> Bool {
-  list.all(subset, fn(item) { list.has(superset, item) })
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -136,17 +95,36 @@ pub fn has_credential_signed(tx: Transaction, credential: Credential) -> Bool {
 
 /// Check that the transaction is signed by a specific verification key hash.
 pub fn has_key_signed(tx: Transaction, key_hash: ByteArray) -> Bool {
-  list.has(tx.extra_signatories, key_hash)
+  shared_credential.has_key_signed(tx.extra_signatories, key_hash)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Token name derivation (Section 4.1b)
+// ByteArray helpers (delegates to shared/bytearray)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Verify that a list is non-empty.
+pub fn is_non_empty(items: List<a>) -> Bool {
+  shared_bytearray.is_non_empty(items)
+}
+
+/// Verify that all items in `subset` also appear in `superset`.
+pub fn is_subset(subset: List<ByteArray>, superset: List<ByteArray>) -> Bool {
+  shared_bytearray.is_subset(subset, superset)
+}
+
+/// Check if a ByteArray starts with a given prefix.
+pub fn starts_with(data: ByteArray, prefix: ByteArray) -> Bool {
+  shared_bytearray.starts_with(data, prefix)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Token name derivation (Module 3–specific prefixes, uses shared/token_naming)
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Derive the stake token asset name: "rstk_" ++ blake2b_256(agent_did)[0..28]
 pub fn derive_stake_token_name(agent_did: ByteArray) -> ByteArray {
-  let hash = builtin.blake2b_256(agent_did)
-  builtin.append_bytearray(stake_token_prefix, builtin.slice_bytearray(0, 28, hash))
+  // 5-byte prefix + 27-byte hash slice = 32 bytes (Cardano max asset name)
+  token_naming.derive_token_name(stake_token_prefix, agent_did, 27)
 }
 
 /// Derive the endorsement token asset name:
@@ -156,11 +134,8 @@ pub fn derive_endorsement_token_name(
   target_did: ByteArray,
 ) -> ByteArray {
   let combined = builtin.append_bytearray(endorser_did, target_did)
-  let hash = builtin.blake2b_256(combined)
-  builtin.append_bytearray(
-    endorsement_token_prefix,
-    builtin.slice_bytearray(0, 28, hash),
-  )
+  // 5-byte prefix + 27-byte hash slice = 32 bytes (Cardano max asset name)
+  token_naming.derive_token_name(endorsement_token_prefix, combined, 27)
 }
 
 /// Derive the challenge token asset name:
@@ -175,45 +150,18 @@ pub fn derive_challenge_token_name(
       builtin.append_bytearray(challenger_did, target_did),
       capability,
     )
-  let hash = builtin.blake2b_256(combined)
-  builtin.append_bytearray(
-    challenge_token_prefix,
-    builtin.slice_bytearray(0, 24, hash),
-  )
+  token_naming.derive_token_name(challenge_token_prefix, combined, 24)
 }
 
 /// Derive the history bonus token asset name:
 /// "hbonus_" ++ blake2b_256(source_ref_serialized)[0..24]
 pub fn derive_history_bonus_token_name(source_ref: OutputReference) -> ByteArray {
-  let ref_bytes =
-    builtin.append_bytearray(
-      source_ref.transaction_id,
-      builtin.integer_to_bytearray(True, 0, source_ref.output_index),
-    )
-  let hash = builtin.blake2b_256(ref_bytes)
-  builtin.append_bytearray(
-    history_bonus_token_prefix,
-    builtin.slice_bytearray(0, 24, hash),
-  )
+  let ref_bytes = token_naming.serialise_output_reference(source_ref)
+  token_naming.derive_token_name(history_bonus_token_prefix, ref_bytes, 24)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// ByteArray helpers
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Check if a ByteArray starts with a given prefix.
-pub fn starts_with(data: ByteArray, prefix: ByteArray) -> Bool {
-  let prefix_len = builtin.length_of_bytearray(prefix)
-  let data_len = builtin.length_of_bytearray(data)
-  if data_len < prefix_len {
-    False
-  } else {
-    builtin.slice_bytearray(0, prefix_len, data) == prefix
-  }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// AP3X value helpers
+// AP3X value helpers (Module 3–specific)
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Get the AP3X amount in an output's value.
@@ -226,7 +174,7 @@ pub fn get_ap3x_amount(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// UTXO search helpers
+// UTXO search helpers (delegates to shared/utxo)
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Find a UTXO in the transaction inputs that holds the specified token.
@@ -235,14 +183,7 @@ pub fn find_input_with_token(
   policy_id: assets.PolicyId,
   asset_name: ByteArray,
 ) -> Input {
-  expect Some(input) =
-    list.find(
-      inputs,
-      fn(input) {
-        assets.quantity_of(input.output.value, policy_id, asset_name) >= 1
-      },
-    )
-  input
+  utxo.find_input_with_token(inputs, policy_id, asset_name)
 }
 
 /// Count outputs at a specific script address.
@@ -250,41 +191,15 @@ pub fn count_outputs_at_script(
   outputs: List<transaction.Output>,
   script_hash: ByteArray,
 ) -> Int {
-  list.count(
-    outputs,
-    fn(output) {
-      when output.address.payment_credential is {
-        Script(hash) -> hash == script_hash
-        _ -> False
-      }
-    },
-  )
+  utxo.count_outputs_at_script(outputs, script_hash)
 }
 
 /// Check that at least one transaction input comes from the given script address.
-/// Used to couple mint handlers to spend handlers (F1/F2 fix).
 pub fn has_script_input(tx: Transaction, script_hash: ByteArray) -> Bool {
-  list.any(
-    tx.inputs,
-    fn(input) {
-      when input.output.address.payment_credential is {
-        Script(hash) -> hash == script_hash
-        _ -> False
-      }
-    },
-  )
+  utxo.has_script_input(tx.inputs, script_hash)
 }
 
 /// Count how many transaction inputs come from the given script address.
-/// Used for single-script-input guards (F5 fix).
 pub fn count_script_inputs(tx: Transaction, script_hash: ByteArray) -> Int {
-  list.count(
-    tx.inputs,
-    fn(input) {
-      when input.output.address.payment_credential is {
-        Script(hash) -> hash == script_hash
-        _ -> False
-      }
-    },
-  )
+  utxo.count_script_inputs(tx.inputs, script_hash)
 }

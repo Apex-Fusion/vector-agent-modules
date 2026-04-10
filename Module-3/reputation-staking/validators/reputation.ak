@@ -236,6 +236,7 @@ validator reputation(cfg: ReputationConfig) {
         // F-NEW-6 fix: Require oracle signature AND source-specific validation
         let params =
           find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
+        let refs = get_cross_refs(cfg, tx.reference_inputs)
         let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
         let has_valid_token =
           list.any(
@@ -245,10 +246,15 @@ validator reputation(cfg: ReputationConfig) {
               pid == policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
             },
           )
+        // History bonus is minted during DistributeOutcome, which spends an
+        // endorsement UTXO (not a reputation UTXO). Check endorsement script
+        // input instead of reputation script input.
+        let endorsement_input_exists =
+          has_script_input(tx, refs.endorsement_policy_id)
         // Find the history bonus output to determine source
         let bonus_valid =
           validate_history_bonus_mint(tx, cfg, params, policy_id)
-        script_input_exists && oracle_signed && has_valid_token && bonus_valid
+        endorsement_input_exists && oracle_signed && has_valid_token && bonus_valid
       }
       BurnGenesisBonus -> {
         // F1 fix: Require script input to prevent orphan burns

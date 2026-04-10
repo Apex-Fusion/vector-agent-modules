@@ -8,3 +8,8 @@ __pycache__/
 **/docs/old/
 .andjela-scan-ok
 .andjela-hook
+deploy/deploy_state.json
+deploy/deployment.json
+deploy/plutus.json
+deploy/plutus-debug.json
+deploy/smoke_state.json

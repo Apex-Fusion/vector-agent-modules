@@ -9,7 +9,7 @@ use cardano/transaction.{
 }
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
-use reputation_staking/utils.{AgentDatum}
+use shared/did_verification.{AgentDatum}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test constants
