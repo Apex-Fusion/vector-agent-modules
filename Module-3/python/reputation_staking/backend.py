@@ -1,8 +1,11 @@
 """
 Abstract chain backend protocol for Module 3.
 
-Backends implement this protocol to provide chain interaction.
-Current implementations: DockerChainBackend (cardano-cli via Docker).
+The primary implementation is the Ogmios backend (ogmios_backend.py),
+which uses PyCardano TransactionBuilder with remote Ogmios queries.
+
+The legacy Docker/cardano-cli backend (docker_backend.py) is still
+available for local-node testing but is not used by the main client.
 """
 
 from __future__ import annotations
@@ -11,7 +14,12 @@ from typing import Any, Optional, Protocol, Set, Tuple
 
 
 class ChainBackend(Protocol):
-    """Protocol for chain interaction backends."""
+    """Protocol for chain interaction backends.
+
+    This is the legacy protocol used by DockerChainBackend.
+    The main ReputationStakingClient now uses PyCardano's chain context
+    (OgmiosChainContext) directly instead of this protocol.
+    """
 
     def query_utxos(self, address: str) -> dict:
         """Query all UTXOs at an address. Returns cardano-cli JSON format."""

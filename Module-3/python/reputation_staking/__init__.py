@@ -3,17 +3,23 @@ Module 3: Reputation Staking — Python SDK.
 
 Economically-secured agent curation for the Vector ecosystem.
 
-Quick start (Docker backend):
-    from reputation_staking import DockerChainBackend, ReputationStakingClient
+Quick start (Ogmios/remote — matches Module 1 and Module 6):
+    from reputation_staking import ReputationStakingClient
+    from reputation_staking.ogmios_backend import create_context, load_wallet
 
-    backend = DockerChainBackend()
-    client = ReputationStakingClient.from_deploy_state("deploy/deploy_state.json", backend)
-
-    # Create a stake
+    context = create_context()
+    skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
+    client = ReputationStakingClient.from_deploy_state(
+        "deploy/deploy_state.json", context, skey,
+    )
     tx = client.create_stake(agent_did, ["code_review"], 10_000_000)
+
+Legacy (Docker/cardano-cli — requires local node):
+    from reputation_staking.docker_backend import DockerChainBackend
+    # DockerChainBackend is still available but not used by the main client
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from reputation_staking.constants import DFM_PER_AP3X
 from reputation_staking.models import (
@@ -41,9 +47,7 @@ from reputation_staking.token_names import (
     derive_history_bonus_token_name,
     derive_stake_token_name,
 )
-from reputation_staking.backend import ChainBackend
 from reputation_staking.client import ReputationStakingClient
-from reputation_staking.docker_backend import DockerChainBackend
 from reputation_staking.utils import (
     posix_ms_to_slot,
     script_hash_to_address,
@@ -52,10 +56,8 @@ from reputation_staking.utils import (
 )
 
 __all__ = [
-    # Client + Backend
+    # Client
     "ReputationStakingClient",
-    "DockerChainBackend",
-    "ChainBackend",
     # Models
     "StakeInfo",
     "EndorsementInfo",

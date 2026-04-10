@@ -4,6 +4,8 @@ Reputation Indexer — polls chain UTXOs and computes reputation scores.
 Scans the reputation and endorsement validator addresses for stakes,
 endorsements, challenges, and history bonuses. Computes per-agent
 reputation scores using the same formula as on-chain validators.
+
+Supports both Ogmios (remote) and Docker (local) backends.
 """
 
 from __future__ import annotations
@@ -14,11 +16,13 @@ import time
 from collections import defaultdict
 from typing import Optional
 
-from reputation_staking.backend import ChainBackend
+import cbor2
+
 from reputation_staking.constants import (
     CHALLENGE_PREFIX,
     ENDORSEMENT_PREFIX,
     HISTORY_BONUS_PREFIX,
+    OGMIOS_URL,
     STAKE_PREFIX,
 )
 from reputation_staking.models import (
@@ -85,18 +89,24 @@ def _parse_history_bonus_source(source_field: dict) -> str:
 
 
 class ReputationIndexer:
-    """Polls chain UTXOs and computes reputation scores."""
+    """Polls chain UTXOs and computes reputation scores.
+
+    Supports both Ogmios (remote) and Docker/cardano-cli (local) backends.
+    The default is Ogmios, matching Module 1 and Module 6.
+    """
 
     def __init__(
         self,
-        backend: ChainBackend,
         deploy_state: dict,
         storage: IndexerStorage,
         poll_interval: int = 60,
+        ogmios_url: str = OGMIOS_URL,
+        backend=None,
     ):
-        self.backend = backend
         self.storage = storage
         self.poll_interval = poll_interval
+        self.ogmios_url = ogmios_url
+        self._legacy_backend = backend  # Optional: DockerChainBackend for local
 
         self.reputation_hash = deploy_state["reputation_validator_hash"]
         self.endorsement_hash = deploy_state["endorsement_validator_hash"]
@@ -105,9 +115,103 @@ class ReputationIndexer:
 
         self.params = ProtocolParamsInfo()  # defaults match testnet
 
+    def _query_utxos(self, address: str) -> dict:
+        """Query UTxOs — uses Ogmios by default, falls back to legacy backend."""
+        if self._legacy_backend:
+            return self._legacy_backend.query_utxos(address)
+        # Use Ogmios and convert to cardano-cli JSON format for the parsers
+        from reputation_staking.ogmios_backend import ogmios_rpc
+        result = ogmios_rpc(
+            "queryLedgerState/utxo",
+            params={"addresses": [address]},
+            ogmios_url=self.ogmios_url,
+        )
+        return self._ogmios_to_cli_format(result)
+
+    def _get_current_slot(self) -> int:
+        if self._legacy_backend:
+            return self._legacy_backend.get_current_slot()
+        from reputation_staking.ogmios_backend import get_current_slot
+        return get_current_slot(self.ogmios_url)
+
+    @staticmethod
+    def _ogmios_to_cli_format(ogmios_utxos: list) -> dict:
+        """Convert Ogmios UTxO list to cardano-cli JSON format.
+
+        The datum/token parsers expect the cardano-cli format:
+        { "txhash#idx": { "value": {"lovelace": N, "policy": {"token": N}},
+                          "inlineDatum": {...} } }
+        """
+        result = {}
+        for item in ogmios_utxos:
+            tx_hash = item["transaction"]["id"]
+            idx = item["index"]
+            key = f"{tx_hash}#{idx}"
+
+            # Build value
+            value = {}
+            for policy_hex, assets in item.get("value", {}).items():
+                if policy_hex == "ada":
+                    value["lovelace"] = assets.get("lovelace", 0)
+                else:
+                    value[policy_hex] = assets
+
+            # Inline datum — Ogmios returns it as CBOR hex, we need ScriptData JSON
+            # For now, pass through the datum field if it's already JSON
+            # (the parsers handle both formats)
+            datum = item.get("datum")
+            if isinstance(datum, str):
+                # CBOR hex — decode to JSON
+                import cbor2
+                try:
+                    raw = cbor2.loads(bytes.fromhex(datum))
+                    datum = ReputationIndexer._cbor_to_script_data(raw)
+                except Exception:
+                    datum = None
+
+            entry = {"value": value}
+            if datum:
+                entry["inlineDatum"] = datum
+            result[key] = entry
+        return result
+
+    @staticmethod
+    def _cbor_to_script_data(obj):
+        """Convert a decoded CBOR object to cardano-cli ScriptData JSON."""
+        if isinstance(obj, cbor2.CBORTag):
+            # CBOR tags 121-127 map to constructors 0-6
+            # Tags 1280-... map to constructors 7+
+            tag = obj.tag
+            if 121 <= tag <= 127:
+                constructor = tag - 121
+            elif tag >= 1280:
+                constructor = tag - 1280 + 7
+            else:
+                constructor = 0
+            fields = obj.value if isinstance(obj.value, list) else [obj.value]
+            return {
+                "constructor": constructor,
+                "fields": [ReputationIndexer._cbor_to_script_data(f) for f in fields],
+            }
+        elif isinstance(obj, int):
+            return {"int": obj}
+        elif isinstance(obj, bytes):
+            return {"bytes": obj.hex()}
+        elif isinstance(obj, str):
+            return {"bytes": obj.encode().hex()}
+        elif isinstance(obj, list):
+            return {"list": [ReputationIndexer._cbor_to_script_data(item) for item in obj]}
+        elif isinstance(obj, dict):
+            return {"map": [
+                {"k": ReputationIndexer._cbor_to_script_data(k),
+                 "v": ReputationIndexer._cbor_to_script_data(v)}
+                for k, v in obj.items()
+            ]}
+        return {"int": 0}
+
     def poll_once(self) -> int:
         """Run a single indexing pass. Returns number of agents indexed."""
-        current_slot = self.backend.get_current_slot()
+        current_slot = self._get_current_slot()
         logger.info("Indexing at slot %d", current_slot)
 
         # Clear previous data (full rescan each poll)
@@ -117,11 +221,11 @@ class ReputationIndexer:
         self.storage.clear_history_bonuses()
 
         # Scan reputation address (stakes + history bonuses)
-        rep_utxos = self.backend.query_utxos(self.reputation_addr)
+        rep_utxos = self._query_utxos(self.reputation_addr)
         self._index_reputation_utxos(rep_utxos)
 
         # Scan endorsement address (endorsements + challenges)
-        end_utxos = self.backend.query_utxos(self.endorsement_addr)
+        end_utxos = self._query_utxos(self.endorsement_addr)
         self._index_endorsement_utxos(end_utxos)
 
         # Compute scores for all agents

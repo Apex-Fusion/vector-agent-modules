@@ -53,6 +53,14 @@ REGISTRY_POLICY_ID = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
 TREASURY_SCRIPT_HASH = "ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6"
 PARAMS_HOLDER_HASH = "f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867"
 
+# ── Ogmios / Remote Chain ───────────────────────────────────────────────────
+
+OGMIOS_URL = "https://ogmios.vector.testnet.apexfusion.org"
+OGMIOS_HOST = "ogmios.vector.testnet.apexfusion.org"
+OGMIOS_PORT = 443
+OGMIOS_SECURE = True
+TX_SUBMIT_URL = "https://submit.vector.testnet.apexfusion.org/api/submit/tx"
+
 # ── Transaction Timing ───────────────────────────────────────────────────────
 
 TX_WAIT_SECONDS = 25  # Default wait between transactions for confirmation

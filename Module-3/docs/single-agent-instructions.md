@@ -30,8 +30,13 @@ You can participate in four roles:
    - Staker: 10 AP3X to create a self-stake
    - Endorser: 5 AP3X per endorsement
    - Challenger: 25 AP3X per challenge
-3. **Vector testnet access** — Docker container running `cardano-node` with `cardano-cli`
-4. **Python SDK** — `reputation-staking-sdk` with `cbor2` and `bech32` installed
+3. **Wallet signing key** — A Cardano `.skey` file for signing transactions
+4. **Python SDK** — `reputation-staking-sdk` with `pycardano`, `cbor2`, and `requests` installed:
+   ```bash
+   cd Module-3/python && pip install -e ".[dev]"
+   ```
+
+No local node or Docker required. The SDK connects to the Vector testnet via remote Ogmios and submit endpoints.
 
 ---
 
@@ -51,13 +56,17 @@ Stake when you have capabilities you want to advertise on-chain. Staking is the 
 
 2. **Create a seed UTXO** — Send a small amount to the reputation validator address. This UTXO will be consumed during stake creation:
    ```python
-   from reputation_staking import ReputationStakingClient, DockerChainBackend
+   from reputation_staking import ReputationStakingClient
+   from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
 
-   backend = DockerChainBackend()
-   client = ReputationStakingClient.from_deploy_state("deploy/deploy_state.json", backend)
-   client.setup_scripts("deploy/plutus.json")
+   context = OgmiosHttpContext()
+   skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
+   client = ReputationStakingClient.from_deploy_state(
+       "deploy/deploy_state.json", context, skey,
+   )
 
-   seed_utxo = client.create_seed_utxo(agent_did_hex, ["code_review", "testing"])
+   seed_tx = client.create_seed_utxo(agent_did_hex, ["code_review", "testing"])
+   seed_utxo = f"{seed_tx}#0"
    ```
 
 3. **Create your self-stake** — Mints a stake tracking token (`rstk_` prefix) and locks AP3X at the reputation validator address:
@@ -66,6 +75,7 @@ Stake when you have capabilities you want to advertise on-chain. Staking is the 
        agent_did=agent_did_hex,
        capabilities=["code_review", "testing"],
        stake_amount=10_000_000,  # 10 AP3X in DFM
+       seed_utxo=seed_utxo,
    )
    ```
    The inline datum created is:
@@ -183,10 +193,11 @@ Only challenge when you're confident the claim is false. The oracle/jury evaluat
        challenger_did=your_did_hex,
        target_did=target_did_hex,
        capability="code_review",
+       stake_amount=25_000_000,  # 25 AP3X minimum
        evidence_hash=evidence_hash_hex,
        evidence_uri="ipfs://Qm...",
-       stake_amount=25_000_000,  # 25 AP3X minimum
    )
+   # Save challenge_datum — needed for resolve_challenge() and distribute_outcome()
    ```
    The inline datum created is:
    ```
@@ -365,7 +376,7 @@ To set up and run a complete Module 3 instance:
 
 1. Deploy contracts: `python3 scripts/deploy_docker.py`
 2. Register 2+ agent DIDs in the Agent Registry
-3. Agent A creates a self-stake (10+ AP3X)
+3. Agent A creates a seed UTXO + self-stake (10+ AP3X)
 4. Agent B mints an endorsement for Agent A (5+ AP3X)
 5. Agent B mints a challenge against Agent A's capability (25+ AP3X)
 6. Foundation oracle resolves the challenge
@@ -375,7 +386,40 @@ To set up and run a complete Module 3 instance:
 For full deployment details, see [`../deploy/DEPLOY.md`](../deploy/DEPLOY.md) or run the smoke test:
 ```bash
 cd Module-3
+
+# Remote (Ogmios — no Docker/local node required):
+python3 scripts/smoke_test_ogmios.py
+
+# Legacy (Docker — requires local node):
 python3 scripts/smoke_test_docker.py
+```
+
+The Ogmios smoke test uses PyCardano + remote Ogmios HTTP for all chain interaction, matching Module 1 and Module 6. It requires only a wallet `.skey` file and network access.
+
+---
+
+## SDK Architecture
+
+Module 3 uses the same remote chain interaction pattern as Module 1 and Module 6:
+
+| Component | Purpose |
+|-----------|---------|
+| `OgmiosHttpContext` | PyCardano-compatible chain context using Ogmios HTTP JSON-RPC |
+| `ReputationStakingClient` | High-level API: stake, endorse, challenge, resolve, distribute |
+| `PlutusData` classes | Type-safe datum/redeemer construction matching on-chain Aiken types |
+| HTTP submit endpoint | Transaction submission via `https://submit.vector.testnet.apexfusion.org/api/submit/tx` |
+
+All transactions are built with PyCardano's `TransactionBuilder`, which handles fee estimation, execution budget evaluation (via Ogmios `evaluateTransaction`), and CBOR serialization. CIP-33 reference scripts are resolved lazily from on-chain UTxOs.
+
+```
+Agent Code
+    │
+    ▼
+ReputationStakingClient
+    │
+    ├─► OgmiosHttpContext ──► Ogmios HTTP (queries, evaluation)
+    │
+    └─► HTTP Submit API ────► Vector testnet submit endpoint
 ```
 
 ---

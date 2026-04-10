@@ -42,7 +42,7 @@ Two Aiken multi-validators on Plutus V3 (Conway):
 
 | Package | Purpose |
 |---------|---------|
-| `reputation_staking` | SDK: client, datum builders, scoring, backend |
+| `reputation_staking` | SDK: client, Ogmios backend, PlutusData types, scoring |
 | `indexer` | Off-chain indexer: UTXO scanning, score computation, REST API |
 | `oracle` | Foundation oracle: challenge resolution |
 
@@ -50,6 +50,22 @@ Two Aiken multi-validators on Plutus V3 (Conway):
 cd Module-3/python
 pip install -e ".[dev,indexer]"
 ```
+
+### Quick Start (Remote / Ogmios)
+
+```python
+from reputation_staking import ReputationStakingClient
+from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
+
+context = OgmiosHttpContext()
+skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
+client = ReputationStakingClient.from_deploy_state(
+    "deploy/deploy_state.json", context, skey,
+)
+tx = client.create_stake("agent_did_hex", ["code_review"], 10_000_000)
+```
+
+No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries and the Vector testnet HTTP submit endpoint for transaction submission, matching Module 1 and Module 6.
 
 ## Reputation Formula
 
@@ -98,20 +114,31 @@ Module-3/
 
   python/                                     # Python SDK root
     pyproject.toml
-    reputation_staking/                       # SDK: client, datums, scoring, backend
+    reputation_staking/                       # SDK package
+      client.py                               # ReputationStakingClient (PyCardano TransactionBuilder)
+      ogmios_backend.py                       # OgmiosHttpContext, submit, evaluate, wallet utils
+      plutus_data.py                          # PlutusData classes matching on-chain types
+      scoring.py                              # Reputation score computation + decay + tiers
+      constants.py                            # Network params, Ogmios URLs, tier thresholds
+      models.py                               # Off-chain dataclasses + enums
+      token_names.py                          # Token name derivations (rstk_, rend_, rchl_, etc.)
+      datums.py                               # cardano-cli JSON datum builders (legacy)
+      backend.py                              # ChainBackend Protocol (legacy)
+      docker_backend.py                       # Docker/cardano-cli backend (legacy)
+      utils.py                                # Address helpers, slot<->POSIX conversions
     indexer/                                  # Off-chain indexer + REST API
     oracle/                                   # Foundation oracle service
     tests/                                    # Unit tests
 
   scripts/
     deploy_docker.py                          # Deploy to Vector testnet via Docker
-    smoke_test_docker.py                      # Full lifecycle smoke test (8 steps)
+    smoke_test_ogmios.py                      # Full lifecycle smoke test — remote/Ogmios (8 steps)
+    smoke_test_docker.py                      # Legacy smoke test — Docker/cardano-cli
     setup_wallet_docker.py                    # Docker-based wallet setup
 
   deploy/                                     # Deployment artifacts (gitignored)
     deploy_state.json                         # Current deployment hashes + tx IDs
     plutus.json                               # Applied blueprint (with config)
-    smoke_state.json                          # Smoke test progress state
 ```
 
 ## Building and Testing
@@ -123,7 +150,10 @@ cd reputation-staking && aiken build
 # Run 103 unit tests
 aiken check
 
-# Run smoke test on Vector testnet
+# Run smoke test on Vector testnet (remote — no Docker required)
+cd Module-3 && python3 scripts/smoke_test_ogmios.py
+
+# Run smoke test via Docker (legacy — requires local node)
 cd Module-3 && python3 scripts/smoke_test_docker.py
 
 # Run SDK unit tests
@@ -138,11 +168,23 @@ cd python && python -m pytest tests/
 - **Foundation Oracle**: Phase 1.0 uses dev wallet key for challenge resolution
 - **Module 1** (Adversarial Auditing): Challenge escalation path via `EscalateToAudit` / `ResolveEscalation`
 
+## Architecture
+
+Module 3 uses the same remote chain interaction pattern as Module 1 and Module 6:
+
+- **PyCardano TransactionBuilder** for transaction construction (no cardano-cli)
+- **Ogmios HTTP JSON-RPC** for chain queries (protocol params, UTxOs, tip)
+- **HTTP submit endpoint** for transaction submission
+- **CIP-33 reference scripts** for large multi-validator transactions
+- **PlutusData classes** for type-safe datum/redeemer construction
+
+The legacy Docker/cardano-cli backend (`DockerChainBackend`) is preserved for local-node testing but is not used by the main client.
+
 ## Vector Testnet Details
 
 ```
-Container: vector-public-testnet-tools-10_1_4-vector-relay-1
-Network:   --mainnet (Vector uses mainnet network magic)
-System:    2025-07-09T10:38:04Z, 1s slots
-Dev wallet: /tmp/m3dev/ inside Docker
+Ogmios:       https://ogmios.vector.testnet.apexfusion.org (HTTP JSON-RPC)
+Submit:       https://submit.vector.testnet.apexfusion.org/api/submit/tx
+Network:      mainnet (Vector uses mainnet network magic)
+System start: 2025-07-09T10:38:04Z, 1s slots
 ```
