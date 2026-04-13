@@ -7,11 +7,12 @@
 use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, Output, Transaction}
+use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{
-  EndorsementValidatorDatum, Challenge, Open, StakeDatum,
+  CapabilityFalsified, Challenge, EndorsementValidatorDatum, Open,
+  Resolved, StakeDatum, challenge_token_prefix,
 }
 use reputation_staking/utils.{
   derive_stake_token_name, find_agent_registry_datum, get_ap3x_amount,
@@ -296,6 +297,92 @@ pub fn validate_update_capabilities(
   let signed = has_credential_signed(tx, input_datum.owner_credential)
 
   has_capabilities && capabilities_valid && cooldown_met && no_active_challenges && same_agent && same_owner && same_stake && same_history && capabilities_updated && has_token && timestamp_valid && signed
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SlashStake (F-A2 fix: permissionless stake slashing after CapabilityFalsified)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Validate slashing of an agent's stake after their capability was falsified.
+///
+/// Permissionless — the resolved challenge is verified on-chain.
+/// The challenge UTxO is in tx.inputs (being consumed by DistributeOutcome
+/// on the endorsement validator in the same transaction).
+///
+/// MUST:
+///   1. Challenge exists in tx.inputs at the endorsement validator address
+///   2. Challenge carries a valid challenge token (rchl_ prefix)
+///   3. Challenge state == Resolved { CapabilityFalsified }
+///   4. Challenge target_did matches this stake's agent_did
+///   5. Slash amount = stake_amount / num_staked_capabilities
+///   6. Continuing StakeUTXO with reduced stake and preserved fields
+pub fn validate_slash_stake(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
+  input_datum: StakeDatum,
+  output_datum: StakeDatum,
+  output: Output,
+  challenge_ref: OutputReference,
+  current_slot: Int,
+) -> Bool {
+  // Rule 1: Find the challenge in tx.inputs (consumed by DistributeOutcome)
+  expect Some(challenge_input) =
+    list.find(tx.inputs, fn(i) { i.output_reference == challenge_ref })
+
+  // Rule 1: Verify challenge is at endorsement validator address
+  expect Script(challenge_hash) =
+    challenge_input.output.address.payment_credential
+  let at_endorsement = challenge_hash == refs.endorsement_policy_id
+
+  // Rule 2: Verify challenge token present (proves legitimate minting flow)
+  let has_challenge_token =
+    list.any(
+      assets.flatten(challenge_input.output.value),
+      fn(entry) {
+        let (pid, name, _qty) = entry
+        pid == refs.endorsement_policy_id && starts_with(
+          name,
+          challenge_token_prefix,
+        )
+      },
+    )
+
+  // Rule 3: Parse and verify Resolved { CapabilityFalsified }
+  expect InlineDatum(raw) = challenge_input.output.datum
+  expect Challenge(challenge_datum): EndorsementValidatorDatum = raw
+  let is_falsified =
+    challenge_datum.state == Resolved { outcome: CapabilityFalsified }
+
+  // Rule 4: Target must be this agent
+  let target_matches = challenge_datum.target_did == input_datum.agent_did
+
+  // Rule 5: Calculate slash amount
+  let num_capabilities = list.length(input_datum.staked_capabilities)
+  expect num_capabilities > 0
+  let slash_amount = input_datum.stake_amount / num_capabilities
+  let remaining = input_datum.stake_amount - slash_amount
+
+  // Rule 6: Datum continuity — all fields preserved except stake_amount and last_updated
+  let same_agent = input_datum.agent_did == output_datum.agent_did
+  let same_owner = input_datum.owner_credential == output_datum.owner_credential
+  let same_capabilities =
+    input_datum.staked_capabilities == output_datum.staked_capabilities
+  let same_history = input_datum.history_points == output_datum.history_points
+  let stake_reduced = output_datum.stake_amount == remaining
+  let timestamp_updated = output_datum.last_updated == current_slot
+
+  // Output value matches remaining stake
+  let output_ap3x =
+    get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
+  let value_correct = output_ap3x >= remaining
+
+  // Stake token continues with UTXO
+  let expected_token_name = derive_stake_token_name(input_datum.agent_did)
+  let has_token =
+    assets.quantity_of(output.value, refs.reputation_policy_id, expected_token_name) == 1
+
+  at_endorsement && has_challenge_token && is_falsified && target_matches && same_agent && same_owner && same_capabilities && same_history && stake_reduced && timestamp_updated && value_correct && has_token
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

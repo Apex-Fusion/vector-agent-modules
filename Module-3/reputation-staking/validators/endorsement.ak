@@ -156,6 +156,11 @@ fn resolve_own_hash(own_ref: OutputReference, tx: Transaction) -> ByteArray {
 }
 
 /// Validate endorsement slashing triggered by a resolved challenge.
+///
+/// F-A1 fix: Read challenge from REFERENCE INPUTS (not consumed inputs) to
+/// prevent fake-datum exploit. Verify the challenge UTxO is at the endorsement
+/// validator address and carries a valid challenge token. Parse as the
+/// EndorsementValidatorDatum::Challenge wrapper for type safety.
 fn validate_endorsement_slash(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -164,13 +169,34 @@ fn validate_endorsement_slash(
   endorsement_datum: EndorsementDatum,
   challenge_ref: OutputReference,
 ) -> Bool {
+  // F-A1 fix: Read challenge from reference inputs (not consumed inputs)
   expect Some(challenge_input) =
     list.find(
-      tx.inputs,
+      tx.reference_inputs,
       fn(input) { input.output_reference == challenge_ref },
     )
+
+  // F-A1 fix: Verify challenge is at endorsement validator address
+  expect Script(challenge_hash) =
+    challenge_input.output.address.payment_credential
+  let at_endorsement = challenge_hash == refs.endorsement_policy_id
+
+  // F-A1 fix: Verify challenge token present (proves legitimate minting flow)
+  let has_challenge_token =
+    list.any(
+      assets.flatten(challenge_input.output.value),
+      fn(entry) {
+        let (pid, name, _qty) = entry
+        pid == refs.endorsement_policy_id && starts_with(
+          name,
+          challenge_token_prefix,
+        )
+      },
+    )
+
+  // F-A1 fix: Parse as EndorsementValidatorDatum wrapper for type safety
   expect InlineDatum(raw_challenge) = challenge_input.output.datum
-  expect challenge_datum: ReputationChallengeDatum = raw_challenge
+  expect Challenge(challenge_datum): EndorsementValidatorDatum = raw_challenge
 
   let same_target = challenge_datum.target_did == endorsement_datum.target_did
   let is_falsified =
@@ -226,7 +252,7 @@ fn validate_endorsement_slash(
       ) == -1
     }
 
-  same_target && is_falsified && capability_endorsed && output_valid
+  at_endorsement && has_challenge_token && same_target && is_falsified && capability_endorsed && output_valid
 }
 
 /// Validate challenge withdrawal.

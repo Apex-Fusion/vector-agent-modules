@@ -40,6 +40,8 @@ pub type StakeAction {
   UpdateCapabilities { new_capabilities: List<ByteArray> }
   /// Process decay on an inactive agent's stake (callable by anyone)
   ClaimDecayRefund
+  /// Slash stake after a capability is falsified (permissionless — outcome is deterministic)
+  SlashStake { challenge_ref: OutputReference }
 }
 
 /// Redeemer for the reputation validator mint handler.

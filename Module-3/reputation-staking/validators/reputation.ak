@@ -21,7 +21,7 @@ use reputation_staking/types.{
   AuditClaimWon, BurnGenesisBonus, BurnStakeToken, ChallengeWon,
   ClaimDecayRefund, CreateStake, DecreaseStake, GenesisBonus,
   HistoryBonusDatum, IncreaseStake, JurorDuty,
-  MintHistoryBonus, MintStakeToken,
+  MintHistoryBonus, MintStakeToken, SlashStake,
   StakeAction, StakeDatum, StakeMintAction, UpdateCapabilities,
   genesis_bonus_token_prefix, history_bonus_token_prefix, stake_token_prefix,
 }
@@ -350,6 +350,19 @@ validator reputation(cfg: ReputationConfig) {
         decay.validate_claim_decay_refund(
           tx, cfg, refs, params, stake_datum,
           inactive_epochs,
+        )
+      }
+      SlashStake { challenge_ref } -> {
+        // F-A2 fix: Permissionless stake slashing after CapabilityFalsified.
+        // The challenge UTxO is in tx.inputs (consumed by DistributeOutcome
+        // on the endorsement validator in the same transaction).
+        expect Some(output) =
+          find_continuing_output(tx, own_hash, stake_datum.agent_did)
+        expect InlineDatum(raw) = output.datum
+        expect out_datum: StakeDatum = raw
+        stake_validation.validate_slash_stake(
+          tx, cfg, refs, stake_datum, out_datum, output,
+          challenge_ref, current_slot,
         )
       }
     }
