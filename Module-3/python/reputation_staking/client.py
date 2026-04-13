@@ -61,10 +61,13 @@ from reputation_staking.ogmios_backend import (
     wait_for_tx,
 )
 from reputation_staking.plutus_data import (
+    BurnChallengeTokenRedeemer,
+    BurnEndorsementTokenRedeemer,
     ChallengeSpendRedeemer,
     CreateStakeRedeemer,
     DistributeOutcomeRedeemer,
     EndorsementDatum,
+    EndorsementSpendRedeemer,
     EndorsementValidatorDatumChallenge,
     EndorsementValidatorDatumEndorsement,
     HistoryBonusDatum,
@@ -73,7 +76,6 @@ from reputation_staking.plutus_data import (
     MintEndorsementTokenRedeemer,
     MintHistoryBonusRedeemer,
     MintStakeTokenRedeemer,
-    BurnChallengeTokenRedeemer,
     OutputReference,
     RepChallengeOutcomeVerified,
     RepChallengeOutcomeFalsified,
@@ -82,6 +84,8 @@ from reputation_staking.plutus_data import (
     RepChallengeStateResolved,
     ReputationChallengeDatum,
     ResolveChallengeRedeemer,
+    SlashEndorsementRedeemer,
+    SlashStakeRedeemer,
     StakeDatum,
     VerificationKeyCredential,
 )
@@ -753,6 +757,8 @@ class ReputationStakingClient:
 
         challenge_amount = inner.stake_amount
         protocol_fee = challenge_amount * 500 // 10000  # 5%
+        # Ensure treasury output meets Cardano min UTxO (~1 ADA)
+        treasury_output = max(protocol_fee, 1_000_000)
         target_payout = challenge_amount - protocol_fee
 
         # Target address
@@ -810,7 +816,7 @@ class ReputationStakingClient:
 
         # Outputs
         builder.add_output(TransactionOutput(target_addr, target_payout))
-        builder.add_output(TransactionOutput(self.treasury_addr, protocol_fee))
+        builder.add_output(TransactionOutput(self.treasury_addr, treasury_output))
 
         hbonus_out_ma = MultiAsset({self.rep_policy: Asset({hbonus_token_an: 1})})
         builder.add_output(
@@ -831,6 +837,337 @@ class ReputationStakingClient:
 
         tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("DistributeOutcome tx: %s", tx_hash)
+        return tx_hash
+
+    # ── Slash Operations (CapabilityFalsified path) ────────────────────
+
+    def slash_endorsement(
+        self,
+        endorser_did: str,
+        target_did: str,
+        challenger_did: str,
+        capability: str,
+        resolved_challenge_utxo_ref: str,
+        wait: bool = True,
+    ) -> str:
+        """Slash an endorsement after CapabilityFalsified resolution.
+
+        The resolved challenge UTxO is included as a reference input (not consumed).
+        Must be called BEFORE distribute_falsified_outcome, which consumes the challenge.
+
+        Args:
+            resolved_challenge_utxo_ref: "txhash#idx" of the resolved challenge UTxO.
+
+        Returns:
+            Transaction hash.
+        """
+        current_slot = self._current_slot()
+
+        # Find endorsement UTxO
+        endorsement_utxo = self.find_endorsement_utxo(endorser_did, target_did)
+        if not endorsement_utxo:
+            raise RuntimeError("Endorsement UTxO not found on-chain")
+
+        endorsement_token_name = derive_endorsement_token_name(endorser_did, target_did)
+        endorsement_token_an = AssetName(bytes.fromhex(endorsement_token_name))
+
+        # Resolve the challenge UTxO for reference input
+        parts = resolved_challenge_utxo_ref.split("#")
+        challenge_ref_utxo = resolve_utxo(parts[0], int(parts[1]), self.ogmios_url)
+        if not challenge_ref_utxo:
+            raise RuntimeError("Resolved challenge UTxO not found on-chain")
+
+        challenge_oref = OutputReference(
+            transaction_id=bytes.fromhex(parts[0]),
+            output_index=int(parts[1]),
+        )
+
+        # Calculate slash: 50% of endorsement stake
+        # Parse endorsement datum to get stake_amount
+        endorsement_value = endorsement_utxo.output.amount
+        endorsement_lovelace = endorsement_value.coin if hasattr(endorsement_value, 'coin') else endorsement_value
+        slash_rate = 5000  # 50% in basis points
+        slash_amount = endorsement_lovelace * slash_rate // 10000
+        remaining = endorsement_lovelace - slash_amount
+        min_endorsement = 5_000_000  # 5 AP3X
+
+        # Spend redeemer: EndorsementSpend(SlashEndorsement { challenge_ref })
+        spend_redeemer = EndorsementSpendRedeemer(
+            action=SlashEndorsementRedeemer(challenge_ref=challenge_oref)
+        )
+
+        builder = self._new_builder()
+        self._add_wallet_inputs(builder)
+
+        # Spend endorsement UTxO
+        builder.add_script_input(
+            endorsement_utxo,
+            script=self.end_ref_utxo,
+            redeemer=Redeemer(spend_redeemer),
+        )
+
+        if remaining >= min_endorsement:
+            # Continuing endorsement with reduced stake
+            out_ma = MultiAsset({self.end_policy: Asset({endorsement_token_an: 1})})
+            # Rebuild endorsement datum with reduced stake
+            inner_datum = endorsement_utxo.output.datum
+            if isinstance(inner_datum, EndorsementValidatorDatumEndorsement):
+                e_datum = inner_datum.datum
+            else:
+                # Parse from raw CBOR
+                from pycardano.serialization import RawPlutusData
+                e_datum_raw = endorsement_utxo.output.datum
+                e_datum = e_datum_raw  # Will need adjustment based on actual format
+
+            reduced_datum = EndorsementValidatorDatumEndorsement(
+                datum=EndorsementDatum(
+                    endorser_did=bytes.fromhex(endorser_did),
+                    endorser_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
+                    target_did=bytes.fromhex(target_did),
+                    stake_amount=remaining,
+                    endorsed_capabilities=[capability.encode()],
+                    created_at=slot_to_posix_ms(current_slot),
+                )
+            )
+            builder.add_output(
+                TransactionOutput(
+                    self.endorsement_addr,
+                    Value(remaining, out_ma),
+                    datum=reduced_datum,
+                )
+            )
+        else:
+            # Burn endorsement token — remaining below minimum
+            burn_ma = MultiAsset({self.end_policy: Asset({endorsement_token_an: -1})})
+            builder.mint = burn_ma
+            builder.add_minting_script(
+                self.end_ref_utxo,
+                redeemer=Redeemer(BurnEndorsementTokenRedeemer()),
+            )
+
+        # Reference inputs: resolved challenge + common refs
+        builder.reference_inputs.add(challenge_ref_utxo)
+        self._add_common_refs(builder)
+
+        builder.required_signers = [self.vkey.hash()]
+        builder.validity_start = current_slot
+        builder.collaterals = [self._collateral()]
+
+        tx_hash = self._sign_submit_wait(builder, wait)
+        logger.info("SlashEndorsement tx: %s", tx_hash)
+        return tx_hash
+
+    def distribute_falsified_outcome(
+        self,
+        challenger_did: str,
+        target_did: str,
+        capability: str,
+        challenge_datum,
+        wait: bool = True,
+    ) -> str:
+        """Distribute outcome for CapabilityFalsified + slash target's stake.
+
+        Combined transaction that:
+        1. Consumes resolved challenge UTxO (DistributeOutcome on endorsement validator)
+        2. Consumes target's stake UTxO (SlashStake on reputation validator)
+        3. Burns challenge token
+        4. Mints history bonus token for challenger
+        5. Outputs: challenger reward, treasury fee, reduced stake, history bonus
+
+        Returns:
+            Transaction hash.
+        """
+        current_slot = self._current_slot()
+
+        challenge_token_name = derive_challenge_token_name(
+            challenger_did, target_did, capability
+        )
+        challenge_token_an = AssetName(bytes.fromhex(challenge_token_name))
+
+        # Find resolved challenge UTxO
+        resolved_utxo = self.find_challenge_utxo(
+            challenger_did, target_did, capability
+        )
+        if not resolved_utxo:
+            raise RuntimeError("Resolved challenge UTxO not found")
+
+        # Find target's stake UTxO
+        stake_utxo = self.find_stake_utxo(target_did)
+        if not stake_utxo:
+            raise RuntimeError("Target stake UTxO not found")
+
+        # Find agent registry UTxO for target
+        agent_reg_utxo = self.find_agent_registry_utxo(target_did)
+        if not agent_reg_utxo:
+            raise RuntimeError(f"Registry UTxO not found for target {target_did[:16]}...")
+
+        # Get inner challenge datum
+        if isinstance(challenge_datum, EndorsementValidatorDatumChallenge):
+            inner = challenge_datum.datum
+        elif isinstance(challenge_datum, dict):
+            inner = self._challenge_datum_from_json(challenge_datum)
+        else:
+            inner = challenge_datum
+
+        # Parse stake datum to get num_capabilities and stake_amount
+        # We need these for slash calculation
+        stake_value = stake_utxo.output.amount
+        stake_lovelace = stake_value.coin if hasattr(stake_value, 'coin') else stake_value
+        # For the on-chain datum, we read from the UTxO
+        # The stake has capabilities ["code_review", "testing"] = 2 capabilities
+        # slash = stake_amount / num_capabilities
+        # We'll pass the actual values from the datum
+
+        challenge_amount = inner.stake_amount
+
+        # Stake slash calculation: stake / num_capabilities
+        # We need to extract the StakeDatum from the UTxO
+        stake_datum_raw = stake_utxo.output.datum
+        if isinstance(stake_datum_raw, StakeDatum):
+            s_datum = stake_datum_raw
+        else:
+            # Ogmios returns RawCBOR — decode via cbor2 then parse
+            from pycardano.serialization import RawCBOR
+            if isinstance(stake_datum_raw, RawCBOR):
+                import cbor2
+                decoded = cbor2.loads(stake_datum_raw.cbor)
+                s_datum = StakeDatum.from_primitive(decoded)
+            else:
+                s_datum = StakeDatum.from_primitive(stake_datum_raw)
+
+        num_capabilities = len(s_datum.staked_capabilities)
+        if num_capabilities == 0:
+            raise RuntimeError("Target has no staked capabilities")
+        target_slash = s_datum.stake_amount // num_capabilities
+        remaining_stake = s_datum.stake_amount - target_slash
+
+        # Protocol fee on slashed amount
+        protocol_fee = target_slash * 500 // 10000  # 5%
+        # Ensure treasury output meets Cardano min UTxO (~1 ADA)
+        treasury_output = max(protocol_fee, 1_000_000)
+        challenger_reward = target_slash - protocol_fee + challenge_amount
+
+        # History bonus token for challenger (who won the challenge)
+        resolved_tx_hash = bytes(resolved_utxo.input.transaction_id).hex()
+        resolved_tx_idx = resolved_utxo.input.index
+        hbonus_token_name = derive_history_bonus_token_name(
+            resolved_tx_hash, resolved_tx_idx
+        )
+        hbonus_token_an = AssetName(bytes.fromhex(hbonus_token_name))
+
+        # History bonus datum — challenger won
+        hbonus_datum = HistoryBonusDatum(
+            agent_did=bytes.fromhex(challenger_did),
+            source=HistoryBonusSourceChallengeWon(),
+            bonus_points=0,
+            source_ref=OutputReference(
+                transaction_id=bytes.fromhex(resolved_tx_hash),
+                output_index=resolved_tx_idx,
+            ),
+            created_at=slot_to_posix_ms(current_slot),
+        )
+
+        # Challenge OutputReference for SlashStake redeemer
+        challenge_oref = OutputReference(
+            transaction_id=bytes.fromhex(resolved_tx_hash),
+            output_index=resolved_tx_idx,
+        )
+
+        # Stake token for continuing output
+        stake_token_name = derive_stake_token_name(target_did)
+        stake_token_an = AssetName(bytes.fromhex(stake_token_name))
+
+        # Mint: burn challenge token (-1) + mint history bonus (+1)
+        mint_ma = MultiAsset()
+        mint_ma[self.end_policy] = Asset({challenge_token_an: -1})
+        mint_ma[self.rep_policy] = Asset({hbonus_token_an: 1})
+
+        # Redeemers
+        challenge_spend_redeemer = ChallengeSpendRedeemer(
+            action=DistributeOutcomeRedeemer()
+        )
+        slash_stake_redeemer = SlashStakeRedeemer(
+            challenge_ref=challenge_oref
+        )
+
+        builder = self._new_builder()
+        self._add_wallet_inputs(builder)
+
+        # Spend 1: resolved challenge UTxO (endorsement validator)
+        builder.add_script_input(
+            resolved_utxo,
+            script=self.end_ref_utxo,
+            redeemer=Redeemer(challenge_spend_redeemer),
+        )
+
+        # Spend 2: target's stake UTxO (reputation validator)
+        builder.add_script_input(
+            stake_utxo,
+            script=self.rep_ref_utxo,
+            redeemer=Redeemer(slash_stake_redeemer),
+        )
+
+        # Mint/burn
+        builder.mint = mint_ma
+        builder.add_minting_script(
+            self.end_ref_utxo,
+            redeemer=Redeemer(BurnChallengeTokenRedeemer()),
+        )
+        builder.add_minting_script(
+            self.rep_ref_utxo,
+            redeemer=Redeemer(MintHistoryBonusRedeemer()),
+        )
+
+        # Output 1: challenger receives reward + original stake back
+        challenger_addr = self.wallet_addr  # Phase 1.0: dev wallet is both parties
+        builder.add_output(TransactionOutput(challenger_addr, challenger_reward))
+
+        # Output 2: protocol treasury fee (use treasury_output >= min UTxO)
+        builder.add_output(TransactionOutput(self.treasury_addr, treasury_output))
+
+        # Output 3: continuing stake UTxO with reduced stake
+        stake_out_ma = MultiAsset({self.rep_policy: Asset({stake_token_an: 1})})
+        reduced_stake_datum = StakeDatum(
+            agent_did=s_datum.agent_did,
+            owner_credential=s_datum.owner_credential,
+            stake_amount=remaining_stake,
+            staked_capabilities=s_datum.staked_capabilities,
+            last_updated=slot_to_posix_ms(current_slot),
+            history_points=s_datum.history_points,
+        )
+        builder.add_output(
+            TransactionOutput(
+                self.reputation_addr,
+                Value(remaining_stake, stake_out_ma),
+                datum=reduced_stake_datum,
+            )
+        )
+
+        # Output 4: history bonus UTxO
+        hbonus_out_ma = MultiAsset({self.rep_policy: Asset({hbonus_token_an: 1})})
+        builder.add_output(
+            TransactionOutput(
+                self.reputation_addr,
+                Value(2_000_000, hbonus_out_ma),
+                datum=hbonus_datum,
+            )
+        )
+
+        # Reference inputs
+        # Target agent registry (for falsified payouts validation)
+        builder.reference_inputs.add(agent_reg_utxo)
+        # Challenger agent registry (for history bonus verify_agent_exists)
+        challenger_reg_utxo = self.find_agent_registry_utxo(challenger_did)
+        if challenger_reg_utxo and challenger_reg_utxo != agent_reg_utxo:
+            builder.reference_inputs.add(challenger_reg_utxo)
+        self._add_common_refs(builder)
+
+        builder.required_signers = [self.vkey.hash()]
+        builder.validity_start = current_slot
+        builder.collaterals = [self._collateral()]
+
+        tx_hash = self._sign_submit_wait(builder, wait)
+        logger.info("DistributeFalsifiedOutcome tx: %s", tx_hash)
         return tx_hash
 
     # ── Internal Helpers ─────────────────────────────────────────────────

@@ -71,7 +71,14 @@ def ogmios_rpc(
     if params:
         payload["params"] = params
     resp = requests.post(ogmios_url, json=payload, timeout=30)
-    resp.raise_for_status()
+    if resp.status_code >= 400:
+        try:
+            error_body = resp.json()
+        except Exception:
+            error_body = resp.text
+        raise RuntimeError(
+            f"Ogmios RPC error ({method}) HTTP {resp.status_code}: {json.dumps(error_body, indent=2) if isinstance(error_body, dict) else error_body}"
+        )
     data = resp.json()
     if "error" in data:
         raise RuntimeError(f"Ogmios RPC error ({method}): {data['error']}")

@@ -104,6 +104,13 @@ class ClaimDecayRefundRedeemer(PlutusData):
     CONSTR_ID = 4
 
 
+@dataclass
+class SlashStakeRedeemer(PlutusData):
+    """Constructor 5: SlashStake { challenge_ref }"""
+    CONSTR_ID = 5
+    challenge_ref: OutputReference
+
+
 # StakeMintAction redeemers (reputation mint)
 
 @dataclass

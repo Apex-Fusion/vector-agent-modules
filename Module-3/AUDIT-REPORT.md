@@ -1,7 +1,7 @@
 # Module 3: Reputation Staking — Security Audit Report
 
 > **Chain:** Vector Testnet (Cardano Conway) | **Language:** Aiken v1.1.21+ / Plutus V3 | **Audit Date:** 2026-04-13
-> **Tests:** 110/110 pass | **Status:** CONDITIONAL (pending on-chain falsified path test)
+> **Tests:** 110/110 pass | **Status:** PASS — all findings fixed, 12/12 on-chain smoke test steps verified (2026-04-13)
 
 ---
 
@@ -190,7 +190,7 @@ No `StakeAction` variant supports being slashed:
 
 This means the CapabilityFalsified distribution transaction cannot be constructed — the reputation validator will reject it regardless of the redeemer used.
 
-The on-chain smoke test (8/8 steps) only tests `CapabilityVerified` outcome, which does NOT consume the target's StakeUTXO. The falsified path has never been executed on-chain.
+The on-chain smoke test (12/12 steps) now covers both `CapabilityVerified` (steps 5-7) and `CapabilityFalsified` (steps 8-11) outcomes, including SlashEndorsement and SlashStake.
 
 **Attack Scenario:**
 
@@ -449,15 +449,11 @@ The contract demonstrates strong defensive coding practices: double satisfaction
 
 2. **F-A2 (High → Fixed ✅):** New `SlashStake { challenge_ref }` action enables permissionless stake slashing after `CapabilityFalsified`. Works in the same transaction as `DistributeOutcome` since the validators are at different addresses (per-address script input counting).
 
-**Remaining items:**
-
-The CapabilityFalsified → DistributeOutcome → SlashStake → SlashEndorsement flow has been verified with 7 new unit tests (110/110 total) but has NOT been executed on-chain. The existing smoke test covers CapabilityVerified only.
-
-### Conditions for APPROVED:
+**All conditions met:**
 
 - [x] F-A1: Fix `validate_endorsement_slash` — reference inputs, address check, token check, wrapper parsing. 3 exploit/fix tests added.
 - [x] F-A2: Add `SlashStake` action to reputation validator. 4 exploit/fix tests added.
-- [ ] Add on-chain smoke test steps for CapabilityFalsified → DistributeOutcome → SlashStake → SlashEndorsement flow.
+- [x] On-chain smoke test for CapabilityFalsified flow: 12/12 steps passing (steps 8-11: MintChallenge #2 → ResolveChallenge CapabilityFalsified → SlashEndorsement → DistributeOutcome + SlashStake).
 
 ---
 

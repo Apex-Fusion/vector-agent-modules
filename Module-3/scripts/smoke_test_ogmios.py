@@ -11,8 +11,12 @@ Registers 2 agents, then exercises the full Module 3 lifecycle:
   3b. CreateStake for Agent A
   4. MintEndorsement from Agent B -> Agent A
   5. MintChallenge from Agent B against Agent A
-  6. ResolveChallenge (oracle — fee wallet = oracle)
-  7. DistributeOutcome
+  6. ResolveChallenge (oracle: CapabilityVerified)
+  7. DistributeOutcome (CapabilityVerified)
+  8. MintChallenge #2 (B challenges A again)
+  9. ResolveChallenge #2 (oracle: CapabilityFalsified)
+  10. SlashEndorsement (B's endorsement of A)
+  11. DistributeOutcome + SlashStake (CapabilityFalsified)
 
 Usage:
     python3 scripts/smoke_test_ogmios.py
@@ -557,7 +561,141 @@ def smoke_test():
         print(f"\n--- Step 7: DistributeOutcome already done ({smoke['distribute_outcome_tx'][:16]}...) ---")
         passed += 1
 
+    # ══════════════════════════════════════════════════════════════════════
+    # CapabilityFalsified Flow (Steps 8-11)
+    # ══════════════════════════════════════════════════════════════════════
+
+    # ── Step 8: MintChallenge #2 (B challenges A again, for falsified test) ──
+
+    if "mint_challenge2_tx" not in smoke:
+        print("\n--- Step 8: MintChallenge #2 (B challenges A on code_review, 25 AP3X) ---")
+        try:
+            evidence_data = b"capability_falsified_test_evidence_agent_a_cannot_code_review"
+            evidence_hash = hashlib.blake2b(evidence_data, digest_size=32).hexdigest()
+
+            tx_hash, challenge_datum = client.mint_challenge(
+                challenger_did=agent_b_did,
+                target_did=agent_a_did,
+                capability="code_review",
+                stake_amount=25_000_000,
+                evidence_hash=evidence_hash,
+                evidence_uri="ipfs://falsified-test-evidence",
+            )
+            print(f"  TX: {tx_hash}")
+            from reputation_staking.token_names import derive_challenge_token_name
+            smoke["mint_challenge2_tx"] = tx_hash
+            smoke["challenge2_utxo"] = f"{tx_hash}#0"
+            smoke["challenge2_token_name"] = derive_challenge_token_name(
+                agent_b_did, agent_a_did, "code_review"
+            )
+            smoke["challenge2_datum_cbor"] = challenge_datum.to_cbor().hex() if hasattr(challenge_datum, 'to_cbor') else None
+            save_smoke_state(smoke)
+            step_pass("MintChallenge #2")
+        except Exception as e:
+            step_fail("MintChallenge #2", e)
+            import traceback; traceback.print_exc()
+            save_smoke_state(smoke)
+            print_results(passed, failed)
+            return
+    else:
+        print(f"\n--- Step 8: MintChallenge #2 already done ({smoke['mint_challenge2_tx'][:16]}...) ---")
+        passed += 1
+
+    # ── Step 9: ResolveChallenge #2 (Oracle: CapabilityFalsified) ────────
+
+    if "resolve_challenge2_tx" not in smoke:
+        print("\n--- Step 9: ResolveChallenge #2 (Oracle: CapabilityFalsified) ---")
+        try:
+            challenge_datum = _load_challenge_datum2(smoke)
+            if not challenge_datum:
+                raise RuntimeError("Challenge #2 datum not available in smoke state")
+
+            tx_hash = client.resolve_challenge(
+                challenger_did=agent_b_did,
+                target_did=agent_a_did,
+                capability="code_review",
+                outcome_constructor=1,  # CapabilityFalsified
+                challenge_datum=challenge_datum,
+            )
+            print(f"  TX: {tx_hash}")
+            smoke["resolve_challenge2_tx"] = tx_hash
+            smoke["resolved_challenge2_utxo"] = f"{tx_hash}#0"
+            save_smoke_state(smoke)
+            step_pass("ResolveChallenge #2 (Falsified)")
+        except Exception as e:
+            step_fail("ResolveChallenge #2 (Falsified)", e)
+            import traceback; traceback.print_exc()
+            save_smoke_state(smoke)
+            print_results(passed, failed)
+            return
+    else:
+        print(f"\n--- Step 9: ResolveChallenge #2 already done ({smoke['resolve_challenge2_tx'][:16]}...) ---")
+        passed += 1
+
+    # ── Step 10: SlashEndorsement (B's endorsement of A) ─────────────────
+
+    if "slash_endorsement_tx" not in smoke:
+        print("\n--- Step 10: SlashEndorsement (B's endorsement of A, 50% slash) ---")
+        try:
+            tx_hash = client.slash_endorsement(
+                endorser_did=agent_b_did,
+                target_did=agent_a_did,
+                challenger_did=agent_b_did,
+                capability="code_review",
+                resolved_challenge_utxo_ref=smoke["resolved_challenge2_utxo"],
+            )
+            print(f"  TX: {tx_hash}")
+            smoke["slash_endorsement_tx"] = tx_hash
+            save_smoke_state(smoke)
+            step_pass("SlashEndorsement")
+        except Exception as e:
+            step_fail("SlashEndorsement", e)
+            import traceback; traceback.print_exc()
+            save_smoke_state(smoke)
+            print_results(passed, failed)
+            return
+    else:
+        print(f"\n--- Step 10: SlashEndorsement already done ({smoke['slash_endorsement_tx'][:16]}...) ---")
+        passed += 1
+
+    # ── Step 11: DistributeOutcome + SlashStake (CapabilityFalsified) ────
+
+    if "distribute_falsified_tx" not in smoke:
+        print("\n--- Step 11: DistributeOutcome + SlashStake (CapabilityFalsified) ---")
+        try:
+            challenge_datum = _load_challenge_datum2(smoke)
+            if not challenge_datum:
+                raise RuntimeError("Challenge #2 datum not available in smoke state")
+
+            tx_hash = client.distribute_falsified_outcome(
+                challenger_did=agent_b_did,
+                target_did=agent_a_did,
+                capability="code_review",
+                challenge_datum=challenge_datum,
+            )
+            print(f"  TX: {tx_hash}")
+            smoke["distribute_falsified_tx"] = tx_hash
+            save_smoke_state(smoke)
+            step_pass("DistributeOutcome + SlashStake (Falsified)")
+        except Exception as e:
+            step_fail("DistributeOutcome + SlashStake (Falsified)", e)
+            import traceback; traceback.print_exc()
+            save_smoke_state(smoke)
+    else:
+        print(f"\n--- Step 11: DistributeOutcome + SlashStake already done ({smoke['distribute_falsified_tx'][:16]}...) ---")
+        passed += 1
+
     print_results(passed, failed)
+
+
+def _load_challenge_datum2(smoke: dict):
+    """Load challenge #2 datum from smoke state."""
+    from reputation_staking.plutus_data import EndorsementValidatorDatumChallenge
+
+    cbor_hex = smoke.get("challenge2_datum_cbor")
+    if cbor_hex:
+        return EndorsementValidatorDatumChallenge.from_cbor(cbor_hex)
+    return None
 
 
 def _load_challenge_datum(smoke: dict):

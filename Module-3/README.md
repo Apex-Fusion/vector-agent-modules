@@ -33,10 +33,10 @@ Two Aiken multi-validators on Plutus V3 (Conway):
 
 | Validator | Handles | Hash |
 |-----------|---------|------|
-| `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `8ea064c20e2981bb...` |
-| `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `5bb00153807ddb08...` |
+| `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `7e0d53b6797cd770...` |
+| `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `715726f3670743b1...` |
 
-103 unit tests, 8/8 smoke test steps passing on Vector testnet.
+110 unit tests, 12/12 smoke test steps passing on Vector testnet (includes CapabilityVerified and CapabilityFalsified paths).
 
 ## Python SDK
 
@@ -86,8 +86,8 @@ R(agent) = self_stake + endorsements - challenges + history_bonus - decay
 ## Contract Hashes
 
 ```
-reputation_validator:  8ea064c20e2981bb...
-endorsement_validator: 5bb00153807ddb08...
+reputation_validator:  7e0d53b6797cd770...
+endorsement_validator: 715726f3670743b1...
 agent_registry:        be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01
 treasury (stub):       ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6
 params_holder:         f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867
@@ -132,7 +132,8 @@ Module-3/
 
   scripts/
     deploy_docker.py                          # Deploy to Vector testnet via Docker
-    smoke_test_ogmios.py                      # Full lifecycle smoke test — remote/Ogmios (8 steps)
+    deploy_ogmios.py                          # Deploy to Vector testnet via Ogmios (remote)
+    smoke_test_ogmios.py                      # Full lifecycle smoke test — remote/Ogmios (12 steps)
     smoke_test_docker.py                      # Legacy smoke test — Docker/cardano-cli
     setup_wallet_docker.py                    # Docker-based wallet setup
 
@@ -147,7 +148,7 @@ Module-3/
 # Build contracts
 cd reputation-staking && aiken build
 
-# Run 103 unit tests
+# Run 110 unit tests
 aiken check
 
 # Run smoke test on Vector testnet (remote — no Docker required)
