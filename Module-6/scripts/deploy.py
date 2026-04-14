@@ -51,7 +51,7 @@ EXPLORER_URL = os.getenv("VECTOR_EXPLORER_URL", "https://vector.testnet.apexscan
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-AGENT_REGISTRY_HASH = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
+AGENT_REGISTRY_HASH = "5dd5118943d5aa7329696181252a6565a27dbf2c6de92b02a6aae361"
 ZEROED_28 = "00" * 28
 
 

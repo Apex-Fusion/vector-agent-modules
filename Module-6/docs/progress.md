@@ -22,14 +22,14 @@ Spec reference: `Module-6/docs/MODULE-6-GOVERNANCE-SUGGESTION-ENGINE-IMPL-SPEC.m
 - [x] Shared utility library extracted (`shared/lib/shared/` — DID verification, credential, UTXO helpers, token naming, oracle, bytearray)
 - [x] Module 6 wired to shared library via symlink (`lib/shared/` -> `shared/lib/shared/`)
 
-### Aiken Tests (168 passing)
+### Aiken Tests (207 passing)
 
 - [x] Proposal tests — 49 tests (`tests/proposal_tests.ak`)
 - [x] Critique tests — 19 tests (`tests/critique_tests.ak`)
 - [x] Reward tests — 23 tests (`tests/reward_tests.ak`)
 - [x] Integration tests — 30 tests (`tests/integration_tests.ak`)
 - [x] Property-based tests — 47 tests (`tests/property_tests.ak`) — stake conservation, state machine integrity, activity monotonicity, critique idempotency, oracle exclusivity, reward bounds, token lifecycle, boundary values, governable params
-- [ ] Validator-level tests with mock transactions (unit-level; on-chain lifecycle covered by smoke tests 1-9)
+- [x] Validator-level mock transaction tests — 39 tests (`tests/validator_tests.ak`) — calls validation functions with constructed Input/Output/reference inputs/mint/signatories, testing both positive and negative cases for all proposal actions (submit, withdraw, amend, adopt, reject, expire, expire stale, extend review) and critique/endorsement actions (submit, withdraw, incorporate, self-critique, self-endorse)
 
 ### On-Chain Libraries
 
@@ -166,6 +166,27 @@ Tests 1-5 pass. Test 6 in progress — see Active Debugging below.
 - [x] Recreated GovernanceParams, Oracle, CrossRefs NFT UTxOs (`scripts/recreate_infra.py`) — all 3 holder addresses had 0 UTxOs
 - [x] Redeployed GovernanceParams UTXO with corrected POSIX ms values (`scripts/update_params.py`)
 - [x] Full smoke test re-run (8/8 pass) with temporarily lowered cooldown, then restored to 24h
+
+---
+
+## Phase 1.0/1.1 — Remaining Gaps
+
+### Validator-Level Mock Transaction Tests
+- [x] Test helpers module — transaction construction builders (`tests/test_helpers.ak`)
+- [x] Validator-level tests — 39 tests with mock transaction data (`tests/validator_tests.ak`)
+
+### Dashboard Missing Features (spec §13.2)
+- [ ] Off-chain document retrieval via `storage_uri` (OriginTrail/IPFS)
+- [ ] Structured reasoning templates for adoption/rejection
+- [ ] Batch processing (act on multiple proposals in one session)
+- [ ] Stale proposal detection and batch-expire in dashboard
+
+### SDK Publishing & Completeness
+- [ ] Publish SDK to PyPI (all new methods are local only)
+- [ ] `analyze_chain_metrics()` SDK method (spec §12.1) — only agent template demonstrates the pattern
+
+### Indexer REST API (spec §14.1)
+- [ ] Standalone REST indexer endpoints (dashboard has similar but different API shape)
 
 ---
 

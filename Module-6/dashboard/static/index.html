@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Game 6 — Foundation Review Dashboard</title>
+  <title>Vector Governance Explorer</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header>
-    <h1>Governance Review Dashboard</h1>
+    <h1>Vector Governance Explorer</h1>
     <div class="controls">
       <span id="status" class="status">Connecting...</span>
       <button onclick="refresh()">Refresh</button>
@@ -16,17 +16,49 @@
   </header>
 
   <div class="tabs">
-    <div class="tab active" data-tab="queue">Queue</div>
+    <div class="tab active" data-tab="proposals">Proposals</div>
+    <div class="tab" data-tab="timeline">Timeline</div>
+    <div class="tab" data-tab="agents">Agents</div>
     <div class="tab" data-tab="treasury">Treasury</div>
     <div class="tab" data-tab="stats">Stats</div>
   </div>
 
   <div class="content">
-    <!-- Queue Tab -->
-    <div id="tab-queue" class="tab-panel active">
+    <!-- Proposals Tab -->
+    <div id="tab-proposals" class="tab-panel active">
+      <div class="filter-bar">
+        <select id="filter-type" onchange="applyFilters()">
+          <option value="">All Types</option>
+          <option value="ParameterChange">Parameter Change</option>
+          <option value="TreasurySpend">Treasury Spend</option>
+          <option value="ProtocolUpgrade">Protocol Upgrade</option>
+          <option value="GameActivation">Module Activation</option>
+          <option value="GeneralSuggestion">General Suggestion</option>
+        </select>
+        <select id="filter-state" onchange="applyFilters()">
+          <option value="">All States</option>
+          <option value="Open">Open</option>
+          <option value="Amended">Amended</option>
+          <option value="Adopted">Adopted</option>
+          <option value="Rejected">Rejected</option>
+          <option value="Expired">Expired</option>
+          <option value="Withdrawn">Withdrawn</option>
+        </select>
+        <input type="text" id="filter-search" placeholder="Search proposer or proposal..." oninput="applyFilters()">
+      </div>
       <div id="proposals-loading" class="loading">Loading proposals...</div>
       <div id="proposals-empty" class="empty" style="display:none">No proposals found.</div>
       <div id="proposals-list"></div>
+    </div>
+
+    <!-- Timeline Tab -->
+    <div id="tab-timeline" class="tab-panel">
+      <div id="timeline-content" class="loading">Loading timeline...</div>
+    </div>
+
+    <!-- Agents Tab -->
+    <div id="tab-agents" class="tab-panel">
+      <div id="agents-content" class="loading">Loading leaderboard...</div>
     </div>
 
     <!-- Treasury Tab -->
