@@ -21,7 +21,7 @@ use reputation_staking/types.{
   AuditClaimWon, BurnGenesisBonus, BurnStakeToken, ChallengeWon,
   ClaimDecayRefund, CreateStake, DecreaseStake, GenesisBonus,
   HistoryBonusDatum, IncreaseStake, JurorDuty,
-  MintHistoryBonus, MintStakeToken,
+  MintHistoryBonus, MintStakeToken, SlashStake,
   StakeAction, StakeDatum, StakeMintAction, UpdateCapabilities,
   genesis_bonus_token_prefix, history_bonus_token_prefix, stake_token_prefix,
 }
@@ -236,6 +236,7 @@ validator reputation(cfg: ReputationConfig) {
         // F-NEW-6 fix: Require oracle signature AND source-specific validation
         let params =
           find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
+        let refs = get_cross_refs(cfg, tx.reference_inputs)
         let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
         let has_valid_token =
           list.any(
@@ -245,10 +246,15 @@ validator reputation(cfg: ReputationConfig) {
               pid == policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
             },
           )
+        // History bonus is minted during DistributeOutcome, which spends an
+        // endorsement UTXO (not a reputation UTXO). Check endorsement script
+        // input instead of reputation script input.
+        let endorsement_input_exists =
+          has_script_input(tx, refs.endorsement_policy_id)
         // Find the history bonus output to determine source
         let bonus_valid =
           validate_history_bonus_mint(tx, cfg, params, policy_id)
-        script_input_exists && oracle_signed && has_valid_token && bonus_valid
+        endorsement_input_exists && oracle_signed && has_valid_token && bonus_valid
       }
       BurnGenesisBonus -> {
         // F1 fix: Require script input to prevent orphan burns
@@ -344,6 +350,19 @@ validator reputation(cfg: ReputationConfig) {
         decay.validate_claim_decay_refund(
           tx, cfg, refs, params, stake_datum,
           inactive_epochs,
+        )
+      }
+      SlashStake { challenge_ref } -> {
+        // F-A2 fix: Permissionless stake slashing after CapabilityFalsified.
+        // The challenge UTxO is in tx.inputs (consumed by DistributeOutcome
+        // on the endorsement validator in the same transaction).
+        expect Some(output) =
+          find_continuing_output(tx, own_hash, stake_datum.agent_did)
+        expect InlineDatum(raw) = output.datum
+        expect out_datum: StakeDatum = raw
+        stake_validation.validate_slash_stake(
+          tx, cfg, refs, stake_datum, out_datum, output,
+          challenge_ref, current_slot,
         )
       }
     }
