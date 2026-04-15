@@ -1,0 +1,86 @@
+{
+  "version": "v8",
+  "network": "vector-mainnet",
+  "date": "2026-04-15",
+  "endpoints": {
+    "ogmios": "https://ogmios.vector.mainnet.apexfusion.org",
+    "submit": "https://submit.vector.mainnet.apexfusion.org/api/submit/tx",
+    "koios": "https://v2.koios.vector.mainnet.apexfusion.org/",
+    "explorer": "https://vector.apexscan.org"
+  },
+  "addresses": {
+    "proposal_spend": "addr1wxvtvyx9jkt7jprdhm0g6wxkl8pvvc63vlwumju8f5uatzgnjjjcr",
+    "critique_spend": "addr1w9gas5jxfye79d7g87lddu5p3lhvt67ku4ptfvgyqn4rp6stn80z3",
+    "endorsement_spend": "addr1w8t3qgtthdpznyaw5vtdh87tlekzg5f5rdcav20ghwf7pms2mfltj"
+  },
+  "hashes": {
+    "proposal_spend": "98b610c59597e9046dbede8d38d6f9c2c6635167ddcdcb874d39d589",
+    "proposal_mint": "fdcefb68c765c4e4c1483baa01b6e9624c870d9d56380f7c2dfb65cc",
+    "critique_spend": "51d852464933e2b7c83fbed6f2818feec5ebd6e542b4b10404ea30ea",
+    "critique_mint": "b4562214183267db848af597672061a42e149e14f0e989db4d8b6296",
+    "endorsement_spend": "d710216bbb422993aea316db9fcbfe6c2451341b71d629e8bb93e0ee"
+  },
+  "holders": {
+    "params": {
+      "hash": "f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867",
+      "address": "addr1w8uc78dvuxkgq4s4enqr276wevmr5saegl7fnudxvxzssecjx7n6t"
+    },
+    "oracle": {
+      "hash": "0611cf74214ef8fdd88a9e521cd9dae2a5269b4d1f0beb8d0133763e",
+      "address": "addr1wyrprnm5y9803lwc3209y8xemt322f5mf50sh6udqyehv0s9kk34m"
+    },
+    "treasury": {
+      "hash": "ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6",
+      "address": "addr1wx434t2jc3m5uhdf7tq05xjdqu3q5z7a2lhrmn5mapsd43srh7ll8"
+    }
+  },
+  "reference_scripts": {
+    "holder_params_ref": "cd0af17af3df2fcf5c09bfcd04f4c0d9079f637879ff2dfbab435ae5d62062f3#0",
+    "holder_oracle_ref": "066c74de2691fd1b8799377a32cc98729fe91be6ac989f5c4c1ab000b3acd68a#0",
+    "holder_treasury_ref": "e09ba2619087792717e2e592bef3209331a5f62de95b8832f50ef04e5e36c474#0",
+    "proposal_mint_ref": "69fd3e0107964b6e7b396963c2106ffb3e9f777a4e0a1ade070bfdbcfa33d0e6#0",
+    "proposal_spend_ref": "e05eceb3ca1e5ccdee93c56ac9d6ed8b480f343bfc0032cfcfe39f3fd89e3269#0",
+    "critique_mint_ref": "482a723ff19ef119e30a335df208c04216e779c576e3921ca5208391a8b992c3#0",
+    "critique_spend_ref": "04958e69d714c83e8d3928ae6b731c21e7b732b0e309664d3a0e605dd656cf0b#0",
+    "endorsement_spend_ref": "0f2f3604fc85cb73d943eda8c0636eabdf8577ea8011acb6a46e452747430f12#0",
+    "cross_refs_nft": "72e29ff88f8fceca4182edba6d6b225a8377389ac7ba8148b68f0b03c36fe937#0"
+  },
+  "infrastructure": {
+    "params_utxo": "fc5c4ecde448123d604d034ded1ada696b3f3a082e6cd83899ee1e93eb8af6bf#0",
+    "oracle_utxo": "efebb237b84e27e1089a3ca58cf4f413e43ac04b7c882c30468a553c11a3e793#0",
+    "treasury_batch_1": "93ad5c224116d2dfc8fe47fe06b9be40dc5dcb40da89c92cafec3fd3e4ad73bb#0",
+    "treasury_batch_2": "4d73e88f1fa85d0f99b4e96ca0ed0390df9ecb963a276dd71897c6d44fe6c795#0",
+    "treasury_batch_3": "1aa5b4dbdfea93875d65f70468caec288571b95d25dd80a551225db92f471e15#0",
+    "cross_refs_nft": "72e29ff88f8fceca4182edba6d6b225a8377389ac7ba8148b68f0b03c36fe937#0"
+  },
+  "token_policies": {
+    "cross_refs_nft": "c1a4a814834dfe46ef8c6aec4b298260cd5e8e2aff3bf6a1a2d5140d",
+    "proposal_tokens": "fdcefb68c765c4e4c1483baa01b6e9624c870d9d56380f7c2dfb65cc",
+    "critique_tokens": "b4562214183267db848af597672061a42e149e14f0e989db4d8b6296"
+  },
+  "external_dependencies": {
+    "agent_registry": "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01",
+    "agent_registry_address": "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42",
+    "agent_registry_version": "v2-audited"
+  },
+  "governance_params": {
+    "min_proposal_stake": 25000000,
+    "min_critique_stake": 5000000,
+    "min_governance_endorsement": 10000000,
+    "min_review_window": 259200000,
+    "max_review_window": 2419200000,
+    "max_amendments": 5,
+    "max_active_proposals": 3,
+    "proposal_cooldown": 86400000,
+    "proposer_reward_share": 7000,
+    "critic_reward_share": 2000,
+    "protocol_fee_rate": 1000,
+    "min_adoption_reward": 50000000,
+    "max_adoption_reward": 500000000,
+    "max_incorporated_critiques": 10,
+    "max_treasury_request": 10000000000,
+    "emergency_stake_multiplier": 5000,
+    "emergency_review_window": 43200000,
+    "param_execution_delay": 604800000
+  }
+}

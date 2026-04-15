@@ -1,5 +1,5 @@
 """
-Module 6: Full Testnet Deployment Script
+Module 6: Full Deployment Script (testnet or mainnet)
 
 Handles the complete deployment flow:
   1. Apply GovernanceConfig parameter to all validators via `aiken blueprint apply`
@@ -12,8 +12,13 @@ Handles the complete deployment flow:
 Usage:
     nix-shell shell.nix --run "python scripts/deploy.py"
 
+    For mainnet, set env vars:
+        VECTOR_OGMIOS_URL=https://ogmios.vector.mainnet.apexfusion.org
+        VECTOR_SUBMIT_URL=https://submit.vector.mainnet.apexfusion.org/api/submit/tx
+        VECTOR_EXPLORER_URL=https://vector.apexscan.org
+
 Prerequisites:
-    1. Wallet funded (run setup_wallet.py first)
+    1. Wallet funded (run setup_wallet.py or import_wallet.py first)
     2. Aiken contracts compiled (aiken build in contracts/governance-suggestion)
     3. Holder scripts compiled (aiken build in shared/holder-scripts)
 """
@@ -41,6 +46,7 @@ BLUEPRINT_PATH = CONTRACT_DIR / "plutus.json"
 HOLDER_BLUEPRINT_PATH = HOLDER_DIR / "plutus.json"
 WALLET_FILE = GAME6_ROOT / "wallets" / "governance_wallet.json"
 SKEY_PATH = GAME6_ROOT / "wallets" / "payment.skey"
+MNEMONIC_FILE = os.getenv("VECTOR_MNEMONIC_FILE")  # Optional: path to BIP39 mnemonic file
 DEPLOY_STATE_FILE = GAME6_ROOT / "wallets" / "deploy_state.json"
 
 # ── Network config ───────────────────────────────────────────────────────────
@@ -48,6 +54,7 @@ DEPLOY_STATE_FILE = GAME6_ROOT / "wallets" / "deploy_state.json"
 OGMIOS_URL = os.getenv("VECTOR_OGMIOS_URL", "https://ogmios.vector.testnet.apexfusion.org")
 SUBMIT_URL = os.getenv("VECTOR_SUBMIT_URL", "https://submit.vector.testnet.apexfusion.org/api/submit/tx")
 EXPLORER_URL = os.getenv("VECTOR_EXPLORER_URL", "https://vector.testnet.apexscan.org")
+NETWORK = "vector-mainnet" if "mainnet" in OGMIOS_URL else "vector-testnet"
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -173,12 +180,40 @@ def apply_governance_config(config_cbor_hex: str) -> dict:
 
 # ── Bech32 address computation ───────────────────────────────────────────────
 
-def script_hash_to_testnet_address(script_hash_hex: str) -> str:
+def script_hash_to_address(script_hash_hex: str) -> str:
     """Convert a script hash to a Bech32 address (Vector uses mainnet flag)."""
     from pycardano import Address, Network, ScriptHash
     script_hash = ScriptHash(bytes.fromhex(script_hash_hex))
     addr = Address(payment_part=script_hash, network=Network.MAINNET)
     return str(addr)
+
+
+# ── Transaction signing ────────────────────────────────────────────────────
+
+def sign_tx(builder, agent):
+    """Build and sign a tx. Works with both standard and extended (HD) signing keys.
+
+    pycardano's build_and_sign has a bug with PaymentExtendedSigningKey where
+    to_verification_key() returns an empty payload. We work around it by
+    building the body first, then manually constructing the witness.
+    """
+    from pycardano import Transaction, TransactionWitnessSet, VerificationKeyWitness
+    from pycardano.key import PaymentExtendedSigningKey
+
+    sk = agent._wallet.payment_signing_key
+    change_addr = agent._wallet.payment_address
+
+    if not isinstance(sk, PaymentExtendedSigningKey):
+        return builder.build_and_sign(signing_keys=[sk], change_address=change_addr)
+
+    tx_body = builder.build(change_address=change_addr)
+    vk = agent._wallet.payment_verification_key
+    signature = sk.sign(tx_body.hash())
+    witness_set = TransactionWitnessSet(
+        vkey_witnesses=[VerificationKeyWitness(vk, signature)],
+        native_scripts=builder.native_scripts or None,
+    )
+    return Transaction(tx_body, witness_set)
 
 
 # ── Deployment transactions ─────────────────────────────────────────────────
@@ -217,10 +252,7 @@ async def deploy_reference_script(agent, script_cbor_hex: str, label: str) -> st
     # Add a fee buffer proportional to script size.
     builder.fee_buffer = max(300_000, script_size * 50)
 
-    tx = builder.build_and_sign(
-        signing_keys=[agent._wallet.payment_signing_key],
-        change_address=agent._wallet.payment_address,
-    )
+    tx = sign_tx(builder, agent)
 
     tx_cbor = tx.to_cbor()
     if isinstance(tx_cbor, bytes):
@@ -255,10 +287,7 @@ async def create_datum_utxo(agent, address, datum_data, lovelace: int, label: st
         )
     )
 
-    tx = builder.build_and_sign(
-        signing_keys=[agent._wallet.payment_signing_key],
-        change_address=agent._wallet.payment_address,
-    )
+    tx = sign_tx(builder, agent)
 
     tx_cbor = tx.to_cbor()
     if isinstance(tx_cbor, bytes):
@@ -308,10 +337,7 @@ async def mint_refs_nft(agent, native_script_cbor: bytes, refs_datum_data, label
         )
     )
 
-    tx = builder.build_and_sign(
-        signing_keys=[agent._wallet.payment_signing_key],
-        change_address=agent._wallet.payment_address,
-    )
+    tx = sign_tx(builder, agent)
 
     tx_cbor = tx.to_cbor()
     if isinstance(tx_cbor, bytes):
@@ -333,7 +359,18 @@ async def deploy():
 
     # ── Step 0: Load wallet and blueprints ────────────────────────────────
 
-    wallet = load_wallet()
+    mnemonic = None
+    if MNEMONIC_FILE:
+        mnemonic = Path(MNEMONIC_FILE).read_text().strip()
+        # Derive vkey_hash from mnemonic using SDK's HD wallet
+        from vector_agent.wallet.hd import HDWallet as VectorHDWallet
+        hd = VectorHDWallet(mnemonic)
+        wallet = {
+            "address": str(hd.payment_address),
+            "vkey_hash": str(hd.payment_verification_key.hash()),
+        }
+    else:
+        wallet = load_wallet()
     print(f"\nWallet: {wallet['address']}")
     print(f"VKey Hash: {wallet['vkey_hash']}")
 
@@ -354,7 +391,7 @@ async def deploy():
     for tag, name in [(1, "params"), (2, "oracle"), (3, "treasury")]:
         info = apply_holder_tag(HOLDER_BLUEPRINT_PATH, tag)
         holders[name] = info
-        addr = script_hash_to_testnet_address(info["hash"])
+        addr = script_hash_to_address(info["hash"])
         print(f"  {name}: hash={info['hash']}")
         print(f"         addr={addr}")
 
@@ -395,15 +432,17 @@ async def deploy():
 
     # ── Step 4: Deploy to testnet ────────────────────────────────────────
 
-    print("\n--- Step 4: Deploy to Testnet ---")
+    print(f"\n--- Step 4: Deploy to {NETWORK} ---")
 
     from vector_agent import VectorAgent
 
-    async with VectorAgent(
-        ogmios_url=OGMIOS_URL,
-        submit_url=SUBMIT_URL,
-        skey_path=str(SKEY_PATH.absolute()),
-    ) as agent:
+    agent_kwargs = dict(ogmios_url=OGMIOS_URL, submit_url=SUBMIT_URL)
+    if mnemonic:
+        agent_kwargs["mnemonic"] = mnemonic
+    else:
+        agent_kwargs["skey_path"] = str(SKEY_PATH.absolute())
+
+    async with VectorAgent(**agent_kwargs) as agent:
         balance = await agent.get_balance()
         print(f"  Balance: {balance.ada} AP3X ({balance.lovelace} lovelace)")
 
@@ -456,7 +495,7 @@ async def deploy():
             print("\n  4c. Creating GovernanceParams UTXO...")
             from vector_agent.governance.datums import build_governance_params
             params_datum = build_governance_params()
-            params_addr = script_hash_to_testnet_address(holders["params"]["hash"])
+            params_addr = script_hash_to_address(holders["params"]["hash"])
             tx = await create_datum_utxo(
                 agent, params_addr, params_datum.data, 3_000_000, "params"
             )
@@ -473,7 +512,7 @@ async def deploy():
                 oracle_vkey_hash=bytes.fromhex(wallet["vkey_hash"]),
                 treasury_script_hash=bytes.fromhex(holders["treasury"]["hash"]),
             )
-            oracle_addr = script_hash_to_testnet_address(holders["oracle"]["hash"])
+            oracle_addr = script_hash_to_address(holders["oracle"]["hash"])
             tx = await create_datum_utxo(
                 agent, oracle_addr, oracle_datum.data, 3_000_000, "oracle"
             )
@@ -485,7 +524,7 @@ async def deploy():
         # 4e: Create Treasury batch UTxOs at treasury holder address
         print("\n  4e. Creating Treasury batch UTxOs...")
         from vector_agent.governance.datums import build_treasury_batch_datum
-        treasury_addr = script_hash_to_testnet_address(holders["treasury"]["hash"])
+        treasury_addr = script_hash_to_address(holders["treasury"]["hash"])
         for batch_id in range(1, 4):  # 3 batches
             key = f"treasury_batch_{batch_id}"
             if key in tx_hashes:
@@ -517,7 +556,7 @@ async def deploy():
             ])
             # Mint at oracle holder address (not wallet) to prevent
             # coin selection from consuming the CrossRefs UTxO.
-            oracle_holder_addr = script_hash_to_testnet_address(holders["oracle"]["hash"])
+            oracle_holder_addr = script_hash_to_address(holders["oracle"]["hash"])
             tx = await mint_refs_nft(
                 agent, native_script_cbor, cross_refs_data, "cross-refs",
                 target_address=oracle_holder_addr,
@@ -542,13 +581,13 @@ async def deploy():
 def save_deploy_state(wallet, holders, refs_policy_id, applied_validators,
                       proposal_hash, critique_hash, tx_hashes):
     state = {
-        "network": "vector-testnet",
+        "network": NETWORK,
         "wallet_address": wallet["address"],
         "wallet_vkey_hash": wallet["vkey_hash"],
         "refs_token_policy": refs_policy_id,
         "holders": {
             name: {"hash": info["hash"],
-                    "address": script_hash_to_testnet_address(info["hash"]),
+                    "address": script_hash_to_address(info["hash"]),
                     "compiled_code": info["compiled_code"]}
             for name, info in holders.items()
         },
@@ -559,7 +598,7 @@ def save_deploy_state(wallet, holders, refs_policy_id, applied_validators,
         "proposal_validator_hash": proposal_hash,
         "critique_validator_hash": critique_hash,
         "agent_registry_hash": AGENT_REGISTRY_HASH,
-        "cross_refs_address": script_hash_to_testnet_address(holders["oracle"]["hash"]),
+        "cross_refs_address": script_hash_to_address(holders["oracle"]["hash"]),
         "tx_hashes": tx_hashes,
         "explorer_url": EXPLORER_URL,
         "ogmios_url": OGMIOS_URL,
