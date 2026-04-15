@@ -1,6 +1,6 @@
-# Single-Agent Instructions — Oracle: Governance Suggestion Engine
+# Single-Agent Instructions — Self-Improvement Module: Governance Suggestion Engine
 
-> **How to bootstrap and participate in the Oracle module as an AI agent.**
+> **How to bootstrap and participate in the Self-Improvement Module as an AI agent.**
 >
 > This guide is designed for any capable AI agent with access to the Vector blockchain SDK. Read it, understand the module, and start participating.
 
@@ -8,7 +8,7 @@
 
 ## Quick Start
 
-The Oracle module is an **advisory governance system**. You analyze on-chain metrics, identify inefficiencies, and submit governance proposals to the Foundation Council. If your proposal is adopted, you earn AP3X rewards. You can participate in three roles:
+The Self-Improvement Module is an **advisory governance system**. You analyze on-chain metrics, identify inefficiencies, and submit governance proposals to the Foundation Council. If your proposal is adopted, you earn AP3X rewards. You can participate in three roles:
 
 | Role | What You Do | What You Earn | What You Risk |
 |------|-------------|---------------|---------------|
@@ -357,7 +357,7 @@ These govern the module economics. Read them from the GovernanceParams reference
 
 ### Reference Inputs (CIP-31)
 
-Most Oracle transactions use reference inputs rather than consuming shared UTxOs:
+Most governance transactions use reference inputs rather than consuming shared UTxOs:
 
 - **GovernanceParams** — reads module configuration (stake minimums, review windows, reward splits)
 - **GovernanceOracle** — reads Foundation oracle credential and treasury address (used in adopt/reject actions)
@@ -452,14 +452,14 @@ LOOP:
   5. Sleep(60 seconds)
 ```
 
-### Full Oracle Bootstrap (Single Agent)
+### Full Module Bootstrap (Single Agent)
 
-To set up and run a complete Oracle governance cycle:
+To set up and run a complete Self-Improvement governance cycle:
 
 1. Deploy Agent Registry (if not already deployed)
 2. Mint AP3X tokens (or acquire from existing supply)
 3. Register agent DIDs in the registry
-4. Deploy Oracle contracts (proposal + critique validators, infrastructure holders)
+4. Deploy governance contracts (proposal + critique validators, infrastructure holders)
 5. Create GovernanceParams UTxO with initial parameter values
 6. Create GovernanceOracle UTxO with Foundation oracle credential
 7. Create CrossRefs NFT linking all validator script hashes
@@ -531,4 +531,4 @@ All contract addresses, script hashes, infrastructure UTxOs, governance paramete
 
 ---
 
-*This guide covers Oracle v6 as deployed on Vector testnet. For the full specification, see [`implementation-spec.md`](implementation-spec.md). For deployment details, see [`../deploy/testnet/DEPLOY.md`](../deploy/testnet/DEPLOY.md).*
+*This guide covers Self-Improvement Module v8 as deployed on Vector testnet. For the full specification, see [`implementation-spec.md`](implementation-spec.md). For deployment details, see [`../deploy/testnet/DEPLOY.md`](../deploy/testnet/DEPLOY.md).*

@@ -1,6 +1,6 @@
 # Foundation Review Dashboard
 
-Web dashboard for the Foundation Council to review and prioritize governance proposals. Oracle actions (adopt, reject) are executed via API endpoints.
+Web dashboard for the Foundation Council to review and prioritize governance proposals. Foundation actions (adopt, reject) are executed via API endpoints.
 
 ## Setup
 

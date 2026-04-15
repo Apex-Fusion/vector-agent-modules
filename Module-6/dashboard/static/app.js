@@ -324,12 +324,12 @@ async function loadStats() {
         <div class="stat-card">
           <div class="label">Chain Status</div>
           <div class="value" style="font-size:16px">Slot ${(h.slot || 0).toLocaleString()}</div>
-          <div class="sub">Oracle: ${h.status === 'ok' ? 'active' : 'unknown'}</div>
+          <div class="sub">Module: ${h.status === 'ok' ? 'active' : 'unknown'}</div>
         </div>
         <div class="stat-card">
           <div class="label">Foundation Wallet</div>
           <div class="value" style="font-size:16px">${h.wallet_balance_apex || 0} ${tip('AP3X')}</div>
-          <div class="sub">Governance oracle wallet</div>
+          <div class="sub">Foundation wallet</div>
         </div>
       </div>
     `;
