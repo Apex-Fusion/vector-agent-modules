@@ -570,8 +570,6 @@ async function loadTimeline() {
 
 function relativeTime(ts) {
   if (!ts) return 'unknown';
-  // Slot numbers are < 1 trillion; POSIX ms timestamps are > 1 trillion
-  if (ts < 1_000_000_000_000) return `slot ${ts.toLocaleString()}`;
   const diff = Date.now() - ts;
   if (diff < 0) return 'just now';
   const mins = Math.floor(diff / 60000);

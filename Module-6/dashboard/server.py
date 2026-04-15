@@ -9,6 +9,7 @@ Usage:
     uvicorn server:app --reload --port 8000
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -48,6 +49,7 @@ ogmios_client = None
 gov_indexer = None
 deploy_state = None
 governance_wallet_address = None
+slot_to_posix_offset = 0  # posix_ms = slot * 1000 + offset
 
 
 async def startup():
@@ -87,7 +89,202 @@ async def startup():
         treasury_address=treasury_addr,
     )
 
+    # Compute slot-to-POSIX offset: posix_ms = slot * 1000 + offset
+    global slot_to_posix_offset
+    import time
+    tip = await ogmios_client.query_network_tip()
+    current_slot = tip.get("slot", 0)
+    current_posix_ms = int(time.time() * 1000)
+    slot_to_posix_offset = current_posix_ms - (current_slot * 1000)
+
     print(f"[OK] Dashboard connected to {ogmios_url}")
+    print(f"[OK] Slot-to-POSIX offset: {slot_to_posix_offset} (slot {current_slot})")
+
+    # Prime the cache immediately, then start background refresh
+    await _refresh_cache()
+    asyncio.create_task(_cache_loop())
+
+
+def _normalize_timestamp(ts) -> int:
+    """Convert a timestamp to POSIX ms. Slot numbers (< 1 trillion) are converted using the genesis offset."""
+    if not ts or not isinstance(ts, (int, float)):
+        return 0
+    ts = int(ts)
+    if ts < 1_000_000_000_000:
+        # Slot number → convert to POSIX ms
+        return ts * 1000 + slot_to_posix_offset
+    return ts
+
+
+_cache_lock = asyncio.Lock()
+_cache = {
+    "proposals": [],
+    "timeline": [],
+    "leaderboard": [],
+    "treasury": {},
+    "stats": {},
+}
+CACHE_INTERVAL = 30  # seconds
+
+
+async def _refresh_cache():
+    """Rebuild all cached data from chain in one pass."""
+    try:
+        # 1. Fetch all proposals (single Ogmios query, shared by all views)
+        raw = await gov_indexer.get_proposals()
+        proposals = [p for p in raw if p.get("has_proposal_token", True)]
+
+        # 2. Enrich proposals with quality signals + critique summaries
+        for p in proposals:
+            try:
+                p["quality_signal"] = await gov_indexer.compute_proposal_quality_signal(p)
+            except Exception:
+                p["quality_signal"] = 0.0
+            ref = p.get("utxo_ref", {})
+            try:
+                p["critique_summary"] = await gov_indexer.get_quality_signal(ref["tx_hash"], ref.get("output_index", 0))
+            except Exception:
+                p["critique_summary"] = {}
+
+        # 3. IPFS titles (parallel, cached individually)
+        async def _enrich(p):
+            uri = p.get("storage_uri", "")
+            if isinstance(uri, bytes):
+                uri = uri.decode("utf-8", errors="replace")
+            meta = await _fetch_ipfs_meta(uri)
+            p["ipfs_title"] = meta.get("title", "")
+            p["ipfs_summary"] = meta.get("summary", "")
+
+        await asyncio.gather(*[_enrich(p) for p in proposals], return_exceptions=True)
+        proposals.sort(key=lambda p: p.get("quality_signal", 0), reverse=True)
+        serialized_proposals = [_serialize_proposal(p) for p in proposals]
+
+        # 4. Timeline — reuse proposals, fetch critiques/endorsements
+        events = []
+        for p in proposals:
+            ref = p.get("utxo_ref", {})
+            did = p.get("proposer_did", "")
+            events.append({
+                "type": "proposal",
+                "timestamp": _normalize_timestamp(p.get("submitted_at", 0)),
+                "agent_did": did.hex() if isinstance(did, bytes) else did,
+                "proposal_type": p.get("proposal_type", "Unknown"),
+                "state": p.get("state", "Unknown"),
+                "stake": (p.get("stake_amount", 0)) / 1_000_000,
+                "tx_hash": ref.get("tx_hash", ""),
+                "output_index": ref.get("output_index", 0),
+            })
+
+        for p in proposals:
+            ref = p.get("utxo_ref", {})
+            tx_hash = ref.get("tx_hash", "")
+            output_index = ref.get("output_index", 0)
+            try:
+                critiques = await gov_indexer.get_critiques(tx_hash, output_index)
+                for c in critiques:
+                    cref = c.get("utxo_ref", {})
+                    cdid = c.get("critic_did", "")
+                    events.append({
+                        "type": "critique",
+                        "timestamp": _normalize_timestamp(c.get("submitted_at", 0)),
+                        "agent_did": cdid.hex() if isinstance(cdid, bytes) else cdid,
+                        "critique_type": c.get("critique_type", "Unknown"),
+                        "proposal_tx_hash": tx_hash,
+                        "stake": (c.get("stake_amount", 0)) / 1_000_000,
+                        "tx_hash": cref.get("tx_hash", ""),
+                        "output_index": cref.get("output_index", 0),
+                    })
+            except Exception:
+                pass
+            try:
+                endorsements = await gov_indexer.get_endorsements(tx_hash, output_index)
+                for e in endorsements:
+                    eref = e.get("utxo_ref", {})
+                    edid = e.get("endorser_did", "")
+                    events.append({
+                        "type": "endorsement",
+                        "timestamp": _normalize_timestamp(e.get("created_at", e.get("submitted_at", 0))),
+                        "agent_did": edid.hex() if isinstance(edid, bytes) else edid,
+                        "proposal_tx_hash": tx_hash,
+                        "stake": (e.get("stake_amount", 0)) / 1_000_000,
+                        "tx_hash": eref.get("tx_hash", ""),
+                        "output_index": eref.get("output_index", 0),
+                    })
+            except Exception:
+                pass
+
+        events.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+
+        # 5. Leaderboard — reuse proposals
+        agent_dids = set()
+        for p in proposals:
+            did = p.get("proposer_did", "")
+            if did:
+                agent_dids.add(did.hex() if isinstance(did, bytes) else did)
+        leaderboard = []
+        for did in agent_dids:
+            try:
+                record = await gov_indexer.get_agent_track_record(did)
+                by_state = record.get("by_state", {})
+                total = record.get("total_proposals", 0)
+                adopted = by_state.get("Adopted", 0)
+                leaderboard.append({
+                    "agent_did": did,
+                    "total_proposals": total,
+                    "adopted": adopted,
+                    "rejected": by_state.get("Rejected", 0),
+                    "expired": by_state.get("Expired", 0),
+                    "open": by_state.get("Open", 0) + by_state.get("Amended", 0),
+                    "adoption_rate": adopted / total if total > 0 else 0.0,
+                })
+            except Exception:
+                pass
+        leaderboard.sort(key=lambda a: (a["adopted"], a["total_proposals"]), reverse=True)
+
+        # 6. Stats — reuse proposals
+        by_state = {}
+        unique_proposers = set()
+        for p in proposals:
+            s = p.get("state", "Unknown")
+            by_state[s] = by_state.get(s, 0) + 1
+            did = p.get("proposer_did", "")
+            if did:
+                unique_proposers.add(did if isinstance(did, str) else did.hex())
+        total = len(proposals)
+        adopted = by_state.get("Adopted", 0)
+        stats = {
+            "total_proposals": total,
+            "by_state": by_state,
+            "adoption_rate": adopted / total if total > 0 else 0.0,
+            "unique_proposers": len(unique_proposers),
+            "currently_open": by_state.get("Open", 0) + by_state.get("Amended", 0),
+        }
+
+        # 7. Treasury
+        balance = await gov_indexer.get_treasury_balance()
+        treasury = {
+            "total_lovelace": balance.get("total_lovelace", 0),
+            "total_apex": balance.get("total_lovelace", 0) / 1_000_000,
+            "utxo_count": balance.get("utxo_count", 0),
+        }
+
+        # Commit to cache
+        async with _cache_lock:
+            _cache["proposals"] = serialized_proposals
+            _cache["timeline"] = events[:50]
+            _cache["leaderboard"] = leaderboard
+            _cache["stats"] = stats
+            _cache["treasury"] = treasury
+
+        logger.info(f"Cache refreshed: {len(proposals)} proposals")
+    except Exception as exc:
+        logger.error(f"Cache refresh failed: {exc}")
+
+
+async def _cache_loop():
+    while True:
+        await asyncio.sleep(CACHE_INTERVAL)
+        await _refresh_cache()
 
 
 async def shutdown():
@@ -108,9 +305,20 @@ STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+from fastapi.responses import Response
+
+
 @app.get("/")
 async def index():
-    return FileResponse(str(STATIC_DIR / "index.html"))
+    return FileResponse(str(STATIC_DIR / "index.html"), headers={"Cache-Control": "no-cache"})
+
+
+@app.middleware("http")
+async def add_cache_headers(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
 
 
 # ── IPFS title cache ───────────────────────────────────────────────────────
@@ -158,43 +366,13 @@ async def _fetch_ipfs_meta(storage_uri: str) -> dict:
 
 @app.get("/api/proposals")
 async def get_proposals(state: str | None = None, type: str | None = None):
-    proposals = await gov_indexer.get_proposals(state=state, proposal_type=type)
-
-    # Filter out orphaned UTxOs (lock-only, no proposal token)
-    proposals = [p for p in proposals if p.get("has_proposal_token", True)]
-
-    # Compute quality signal for each
-    for p in proposals:
-        try:
-            p["quality_signal"] = await gov_indexer.compute_proposal_quality_signal(p)
-        except Exception:
-            p["quality_signal"] = 0.0
-
-        # Get critique/endorsement counts
-        ref = p.get("utxo_ref", {})
-        try:
-            signal = await gov_indexer.get_quality_signal(ref["tx_hash"], ref.get("output_index", 0))
-            p["critique_summary"] = signal
-        except Exception:
-            p["critique_summary"] = {}
-
-    # Fetch IPFS titles/summaries in parallel
-    import asyncio
-
-    async def _enrich(p):
-        uri = p.get("storage_uri", "")
-        if isinstance(uri, bytes):
-            uri = uri.decode("utf-8", errors="replace")
-        meta = await _fetch_ipfs_meta(uri)
-        p["ipfs_title"] = meta.get("title", "")
-        p["ipfs_summary"] = meta.get("summary", "")
-
-    await asyncio.gather(*[_enrich(p) for p in proposals], return_exceptions=True)
-
-    proposals.sort(key=lambda p: p.get("quality_signal", 0), reverse=True)
-
-    # Serialize bytes for JSON
-    return [_serialize_proposal(p) for p in proposals]
+    async with _cache_lock:
+        proposals = _cache["proposals"]
+    if state:
+        proposals = [p for p in proposals if p.get("state") == state]
+    if type:
+        proposals = [p for p in proposals if p.get("proposal_type") == type]
+    return proposals
 
 
 @app.get("/api/proposals/{tx_hash}/{output_index}")
@@ -292,39 +470,14 @@ async def fetch_ipfs_document(cid: str, expected_hash: str | None = None):
 
 @app.get("/api/treasury")
 async def get_treasury():
-    balance = await gov_indexer.get_treasury_balance()
-    return {
-        "total_lovelace": balance.get("total_lovelace", 0),
-        "total_apex": balance.get("total_lovelace", 0) / 1_000_000,
-        "utxo_count": balance.get("utxo_count", 0),
-    }
+    async with _cache_lock:
+        return _cache["treasury"]
 
 
 @app.get("/api/stats")
 async def get_stats():
-    all_proposals = await gov_indexer.get_proposals()
-    all_proposals = [p for p in all_proposals if p.get("has_proposal_token", True)]
-
-    by_state = {}
-    unique_proposers = set()
-    total_rewards = 0
-    for p in all_proposals:
-        s = p.get("state", "Unknown")
-        by_state[s] = by_state.get(s, 0) + 1
-        did = p.get("proposer_did", "")
-        if did:
-            unique_proposers.add(did if isinstance(did, str) else did.hex())
-
-    total = len(all_proposals)
-    adopted = by_state.get("Adopted", 0)
-
-    return {
-        "total_proposals": total,
-        "by_state": by_state,
-        "adoption_rate": adopted / total if total > 0 else 0.0,
-        "unique_proposers": len(unique_proposers),
-        "currently_open": by_state.get("Open", 0) + by_state.get("Amended", 0),
-    }
+    async with _cache_lock:
+        return _cache["stats"]
 
 
 @app.get("/api/agent/{did}")
@@ -359,105 +512,15 @@ async def health():
 
 
 @app.get("/api/timeline")
-async def get_timeline(limit: int = 50):
-    """Chronological feed of all governance events."""
-    events = []
-
-    proposals = await gov_indexer.get_proposals()
-    proposals = [p for p in proposals if p.get("has_proposal_token", True)]
-    for p in proposals:
-        ref = p.get("utxo_ref", {})
-        did = p.get("proposer_did", "")
-        events.append({
-            "type": "proposal",
-            "timestamp": p.get("submitted_at", 0),
-            "agent_did": did.hex() if isinstance(did, bytes) else did,
-            "proposal_type": p.get("proposal_type", "Unknown"),
-            "state": p.get("state", "Unknown"),
-            "stake": (p.get("stake_amount", 0)) / 1_000_000,
-            "tx_hash": ref.get("tx_hash", ""),
-            "output_index": ref.get("output_index", 0),
-        })
-
-    # Gather critiques and endorsements for all proposals
-    for p in proposals:
-        ref = p.get("utxo_ref", {})
-        tx_hash = ref.get("tx_hash", "")
-        output_index = ref.get("output_index", 0)
-
-        try:
-            critiques = await gov_indexer.get_critiques(tx_hash, output_index)
-            for c in critiques:
-                cref = c.get("utxo_ref", {})
-                cdid = c.get("critic_did", "")
-                events.append({
-                    "type": "critique",
-                    "timestamp": c.get("submitted_at", 0),
-                    "agent_did": cdid.hex() if isinstance(cdid, bytes) else cdid,
-                    "critique_type": c.get("critique_type", "Unknown"),
-                    "proposal_tx_hash": tx_hash,
-                    "stake": (c.get("stake_amount", 0)) / 1_000_000,
-                    "tx_hash": cref.get("tx_hash", ""),
-                    "output_index": cref.get("output_index", 0),
-                })
-        except Exception:
-            pass
-
-        try:
-            endorsements = await gov_indexer.get_endorsements(tx_hash, output_index)
-            for e in endorsements:
-                eref = e.get("utxo_ref", {})
-                edid = e.get("endorser_did", "")
-                events.append({
-                    "type": "endorsement",
-                    "timestamp": e.get("created_at", e.get("submitted_at", 0)),
-                    "agent_did": edid.hex() if isinstance(edid, bytes) else edid,
-                    "proposal_tx_hash": tx_hash,
-                    "stake": (e.get("stake_amount", 0)) / 1_000_000,
-                    "tx_hash": eref.get("tx_hash", ""),
-                    "output_index": eref.get("output_index", 0),
-                })
-        except Exception:
-            pass
-
-    events.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
-    return events[:limit]
+async def get_timeline():
+    async with _cache_lock:
+        return _cache["timeline"]
 
 
 @app.get("/api/leaderboard")
 async def get_leaderboard():
-    """Agent leaderboard ranked by governance participation."""
-    all_proposals = await gov_indexer.get_proposals()
-    all_proposals = [p for p in all_proposals if p.get("has_proposal_token", True)]
-
-    # Collect unique agent DIDs (proposers + critics)
-    agent_dids = set()
-    for p in all_proposals:
-        did = p.get("proposer_did", "")
-        if did:
-            agent_dids.add(did.hex() if isinstance(did, bytes) else did)
-
-    leaderboard = []
-    for did in agent_dids:
-        try:
-            record = await gov_indexer.get_agent_track_record(did)
-            by_state = record.get("by_state", {})
-            total = record.get("total_proposals", 0)
-            adopted = by_state.get("Adopted", 0)
-            leaderboard.append({
-                "agent_did": did,
-                "total_proposals": total,
-                "adopted": adopted,
-                "rejected": by_state.get("Rejected", 0),
-                "expired": by_state.get("Expired", 0),
-                "open": by_state.get("Open", 0) + by_state.get("Amended", 0),
-                "adoption_rate": adopted / total if total > 0 else 0.0,
-            })
-        except Exception:
-            pass
-
-    leaderboard.sort(key=lambda a: (a["adopted"], a["total_proposals"]), reverse=True)
-    return leaderboard
+    async with _cache_lock:
+        return _cache["leaderboard"]
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

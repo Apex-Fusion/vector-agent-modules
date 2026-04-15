@@ -295,7 +295,7 @@ a:hover { text-decoration: underline; }
 .filter-bar input[type="text"]:focus { border-color: var(--accent); outline: none; }
 
 /* Timeline */
-.timeline { position: relative; padding-left: 32px; }
+.timeline { position: relative; padding-left: 32px; max-height: 70vh; overflow-y: auto; }
 .timeline::before {
   content: '';
   position: absolute;
