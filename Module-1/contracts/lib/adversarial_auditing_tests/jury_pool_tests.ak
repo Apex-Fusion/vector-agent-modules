@@ -11,6 +11,7 @@
 /// Author: Test Engineer (Apex Security Audit Team)
 /// Date: 2026-03-23
 
+use aiken/collection/dict
 use aiken/collection/list
 use aiken/interval
 use cardano/address.{Address, Credential, Script, VerificationKey}
@@ -19,11 +20,13 @@ use cardano/transaction.{
   InlineDatum, Input, NoDatum, Output, OutputReference, Transaction, placeholder,
 }
 use adversarial_auditing/params.{ProtocolParams, juror_fee_share}
+use adversarial_auditing/reset.{check_reset_stale_active_case_with_refs}
 use aiken/crypto
 use aiken/primitive/bytearray
 use adversarial_auditing/types.{
-  AuditingConfig, ChallengeDatum, JurorDatum, JuryVote, PendingJury,
-  Resolved, Verdict, Voting, ClaimerWins, AuditorWins, Inconclusive,
+  AuditingConfig, ChallengeDatum, CrossValidatorRefs, JuryAction, JurorDatum,
+  JuryVote, PendingJury, ResetStaleActiveCase, Resolved, Verdict, Voting,
+  ClaimerWins, AuditorWins, Inconclusive,
 }
 use adversarial_auditing/utils.{
   challenge_token_name, juror_token_name,
@@ -1553,4 +1556,478 @@ test test_commit_no_reveal_slash_lifecycle() {
     juror_step2.revealed_verdict == None,
     remaining < juror_step0.bond_amount,
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v2: RESET STALE ACTIVE CASE — escape hatch for TimeoutResolve orphans
+// ══════════════════════════════════════════════════════════════════════
+//
+// Scenario: a challenge was burned via TimeoutResolve, but a selected
+// juror never hit DistributeRewards (which requires Resolved state, which
+// a burned-timeout challenge never reaches). The juror's active_case is
+// stuck pointing at a token that no longer exists. ResetStaleActiveCase
+// lets the juror self-clear that stale pointer.
+//
+// Validator invariants (see validators/jury_pool.ak
+// validate_reset_stale_active_case):
+//   (1) juror.active_case = Some(token_name) — else `expect` fails
+//   (2) no reference input at challenge_validator_hash holds that token
+//   (3) juror's own credential signs
+//   (4) continuing output at jury_pool: same NFT, same identity fields,
+//       bond preserved, active_case=None, vote_commitment=None,
+//       revealed_verdict=None
+//
+// Author: Test Engineer (Apex Security Audit Team)
+// Date: 2026-04-15
+
+/// Helper: a stale juror — active_case set, vote committed, but the
+/// referenced challenge token is absent from chain.
+fn stale_juror_datum() -> JurorDatum {
+  JurorDatum {
+    ..active_juror_datum(),
+    vote_commitment: Some(
+      #"cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe",
+    ),
+    revealed_verdict: None,
+  }
+}
+
+/// Happy path: stale active_case cleared, bond preserved, commitment wiped.
+test test_reset_stale_active_case_happy_path() {
+  let before = stale_juror_datum()
+  // Challenge token is absent from reference_inputs (empty list).
+  let ref_inputs: List<Input> = []
+  let challenge_still_live =
+    list.any(ref_inputs, fn(inp) {
+      let at_addr =
+        when inp.output.address.payment_credential is {
+          Script(h) -> h == challenge_validator_hash
+          _ -> False
+        }
+      let has_token =
+        assets.quantity_of(
+          inp.output.value,
+          challenge_validator_hash,
+          test_challenge_token_name(),
+        ) == 1
+      at_addr && has_token
+    })
+  let challenge_absent = !challenge_still_live
+  // Juror signs the tx.
+  let signatories = [juror1_vkh]
+  let signed = list.has(signatories, juror1_vkh)
+  // Continuing output rebuilt with the required clearings.
+  let after = JurorDatum {
+    ..before,
+    active_case: None,
+    vote_commitment: None,
+    revealed_verdict: None,
+  }
+  and {
+    challenge_absent,
+    signed,
+    // invariants the validator enforces:
+    after.juror_did == before.juror_did,
+    after.juror_credential == before.juror_credential,
+    after.bond_amount == before.bond_amount,
+    after.cases_resolved == before.cases_resolved,
+    after.majority_votes == before.majority_votes,
+    after.registered_at == before.registered_at,
+    after.active_case == None,
+    after.vote_commitment == None,
+    after.revealed_verdict == None,
+  }
+}
+
+/// Fail: the referenced challenge is still on-chain (not yet burned).
+/// "Unexpired challenge" case — juror isn't actually stuck.
+test test_reset_stale_active_case_fail_unexpired_challenge() {
+  let before = stale_juror_datum()
+  // Challenge UTxO still alive in reference_inputs, carrying the token.
+  let live_challenge = Input {
+    output_reference: challenge_ref(),
+    output: Output {
+      address: Address {
+        payment_credential: Script(challenge_validator_hash),
+        stake_credential: None,
+      },
+      value: make_ap3x(100_000_000)
+        |> assets.add(challenge_validator_hash, test_challenge_token_name(), 1),
+      datum: InlineDatum(resolved_challenge_datum()),
+      reference_script: None,
+    },
+  }
+  let ref_inputs: List<Input> = [live_challenge]
+  expect Some(active_tn) = before.active_case
+  let challenge_still_live =
+    list.any(ref_inputs, fn(inp) {
+      let at_addr =
+        when inp.output.address.payment_credential is {
+          Script(h) -> h == challenge_validator_hash
+          _ -> False
+        }
+      let has_token =
+        assets.quantity_of(
+          inp.output.value,
+          challenge_validator_hash,
+          active_tn,
+        ) == 1
+      at_addr && has_token
+    })
+  let challenge_absent = !challenge_still_live
+  // Validator requires challenge_absent = True — here it's False, so reset is blocked.
+  challenge_absent == False
+}
+
+/// Fail: wrong signer. Juror's credential did not sign the tx.
+test test_reset_stale_active_case_fail_wrong_signer() {
+  let before = stale_juror_datum()
+  // An attacker (juror2) tries to reset juror1's stale pointer.
+  let signatories = [juror2_vkh]
+  let signed = list.has(signatories, juror1_vkh)
+  signed == False
+}
+
+/// Fail: non-stuck juror. active_case == None — nothing to reset.
+/// The validator's `expect Some(active_token_name) = juror.active_case`
+/// would fail; we model that here as the `expect` precondition returning None.
+test test_reset_stale_active_case_fail_non_stuck_juror() {
+  let not_stuck = fresh_juror_datum()
+  let has_active_case =
+    when not_stuck.active_case is {
+      Some(_) -> True
+      None -> False
+    }
+  // expect Some(_) would abort — precondition fails.
+  has_active_case == False
+}
+
+/// Fail: continuing-output datum mismatch (bad datum).
+/// Any drift from the stale→cleared invariant breaks the reset.
+/// Here: bond_amount mutated (attacker attempts to inflate bond during reset).
+test test_reset_stale_active_case_fail_bad_datum_bond_mutation() {
+  let before = stale_juror_datum()
+  let tampered = JurorDatum {
+    ..before,
+    active_case: None,
+    vote_commitment: None,
+    revealed_verdict: None,
+    bond_amount: before.bond_amount + 1_000_000,
+  }
+  // Validator asserts updated.bond_amount == juror.bond_amount — here it isn't.
+  tampered.bond_amount == before.bond_amount == False
+}
+
+/// Fail: continuing output leaves vote_commitment non-empty (defensive cleanup skipped).
+test test_reset_stale_active_case_fail_bad_datum_commitment_not_cleared() {
+  let before = stale_juror_datum()
+  let tampered = JurorDatum {
+    ..before,
+    active_case: None,
+    // vote_commitment left as Some(_) — validator requires None
+  }
+  tampered.vote_commitment == None == False
+}
+
+/// Fail: "missing burn" — the challenge token is still held at the
+/// challenge validator address (it wasn't burned as the juror claims).
+/// From the validator's POV this is the same check as unexpired_challenge:
+/// token presence in reference_inputs → challenge_absent=False → reject.
+/// This test covers the semantic framing: a buggy/malicious tx that
+/// omits a burn and expects reset to still clear state.
+test test_reset_stale_active_case_fail_missing_burn() {
+  let before = stale_juror_datum()
+  // No burn in tx.mint (the reset action itself does not mint/burn challenge
+  // tokens; the challenge must have ALREADY been burned in a prior tx).
+  let mint_pairs: List<Pair<ByteArray, Int>> = []
+  let challenge_burned_in_this_tx =
+    list.any(mint_pairs, fn(p) { p.2nd == -1 })
+  // Critical: the validator does NOT require a burn in THIS tx — it requires
+  // the token to be absent from reference_inputs. So a "missing burn" alone
+  // is fine IF the token is already absent. The failure mode is: token still
+  // sitting on-chain at challenge addr because no prior burn happened.
+  let challenge_still_on_chain = Input {
+    output_reference: challenge_ref(),
+    output: Output {
+      address: Address {
+        payment_credential: Script(challenge_validator_hash),
+        stake_credential: None,
+      },
+      value: make_ap3x(100_000_000)
+        |> assets.add(challenge_validator_hash, test_challenge_token_name(), 1),
+      datum: InlineDatum(resolved_challenge_datum()),
+      reference_script: None,
+    },
+  }
+  let ref_inputs = [challenge_still_on_chain]
+  expect Some(active_tn) = before.active_case
+  let challenge_live =
+    list.any(ref_inputs, fn(inp) {
+      let at_addr =
+        when inp.output.address.payment_credential is {
+          Script(h) -> h == challenge_validator_hash
+          _ -> False
+        }
+      let has_token =
+        assets.quantity_of(
+          inp.output.value,
+          challenge_validator_hash,
+          active_tn,
+        ) == 1
+      at_addr && has_token
+    })
+  and {
+    // No burn happened in this tx
+    challenge_burned_in_this_tx == False,
+    // And token is still on chain — validator rejects.
+    challenge_live == True,
+    // Therefore challenge_absent = False → reset blocked.
+    !challenge_live == False,
+  }
+}
+
+/// Fail: replay. After a successful reset, active_case == None.
+/// A replay attempt (calling ResetStaleActiveCase again on the same juror)
+/// trips the `expect Some(active_token_name) = juror.active_case` precondition.
+test test_reset_stale_active_case_fail_replay() {
+  // Simulate state AFTER a successful reset.
+  let after_first_reset = JurorDatum {
+    ..stale_juror_datum(),
+    active_case: None,
+    vote_commitment: None,
+    revealed_verdict: None,
+  }
+  // Second invocation: precondition check.
+  let has_active_case =
+    when after_first_reset.active_case is {
+      Some(_) -> True
+      None -> False
+    }
+  // expect fails → tx aborts → replay blocked.
+  has_active_case == False
+}
+
+/// Sanity: the ResetStaleActiveCase JuryAction variant exists in the type
+/// and is distinct from neighbors. This guards against accidental removal.
+test test_reset_stale_active_case_variant_exists() {
+  // If the variant is renamed/removed, this file fails to compile — that is
+  // the actual check. The runtime assertion pattern-matches to prove the
+  // constructor is actually reachable.
+  let action: JuryAction = ResetStaleActiveCase
+  when action is {
+    ResetStaleActiveCase -> True
+    _ -> False
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// v2 e2e: TRANSACTION-LEVEL TESTS FOR ResetStaleActiveCase
+// ══════════════════════════════════════════════════════════════════════
+//
+// These tests exercise the `jury_pool.spend` handler end-to-end by
+// building a full `Transaction` value and invoking the validator with
+// the ResetStaleActiveCase redeemer. They complement the datum-algebra
+// tests above by catching regressions in the redeemer -> spend wiring
+// (e.g., a handler dispatch bug, an expect that triggers on a valid tx,
+// or a missing reference_inputs plumbing step).
+//
+// Style note: this is a deliberate departure from the rest of this file
+// — the existing tests assert invariants on inputs/outputs/datums but
+// do NOT call the validator. For mainnet prep of the v2 ResetStaleActiveCase
+// branch, we need that end-to-end confidence. Scope is intentionally
+// limited to the ResetStaleActiveCase redeemer only.
+//
+// Author: Test Engineer (Apex Security Audit Team)
+
+// ---- e2e fixtures ----------------------------------------------------
+
+/// A juror input UTxO at jury_pool, carrying the juror NFT + bond.
+/// own_ref is fixed to the `seed_ref()` used throughout this file.
+fn e2e_juror_input(datum: JurorDatum) -> Input {
+  Input {
+    output_reference: seed_ref(),
+    output: Output {
+      address: jury_pool_addr(),
+      value: make_ap3x(datum.bond_amount)
+        |> assets.add(jury_pool_hash, juror_tok_name(), 1),
+      datum: InlineDatum(datum),
+      reference_script: None,
+    },
+  }
+}
+
+/// The CrossValidatorRefs UTxO as a reference input. Authenticated via
+/// a token under `refs_token_policy` (see get_cross_refs).
+fn e2e_refs_input() -> Input {
+  let refs = CrossValidatorRefs {
+    claim_validator_hash,
+    challenge_validator_hash,
+    jury_pool_hash,
+  }
+  Input {
+    output_reference: OutputReference {
+      transaction_id: #"5ef50000000000000000000000000000000000000000000000000000000000ff",
+      output_index: 0,
+    },
+    output: Output {
+      address: Address {
+        payment_credential: Script(
+          #"7e757e757e757e757e757e757e757e757e757e757e757e757e757e757e757e75",
+        ),
+        stake_credential: None,
+      },
+      value: assets.from_lovelace(2_000_000)
+        |> assets.add(
+            #"9999999999999999999999999999999999999999999999999999999999",
+            #"7265667300",
+            1,
+          ),
+      datum: InlineDatum(refs),
+      reference_script: None,
+    },
+  }
+}
+
+/// A live-challenge reference input — the challenge token is still
+/// on-chain at challenge_validator_hash. Its presence blocks reset.
+fn e2e_live_challenge_ref() -> Input {
+  Input {
+    output_reference: challenge_ref(),
+    output: Output {
+      address: Address {
+        payment_credential: Script(challenge_validator_hash),
+        stake_credential: None,
+      },
+      value: make_ap3x(100_000_000)
+        |> assets.add(challenge_validator_hash, test_challenge_token_name(), 1),
+      datum: InlineDatum(resolved_challenge_datum()),
+      reference_script: None,
+    },
+  }
+}
+
+/// Continuing output at jury_pool: juror NFT + bond preserved, datum
+/// cleared (active_case/commitment/revealed all None).
+fn e2e_cleared_output(before: JurorDatum) -> Output {
+  let cleared = JurorDatum {
+    ..before,
+    active_case: None,
+    vote_commitment: None,
+    revealed_verdict: None,
+  }
+  Output {
+    address: jury_pool_addr(),
+    value: make_ap3x(before.bond_amount)
+      |> assets.add(jury_pool_hash, juror_tok_name(), 1),
+    datum: InlineDatum(cleared),
+    reference_script: None,
+  }
+}
+
+/// Build a full `Transaction` for a ResetStaleActiveCase invocation.
+/// Callers tweak individual fields per-scenario.
+fn e2e_reset_tx(
+  juror_in: Input,
+  refs_in: Input,
+  extra_challenge_refs: List<Input>,
+  continuing_output: Output,
+  signer: ByteArray,
+) -> Transaction {
+  Transaction {
+    ..placeholder,
+    inputs: [juror_in],
+    outputs: [continuing_output],
+    reference_inputs: list.concat([refs_in], extra_challenge_refs),
+    extra_signatories: [signer],
+    validity_range: interval.between(10_000_000, 10_000_100),
+  }
+}
+
+// ---- e2e plumbing evaluator ------------------------------------------
+//
+// As of 2026-04-15, the authoritative body of ResetStaleActiveCase lives
+// in `lib/adversarial_auditing/reset.ak` as
+// `check_reset_stale_active_case_with_refs`. The jury_pool validator's
+// spend dispatch calls that exact function, so these e2e tests exercise
+// the SAME bytes the on-chain redeemer dispatch executes — closing the
+// dispatch-coverage gap that the earlier local `eval_reset_plumbing`
+// mirror left open.
+
+fn e2e_refs_value() -> CrossValidatorRefs {
+  CrossValidatorRefs {
+    claim_validator_hash,
+    challenge_validator_hash,
+    jury_pool_hash,
+  }
+}
+
+// ---- e2e HAPPY PATH --------------------------------------------------
+
+/// e2e happy path: stale juror, challenge absent, correct signer,
+/// correct continuing output datum. Transaction-level evaluation
+/// must return True.
+test test_e2e_reset_stale_active_case_happy_path() {
+  let before = stale_juror_datum()
+  let juror_in = e2e_juror_input(before)
+  let out = e2e_cleared_output(before)
+  let tx = e2e_reset_tx(juror_in, e2e_refs_input(), [], out, juror1_vkh)
+  check_reset_stale_active_case_with_refs(e2e_refs_value(), before, seed_ref(), tx)
+}
+
+// ---- e2e FAILURE: wrong signer --------------------------------------
+
+/// e2e failure: signer is juror2 (attacker), not juror1 who owns the
+/// stale state. `extra_signatories` lookup fails → evaluator returns False.
+test test_e2e_reset_stale_active_case_fail_wrong_signer() {
+  let before = stale_juror_datum()
+  let juror_in = e2e_juror_input(before)
+  let out = e2e_cleared_output(before)
+  let tx = e2e_reset_tx(juror_in, e2e_refs_input(), [], out, juror2_vkh)
+  !check_reset_stale_active_case_with_refs(e2e_refs_value(), before, seed_ref(), tx)
+}
+
+// ---- e2e FAILURE: challenge still present in reference inputs -------
+
+/// e2e failure: a reference input at challenge_validator_hash still
+/// carries the juror's active_case token → challenge_absent=False →
+/// evaluator rejects the reset.
+test test_e2e_reset_stale_active_case_fail_challenge_still_live() {
+  let before = stale_juror_datum()
+  let juror_in = e2e_juror_input(before)
+  let out = e2e_cleared_output(before)
+  let tx =
+    e2e_reset_tx(
+      juror_in,
+      e2e_refs_input(),
+      [e2e_live_challenge_ref()],
+      out,
+      juror1_vkh,
+    )
+  !check_reset_stale_active_case_with_refs(e2e_refs_value(), before, seed_ref(), tx)
+}
+
+// ---- e2e FAILURE: bad continuing-output datum -----------------------
+
+/// e2e failure: continuing output mutates bond_amount (attacker tries to
+/// inflate bond during reset). output_ok=False → evaluator rejects.
+test test_e2e_reset_stale_active_case_fail_bad_continuing_datum() {
+  let before = stale_juror_datum()
+  let juror_in = e2e_juror_input(before)
+  // Tampered: bond inflated by 1 AP3X
+  let tampered = JurorDatum {
+    ..before,
+    active_case: None,
+    vote_commitment: None,
+    revealed_verdict: None,
+    bond_amount: before.bond_amount + 1_000_000,
+  }
+  let bad_out = Output {
+    address: jury_pool_addr(),
+    value: make_ap3x(tampered.bond_amount)
+      |> assets.add(jury_pool_hash, juror_tok_name(), 1),
+    datum: InlineDatum(tampered),
+    reference_script: None,
+  }
+  let tx = e2e_reset_tx(juror_in, e2e_refs_input(), [], bad_out, juror1_vkh)
+  !check_reset_stale_active_case_with_refs(e2e_refs_value(), before, seed_ref(), tx)
 }

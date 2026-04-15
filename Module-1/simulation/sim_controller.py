@@ -218,7 +218,7 @@ class SimController:
         
         Placeholder — will be implemented when tx_builder has all actions.
         """
-        # TODO: Phase B completion
+        # Phase C not yet implemented
         # For each challenge in PendingJury state past selection_delay:
         #   - TransitionToVoting
         # For each challenge in Voting state:

@@ -1,18 +1,18 @@
 {
-  "version": "v10",
-  "challenge_ref": "20f4d1f62dd2247b8091485d84f949c019bc95ee415caa0953bcdbbd33c07301#0",
-  "claim_ref": "540fc16f66ce4f4186e33fc298f22a6e6787ebf4562b0c34a02260e7263d392e#0",
-  "jury_pool_ref": "92eb3826f2a95b606534c77d55ed493ea5401b041b1fbc06c45ff2007580d5d1#0",
-  "cross_refs_utxo": "42856795e208ae815ef033e2c526af05267b8d59a21e1339b9cd766c4b458412#0",
-  "params_utxo": "42856795e208ae815ef033e2c526af05267b8d59a21e1339b9cd766c4b458412#1",
+  "version": "v12",
+  "challenge_ref": "73404929fb14633751123d85c3dc67d82269a8aebb2f49d38af68d5c19e59af1#0",
+  "claim_ref": "8eafb8891572f95ce84c77b5d44a660a9a48ddbf8f372e056f0a402defbb523b#0",
+  "jury_pool_ref": "962f5609f3ac90855dd79e5328d2b5d60bd97410ac24aa868a57464ac811a339#0",
+  "cross_refs_utxo": "73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#0",
+  "params_utxo": "73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#1",
   "hashes": {
-    "challenge": "781843681859bcababb90a220ad84604cb324aef4757c6a5c46a96fc",
-    "claim": "6884d7c86a0761da8a61e6a7a346197aa2949fef8030a3eb84944dda",
-    "jury_pool": "b15af09128457e09b23c79119aa0c8c85d25c9fd96656f2611fdc962"
+    "challenge": "e93ec8e10ae9180564f6acb98130a37425974c83204b7309bd5d572e",
+    "claim": "6f02f3191bf806386ba1141192ac80838cd27deb0db68214de8d32e5",
+    "jury_pool": "37e93880f270e784e675dda8cbfb315607b99431b9a8548323a2b0ec"
   },
   "addresses": {
-    "claim": "addr1w95gf47gdgrkrk52v8n20g6xr9a299yla7qrpgltsj2ymks92jxwq",
-    "challenge": "addr1w9upssmgrpvme2athy9zyzkcgczvkvj2aar40349c34fdlqvc4dzd",
-    "jury_pool": "addr1wxc44uy39pzhuzdj83u3rx4qery96fwflktx2mexz87ujcsxgtf0q"
+    "claim": "addr1w9hs9ucer0uqvwrt5y2pry4vszpce5naavxmdqs5m6xn9eg9q29cs",
+    "challenge": "addr1w85naj8ppt53spty76ktnqfs5d6zt96vsvsykucfh4w4wtsq0ct3g",
+    "jury_pool": "addr1wym7jwyq7fcw0p8xwhw63jlmx9tq0wv5xxu6s4yryw3tpmqrephmy"
   }
 }

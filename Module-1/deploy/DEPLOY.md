@@ -2,7 +2,7 @@
 
 **Network:** Vector Testnet (Cardano eUTxO L2, magic: 764824073)  
 **Language:** Aiken (Plutus V3)  
-**Final Version:** v10.6
+**Current Version:** v12
 
 ---
 
@@ -10,17 +10,19 @@
 
 | Validator | Script Hash |
 |-----------|-------------|
-| challenge | `781843681859bcababb90a220ad84604cb324aef4757c6a5c46a96fc` |
-| claim | `6884d7c86a0761da8a61e6a7a346197aa2949fef8030a3eb84944dda` |
-| jury_pool | `b15af09128457e09b23c79119aa0c8c85d25c9fd96656f2611fdc962` |
+| challenge | `e93ec8e10ae9180564f6acb98130a37425974c83204b7309bd5d572e` |
+| claim | `6f02f3191bf806386ba1141192ac80838cd27deb0db68214de8d32e5` |
+| jury_pool | `37e93880f270e784e675dda8cbfb315607b99431b9a8548323a2b0ec` |
+
+> Note: hashes reflect the compiled output including trace instrumentation (`--trace-level verbose`). A production build without traces will produce different jury_pool hash. The on-chain reference scripts were deployed with tracing enabled.
 
 ## Testnet Addresses
 
 | Validator | Address |
 |-----------|---------|
-| challenge | `addr1w9upssmgrpvme2athy9zyzkcgczvkvj2aar40349c34fdlqvc4dzd` |
-| claim | `addr1w95gf47gdgrkrk52v8n20g6xr9a299yla7qrpgltsj2ymks92jxwq` |
-| jury_pool | `addr1wxc44uy39pzhuzdj83u3rx4qery96fwflktx2mexz87ujcsxgtf0q` |
+| challenge | `addr1w85naj8ppt53spty76ktnqfs5d6zt96vsvsykucfh4w4wtsq0ct3g` |
+| claim | `addr1w9hs9ucer0uqvwrt5y2pry4vszpce5naavxmdqs5m6xn9eg9q29cs` |
+| jury_pool | `addr1wym7jwyq7fcw0p8xwhw63jlmx9tq0wv5xxu6s4yryw3tpmqrephmy` |
 
 ## Reference Script UTxOs
 
@@ -28,11 +30,11 @@ All three validators are deployed as reference scripts (CIP-33):
 
 | Component | UTxO Reference |
 |-----------|---------------|
-| Challenge reference script | `20f4d1f62dd2247b8091485d84f949c019bc95ee415caa0953bcdbbd33c07301#0` |
-| Claim reference script | `540fc16f66ce4f4186e33fc298f22a6e6787ebf4562b0c34a02260e7263d392e#0` |
-| Jury Pool reference script | `92eb3826f2a95b606534c77d55ed493ea5401b041b1fbc06c45ff2007580d5d1#0` |
-| Cross-validator references | `42856795e208ae815ef033e2c526af05267b8d59a21e1339b9cd766c4b458412#0` |
-| Protocol parameters | `42856795e208ae815ef033e2c526af05267b8d59a21e1339b9cd766c4b458412#1` |
+| Challenge reference script | `73404929fb14633751123d85c3dc67d82269a8aebb2f49d38af68d5c19e59af1#0` |
+| Claim reference script | `8eafb8891572f95ce84c77b5d44a660a9a48ddbf8f372e056f0a402defbb523b#0` |
+| Jury Pool reference script | `962f5609f3ac90855dd79e5328d2b5d60bd97410ac24aa868a57464ac811a339#0` |
+| Cross-validator references | `73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#0` |
+| Protocol parameters | `73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#1` |
 
 ## Version History
 
@@ -46,11 +48,39 @@ All three validators are deployed as reference scripts (CIP-33):
 | v10.1 | 2026-03-30 | ForfeitClaim Resolved state verification |
 | v10.2 | 2026-03-30 | Red team fixes: fake Resolved output, vote authentication |
 | v10.3 | 2026-03-31 | Phase 1.1: commit-reveal voting, permissionless ResolveJury |
-| v10.6 | 2026-03-31 | **Final** — all oracle removals, PRNG jury selection, min pool size, cleanup buffer |
+| v10.6 | 2026-03-31 | All oracle removals, PRNG jury selection, min pool size, cleanup buffer |
+| v11 | 2026-04-14 | ResetStaleActiveCase escape hatch; jury_pool rehashed |
+| v12 | 2026-04-15 | Redeployed from post-extraction source (`reset.ak` wrapper); same semantics, new hashes. Escape hatch (TimeoutResolve + ResetStaleActiveCase) exercised on-chain. |
+
+## On-chain Lifecycle Verification (v12)
+
+The following redeemer paths were exercised on-chain against the v12 reference scripts:
+
+| Path | TX Hash |
+|------|---------|
+| OpenChallenge | `bab0a988c54725ca66dc4136a6cb0c75946cec5d38a53f519dfdb038862324c2` |
+| TransitionToVoting | `02968a1ac1dcfd748d8865556b25087d81877d2a70a0b496ea539786b29568fe` |
+| SelectJury | `1d4cb7ce97f8647286374a5ccd2cd32956f3890732fa6654f097c8f3c114688c` |
+| CommitVote 1/5 | `b728aecba5f4b7b47874e91be1478631c1180f2ef18ea3780cc45de0270b25ec` |
+| CommitVote 2/5 | `400b3f0999af9c9d40cfe2adf89029af83464bb5f72a611017895ba4155e579c` |
+| CommitVote 3/5 | `afb20ef6a7feb7be16c85b712a315f19365cd3b78e93ee5f7ab1cf38ec8bc7ef` |
+| CommitVote 4/5 | `741dbd206f04a867a9437606283eda30cc15c498b8918eef8c337bdec0d39007` |
+| TimeoutResolve | `110fd711693b87ed41715054f6be631b2b00fcf4253e01779f467ae51b88d894` |
+| ResetStaleActiveCase (juror 4d908ec1) | `421dd8a939f6f42400040d7b461b6c7e46e4b5ab5339dcbea1c34cc7dd468976` |
+| ResetStaleActiveCase (juror 5ace2021) | `06292ad58fe0663837bd5946079359ef4cf3593e067dd349f3cc566d1309c302` |
+| ResetStaleActiveCase (juror a58b6fbd) | `2ba46e0c898710c48442f03a9b6dff8edbf903ddbb769284ae3bf395d11630ff` |
+| ResetStaleActiveCase (juror 5b76a067) | `63e9c74c1e6bac3e83a6cfa2ef7f1427625e4541c0fb87df923df81f7aeccffa` |
+| ResetStaleActiveCase (juror 61a0d910) | `aac89ffcc1ea308d29e6d543e49fc61af91da853dfae033e9173b17423a848af` |
+
+TimeoutResolve burned challenge_token `63686c5fbbe79245fcab5c8188558a5b3b6dfd42123ffe7615f93e29d4e8f6e2` and claim_token `636c6d5fce9fb78aae703a3f856fa95600533a9c7c00e72b479ee163a6b97054`; refunded 50M AP3X to claimer and 50M AP3X to auditor. All 5 jurors verified on-chain: `active_case=None`. Total ADA cost for Phase 3: ~3.6 ADA.
+
+### Coverage Note
+
+Normal jury-verdict resolution path (RevealVote → ResolveJury → DistributeRewards → CleanupResolved) is validated exhaustively in the Aiken test suite (226/226 tests green, including 4 Transaction-level e2e tests for ResetStaleActiveCase). On-chain v12 exercise focused on the escape-hatch path (TimeoutResolve + ResetStaleActiveCase), which is the new logic introduced in this version. Unchanged paths were exercised on-chain in prior v11 deploy.
 
 ## Lifecycle Validation
 
-All 13 lifecycle steps confirmed passing on Vector testnet (v10.6):
+All 13 lifecycle steps confirmed passing on Vector testnet (v10.6 code base, v11 deploy):
 
 | Step | Status |
 |------|--------|
@@ -77,4 +107,4 @@ Vector testnet uses Conway-era CBOR encoding. Aiken's `plutus.json` output uses 
 
 ## Compiled Blueprint
 
-The compiled Plutus V3 blueprint is available at [`plutus.json`](plutus.json). This contains all three validators pre-compiled and ready for deployment.
+The compiled Plutus V3 blueprint is available at [`plutus.json`](plutus.json). This contains all three validators pre-compiled and ready for deployment. The blueprint was regenerated during v12 deploy and reflects the current on-chain reference scripts.

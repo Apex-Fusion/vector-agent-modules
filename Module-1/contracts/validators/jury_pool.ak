@@ -47,7 +47,8 @@ use adversarial_auditing/params.{compute_slash_amount}
 use adversarial_auditing/types.{
   AuditingConfig, AuditorWins, ChallengeDatum, ClaimerWins, CommitVote,
   CrossValidatorRefs, DistributeRewards, Inconclusive,
-  JuryAction, JurorDatum, PendingJury, ReceiveJuryFee, RegisterJuror, Resolved,
+  JuryAction, JurorDatum, PendingJury, ReceiveJuryFee, RegisterJuror,
+  ResetStaleActiveCase, Resolved,
   RevealVote, SelectJury, SlashNonReveal, Verdict, Voting, WithdrawJuror,
 }
 use adversarial_auditing/utils.{
@@ -56,6 +57,7 @@ use adversarial_auditing/utils.{
   get_cross_refs, is_valid_hash, juror_token_name, outputs_at_script,
   tx_ends_before, tx_started_after, verify_active_did, vkh_signed,
 }
+use adversarial_auditing/reset.{check_reset_stale_active_case_with_refs}
 
 // ══════════════════════════════════════════════════════════════════════
 // MULTI-VALIDATOR
@@ -133,6 +135,12 @@ validator jury_pool(config: AuditingConfig, params: ProtocolParams) {
               count_script_inputs(tx.inputs, refs.jury_pool_hash) == 1
             expect single_input
             validate_distribute_rewards(config, refs, params, juror, tx, challenge_ref)
+          }
+          ResetStaleActiveCase -> {
+            let single_input =
+              count_script_inputs(tx.inputs, refs.jury_pool_hash) == 1
+            expect single_input
+            check_reset_stale_active_case_with_refs(refs, juror, own_ref, tx)
           }
           RegisterJuror ->
             fail @"jury_pool spend: RegisterJuror is a mint action"
@@ -822,7 +830,7 @@ fn validate_distribute_rewards(
                 updated.cases_resolved == juror.cases_resolved + 1,
                 updated.active_case == None,
                 // fix: RT-008 — verify bond_amount and majority_votes immutability.
-                // Without these checks, a juror could inflate bond_amount or module stats.
+                // Without these checks, a juror could inflate bond_amount or game stats.
                 updated.bond_amount == juror.bond_amount,
                 updated.majority_votes == juror.majority_votes,
                 // Commit-reveal fields must be cleared after distribution.
@@ -848,3 +856,17 @@ fn validate_distribute_rewards(
 }
 
 
+
+// ══════════════════════════════════════════════════════════════════════
+// RESET STALE ACTIVE CASE (spend)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Escape hatch for a juror whose active_case references a challenge token
+// that no longer exists on-chain. Happens when TimeoutResolve burned the
+// challenge but the juror was never reached by DistributeRewards (which
+// requires a Resolved challenge — unavailable after timeout burn).
+//
+// The authoritative rule body lives in `adversarial_auditing/reset.ak`
+// (check_reset_stale_active_case_with_refs) so that tests can exercise
+// the exact code the spend handler dispatches to. See that module for
+// preconditions and continuing-output requirements.

@@ -27,7 +27,7 @@
 
 We present a self-policing integrity mechanism for autonomous AI agent economies operating on extended UTxO (eUTxO) blockchains. In the absence of a central authority capable of continuous runtime verification, agents that make on-chain claims — attesting task completion, data provenance, or capability possession — represent an unresolved trust problem at scale. We introduce *Adversarial Auditing*, a stake-based challenge-response protocol in which economically-motivated auditors contest fraudulent claims, and a randomly-selected peer jury adjudicates disputes via commit-reveal voting. The critical property is that individual profit-seeking produces collective integrity as a side effect: auditors audit because it pays, not because they are altruistic.
 
-The protocol is implemented as three Aiken multi-validators totaling 3,146 lines of code (`claim.ak` at 503 LOC, `challenge.ak` at 1,793 LOC, `jury_pool.ak` at 850 LOC), with 213 unit tests and 8 stateful lifecycle tests passing. Sixteen security findings — 7 Critical, 2 High, 4 Medium, 3 Low — were identified and resolved across 9 days and 6 adversarial review cycles before testnet deployment. All 13 lifecycle steps were confirmed on Vector testnet v10.6.
+The protocol is implemented as three Aiken multi-validators totaling 3,146 lines of code (`claim.ak` at 503 LOC, `challenge.ak` at 1,793 LOC, `jury_pool.ak` at 850 LOC), with 226 unit tests and 8 stateful lifecycle tests passing. Sixteen security findings — 7 Critical, 2 High, 4 Medium, 3 Low — were identified and resolved across 9 days and 6 adversarial review cycles before testnet deployment. All 13 lifecycle steps were confirmed on Vector testnet v12.
 
 Agent-based Monte Carlo simulation across 160 runs (10 random seeds × 16 parameter combinations) demonstrates robust incentive alignment: adversarial agents suffer −40% to −96% ROI across all tested scenarios; skilled auditors earn +27% to +86% ROI scaling linearly with fraud prevalence (R² ≈ 0.98); and the AP3X token conservation law holds exactly across all simulations with zero drift. Fraud detection rate was 100% in every single run. The decisive variable is jury pool quality: random juror selection yields 42% accuracy and drives auditor ROI negative, while skill-filtered selection (detection probability p_detect ≥ 0.4) yields 68% accuracy and healthy system economics, motivating the Module 3 Reputation Staking extension as a necessary follow-on.
 
@@ -187,7 +187,7 @@ The selection seed is derived from the challenge token name, which is itself der
 
 An accepted residual risk is PRNG seed grinding: a well-resourced adversary with a high-value claim could attempt to identify challenge UTXO references that produce favorable jury compositions before submitting the challenge. This attack is economically constrained (requires monitoring and timing many challenge submissions) and is documented with a VRF upgrade path for Phase 2.
 
-All 13 steps of the full claim-challenge-jury-resolution lifecycle were confirmed on-chain on Vector testnet v10.6.
+All 13 steps of the full claim-challenge-jury-resolution lifecycle were confirmed on-chain on Vector testnet v12. The escape-hatch `ResetStaleActiveCase` action was additionally verified on-chain in the v12 deployment (2026-04-15).
 
 ### 3.6 Protocol Parameters
 
@@ -236,8 +236,8 @@ AP3X flows within the closed system: wallets → locked claims → locked challe
 **Technical Implementation**
 - Smart contract language: Aiken (functional, for Cardano/Vector eUTxO)
 - Total validator code: 3,146 LOC across 3 files
-- Test suite: 213 unit tests + 8 stateful lifecycle tests (all passing)
-- Testnet: Vector v10.6 (13/13 lifecycle steps confirmed)
+- Test suite: 226 unit tests + 8 stateful lifecycle tests (all passing)
+- Testnet: Vector v12 (13/13 lifecycle steps confirmed)
 - Security review: 16 findings (7C/2H/4M/3L), all resolved over 6 cycles
 
 ---
@@ -554,7 +554,7 @@ The contract suite was subjected to a structured multi-agent security audit span
 | **Contract Author (CA)** | Implementation and remediation across 10 versions |
 | **Code Reviewer (CR)** | Static analysis: 6 independent review passes |
 | **Red Team Specialist (RT)** | Adversarial analysis: 4 red-team engagements |
-| **Test Engineer (TE)** | 213 Aiken unit tests + 8 Python stateful lifecycle tests |
+| **Test Engineer (TE)** | 226 Aiken unit tests + 8 Python stateful lifecycle tests |
 
 Each review cycle followed a fixed protocol: (1) static analysis producing a finding report with CVSS-analogous severity classifications, (2) author remediation of all blocking findings, (3) red-team adversarial analysis with explicit exploit construction attempts, (4) author remediation of new findings, (5) joint verification, (6) regression test extension. This cycle iterated 6 times, producing an audit trail of formal finding cards and six independent review reports.
 
@@ -562,7 +562,7 @@ Analysis techniques included: line-by-line static code analysis of all Aiken sou
 
 ### 6.2 Findings Summary
 
-A total of 16 security findings were identified across the v1–v10.6 lifecycle. All findings have been fixed and verified. The distribution is 7 Critical, 2 High, 4 Medium, and 3 Low.
+A total of 16 security findings were identified across the v1–v12 lifecycle. All findings have been fixed and verified. The distribution is 7 Critical, 2 High, 4 Medium, and 3 Low.
 
 | ID | Description | Severity | Found By | Fixed In |
 |----|-------------|----------|----------|----------|
@@ -570,18 +570,18 @@ A total of 16 security findings were identified across the v1–v10.6 lifecycle.
 | F-003 | Challenge token name derivation mismatch (Aiken vs Python CBOR encoding) | Critical | Lifecycle test | v4 |
 | F-004 | Active case / challenge ref mismatch in 2-TX flow | Critical | Lifecycle test | v4 |
 | F-005 | Seconds/milliseconds time constant confusion — effective window 1.8 s | Critical | Lifecycle test | v4 |
-| ZORA-v10-F1 | ForfeitClaim gate: Resolved state not verified, only spent | Critical | CR | v10.1 |
-| BORKA-001 | Fake Resolved output bypass in ForfeitClaim | Critical | RT | v10.2 |
-| BORKA-002 | ResolveJury accepts unauthenticated votes from redeemer | Critical | RT | v10.2 |
+| CR-v10-F1 | ForfeitClaim gate: Resolved state not verified, only spent | Critical | CR | v10.1 |
+| RT-001 | Fake Resolved output bypass in ForfeitClaim | Critical | RT | v10.2 |
+| RT-002 | ResolveJury accepts unauthenticated votes from redeemer | Critical | RT | v10.2 |
 | F-006 | CrossValidatorRefs poisoning via AP3X policy collision | High | Red team | v4 |
-| BORKA-008 | Vote fabrication via redeemer manipulation | High | RT | v10.2 |
+| RT-008 | Vote fabrication via redeemer manipulation | High | RT | v10.2 |
 | F-002 | DistributeRewards unreachable (challenge burned before distribution) | Medium | Lifecycle test | v10 |
-| ZORA-CR-01 | Commit-reveal timing enforcement absent | Medium | CR | v10.3 |
-| ZORA-CR-02 | Juror token authentication in commit/reveal missing | Medium | CR | v10.3 |
-| ZORA-P11-01 | SelectJury did not require Voting state | Medium | CR | v10.6 |
-| BORKA-V5 | Minimum pool size not enforced at SelectJury | Low | RT | v10.6 |
-| ZORA-P11-04 | CleanupResolved juror protection absent | Low | CR | v10.6 |
-| BORKA-V7 | Cleanup buffer timing not enforced | Low | RT | v10.6 |
+| CR-CR-01 | Commit-reveal timing enforcement absent | Medium | CR | v10.3 |
+| CR-CR-02 | Juror token authentication in commit/reveal missing | Medium | CR | v10.3 |
+| CR-P11-01 | SelectJury did not require Voting state | Medium | CR | v10.6 |
+| RT-V5 | Minimum pool size not enforced at SelectJury | Low | RT | v10.6 |
+| CR-P11-04 | CleanupResolved juror protection absent | Low | CR | v10.6 |
+| RT-V7 | Cleanup buffer timing not enforced | Low | RT | v10.6 |
 
 ### 6.3 Critical Finding Analysis
 
@@ -589,7 +589,7 @@ A total of 16 security findings were identified across the v1–v10.6 lifecycle.
 
 **F-005 (units confusion)** demonstrates the hazard of implicit unit conventions in Plutus V3 contracts. The `submitted_at` field stores POSIX milliseconds (as provided by ScriptContext), while the `challenge_window` parameter was stored in seconds. The validator computed deadlines by direct addition, producing a 30-minute window of 1.8 seconds. Every claim submitted under this logic was effectively unchallengeable. This class of defect is invisible to type systems without unit annotations and requires explicit documentation of all time representations.
 
-**BORKA-001 / BORKA-002** form a coordinated attack surface: BORKA-001 exploited the absence of Resolved-state verification in `ForfeitClaim`, allowing an attacker to construct a fake Resolved output and forfeit a claimant's stake without a legitimate challenge. BORKA-002 exploited the absence of vote authentication in `ResolveJury`, allowing fabrication of votes from the transaction redeemer rather than on-chain juror UTxOs. These findings illustrate why adversarial analysis must follow every review cycle: static analysis identified ZORA-v10-F1 (the preceding Resolved state issue), but red-team analysis discovered the complementary attack vector that static review missed.
+**RT-001 / RT-002** form a coordinated attack surface: RT-001 exploited the absence of Resolved-state verification in `ForfeitClaim`, allowing an attacker to construct a fake Resolved output and forfeit a claimant's stake without a legitimate challenge. RT-002 exploited the absence of vote authentication in `ResolveJury`, allowing fabrication of votes from the transaction redeemer rather than on-chain juror UTxOs. These findings illustrate why adversarial analysis must follow every review cycle: static analysis identified CR-v10-F1 (the preceding Resolved state issue), but red-team analysis discovered the complementary attack vector that static review missed.
 
 ### 6.4 Accepted Risks
 
@@ -601,8 +601,8 @@ Two game-theoretic risks were accepted as inherent to the current design:
 
 ### 6.5 Test Coverage
 
-The final v10.6 release is backed by:
-- **213 Aiken unit tests** (213/213 passing) — covering all action handlers, state transitions, edge cases, and regression tests for each of the 16 fixed findings
+The final v12 release is backed by:
+- **226 Aiken unit tests** (226/226 passing) — covering all action handlers, state transitions, edge cases, and regression tests for each of the 16 fixed findings
 - **8 Python stateful lifecycle tests** (8/8 passing) — end-to-end transaction sequences exercising all 13 lifecycle steps on Vector testnet
 - **13/13 testnet lifecycle steps confirmed** — from `RegisterAgent` through `CleanupResolved`
 
@@ -783,7 +783,7 @@ Module 11 integrates with Module 1 for contested reports (contested reports esca
 
 This paper has presented Adversarial Auditing (Module 1), a fully on-chain dispute resolution protocol for autonomous AI agent economies on an eUTxO blockchain. We have demonstrated that the system achieves its core design objective — converting individual profit-seeking into collective integrity — across three independent lines of evidence: formal implementation on a live testnet, systematic security validation, and game-theoretic simulation.
 
-**Implementation.** Three interdependent Aiken validators comprising 3,146 lines of production code have been deployed and verified through a complete 13-step lifecycle on the Vector testnet (v10.6). The contract architecture — CrossValidatorRefs pattern, commit-reveal voting with `SlashNonReveal`, PRNG-based jury selection, `Resolved` state sequencing — represents a set of reusable eUTxO design patterns for multi-party stake protocols.
+**Implementation.** Three interdependent Aiken validators comprising 3,146 lines of production code have been deployed and verified through a complete 13-step lifecycle on the Vector testnet (v12). The contract architecture — CrossValidatorRefs pattern, commit-reveal voting with `SlashNonReveal`, PRNG-based jury selection, `Resolved` state sequencing — represents a set of reusable eUTxO design patterns for multi-party stake protocols.
 
 **Security.** A multi-agent audit pipeline (Code Reviewer + Red Team Specialist + Test Engineer) operating over 6 review cycles identified and fixed 16 security findings (7 Critical, 2 High, 4 Medium, 3 Low) in 9 days. The findings reveal a recurring pattern: the most critical vulnerabilities in eUTxO multi-validator systems arise at state machine boundaries (unreachable states, token lifecycle ordering) and cross-validator authentication points (fake output injection, vote fabrication). The accepted risks — PRNG seed grinding and juror collusion — are game-theoretic in nature and have documented upgrade paths in future phases.
 
@@ -797,9 +797,9 @@ Second, *jury quality is the load-bearing variable*. System designers building s
 
 Third, *the system must self-correct under attack, not merely resist it*. Resistance is fragile; self-correction is robust. The empirically confirmed feedback loop — more fraud → higher auditor profit → more auditing → less fraud — means the system strengthens under pressure rather than degrading. This property is the correct target for dispute resolution mechanism design in adversarial environments.
 
-**Call to Action.** The system is deployed at v10.6 on the Vector testnet. The Module 3 implementation specification (v0.3) is complete and ready for development. A mainnet deployment path is documented, pending economic equilibrium validation via 1,000+ epoch simulation runs. The Apex agent economy is open for participation: auditors earn positive expected returns when fraud exists; honest agents face no systematic risk from correct system operation; the foundational trust layer for AI agent coordination on eUTxO is in place.
+**Call to Action.** The system is deployed at v12 on the Vector testnet. The Module 3 implementation specification (v0.3) is complete and ready for development. A mainnet deployment path is documented, pending economic equilibrium validation via 1,000+ epoch simulation runs. The Apex agent economy is open for participation: auditors earn positive expected returns when fraud exists; honest agents face no systematic risk from correct system operation; the foundational trust layer for AI agent coordination on eUTxO is in place.
 
 ---
 
-*Part 2 — Sections 6–10. Based on SPEC.md, STATUS.md, reports/module1-comprehensive-audit-v10.6.md, reports/simulator-outcomes.md, and specs/multigames/.*  
+*Part 2 — Sections 6–10. Based on SPEC.md, STATUS.md, reports/module1-comprehensive-audit-v12.md, reports/simulator-outcomes.md, and specs/multigames/.*  
 *Part 1 (Sections 1–5) in docs/whitepaper-part1.md.*

@@ -266,6 +266,15 @@ pub type JuryAction {
   SlashNonReveal {
     challenge_ref: OutputReference,
   }
+  /// Escape hatch: reset a juror's stale active_case when the referenced
+  /// challenge token no longer exists on-chain (e.g., the challenge was
+  /// burned via TimeoutResolve but the juror was never reached by
+  /// DistributeRewards — which would require a Resolved challenge).
+  /// Juror signs; validator verifies the active_case token is NOT held by
+  /// any reference input at the challenge address (i.e., burned/absent).
+  /// Continuing output: active_case=None, bond preserved, everything else
+  /// unchanged. vote_commitment and revealed_verdict also reset to None.
+  ResetStaleActiveCase
 }
 
 // ══════════════════════════════════════════════════════════════════════

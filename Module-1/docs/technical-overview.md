@@ -3,7 +3,7 @@
 **System:** Apex Multi-Module Ecosystem — Module 1  
 **Network:** Vector Testnet (Cardano eUTxO L2, magic: 764824073)  
 **Language:** Aiken (Plutus V3)  
-**Version:** v10.6 (final)  
+**Version:** v12 (current)  
 **Date:** 2026-04-01  
 **Author:** AI Agent Security Audit Team — Research & Orchestration Lead  
 
@@ -215,13 +215,13 @@ All time-sensitive operations use Cardano's validity interval mechanism:
 
 ## 5. Deployment Details
 
-### 5.1 Contract Hashes (v10.6 — Final Testnet Deployment)
+### 5.1 Contract Hashes (v12 — Current Testnet Deployment)
 
 | Validator | Script Hash | Testnet Address |
 |-----------|-------------|-----------------|
-| challenge | `781843681859bcababb90a220ad84604cb324aef4757c6a5c46a96fc` | `addr1w9upssmgrpvme2athy9zyzkcgczvkvj2aar40349c34fdlqvc4dzd` |
-| claim | `6884d7c86a0761da8a61e6a7a346197aa2949fef8030a3eb84944dda` | `addr1w95gf47gdgrkrk52v8n20g6xr9a299yla7qrpgltsj2ymks92jxwq` |
-| jury_pool | `b15af09128457e09b23c79119aa0c8c85d25c9fd96656f2611fdc962` | `addr1wxc44uy39pzhuzdj83u3rx4qery96fwflktx2mexz87ujcsxgtf0q` |
+| challenge | `e93ec8e10ae9180564f6acb98130a37425974c83204b7309bd5d572e` | `addr1w85naj8ppt53spty76ktnqfs5d6zt96vsvsykucfh4w4wtsq0ct3g` |
+| claim | `6f02f3191bf806386ba1141192ac80838cd27deb0db68214de8d32e5` | `addr1w9hs9ucer0uqvwrt5y2pry4vszpce5naavxmdqs5m6xn9eg9q29cs` |
+| jury_pool | `37e93880f270e784e675dda8cbfb315607b99431b9a8548323a2b0ec` | `addr1wym7jwyq7fcw0p8xwhw63jlmx9tq0wv5xxu6s4yryw3tpmqrephmy` |
 
 ### 5.2 Reference Script Deployment
 
@@ -232,11 +232,11 @@ All three validators are deployed as **reference scripts** (CIP-33), meaning:
 
 | Component | UTxO Reference |
 |-----------|---------------|
-| Challenge reference script | `20f4d1f62dd2247b8091485d84f949c019bc95ee415caa0953bcdbbd33c07301#0` |
-| Claim reference script | `540fc16f66ce4f4186e33fc298f22a6e6787ebf4562b0c34a02260e7263d392e#0` |
-| Jury Pool reference script | `92eb3826f2a95b606534c77d55ed493ea5401b041b1fbc06c45ff2007580d5d1#0` |
-| Cross-validator references | `42856795e208ae815ef033e2c526af05267b8d59a21e1339b9cd766c4b458412#0` |
-| Protocol parameters | `42856795e208ae815ef033e2c526af05267b8d59a21e1339b9cd766c4b458412#1` |
+| Challenge reference script | `73404929fb14633751123d85c3dc67d82269a8aebb2f49d38af68d5c19e59af1#0` |
+| Claim reference script | `8eafb8891572f95ce84c77b5d44a660a9a48ddbf8f372e056f0a402defbb523b#0` |
+| Jury Pool reference script | `962f5609f3ac90855dd79e5328d2b5d60bd97410ac24aa868a57464ac811a339#0` |
+| Cross-validator references | `73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#0` |
+| Protocol parameters | `73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#1` |
 
 ### 5.3 Version Evolution
 
@@ -252,9 +252,11 @@ The system went through 10 major versions during development and audit:
 | v10.1 | 2026-03-30 | ForfeitClaim Resolved state verification (code review finding) |
 | v10.2 | 2026-03-30 | Red team fixes: fake Resolved output, vote authentication |
 | v10.3 | 2026-03-31 | Phase 1.1: commit-reveal voting, permissionless ResolveJury |
-| v10.6 | 2026-03-31 | **Final** — Full Phase 1.1: all oracle removals, PRNG jury selection, SlashNonReveal, min pool size, cleanup buffer |
+| v10.6 | 2026-03-31 | Full Phase 1.1: all oracle removals, PRNG jury selection, SlashNonReveal, min pool size, cleanup buffer |
+| v11 | 2026-04-14 | First ResetStaleActiveCase deploy; superseded by v12 |
+| v12 | 2026-04-15 | **Current** — Escape hatch on-chain verified; ResetStaleActiveCase fully tested |
 
-### 5.4 Lifecycle Validation Results (v10.6)
+### 5.4 Lifecycle Validation Results (v12)
 
 All 11 lifecycle steps executed successfully on Vector testnet in sequence:
 
@@ -353,13 +355,13 @@ All parameters are governance-adjustable (future Module 6 pathway):
 | params.ak (parameters) | 172 | 1 |
 | utils.ak (shared utilities) | 418 | 1 |
 | **Total Aiken source** | **4,047** | **6** |
-| Aiken unit tests | ~4,000+ | 4 |
+| Aiken unit tests | 226 | 4 |
 | Python lifecycle tests | ~800 | 8+ |
 | Python deployment scripts | ~1,500 | 5+ |
 
 ### Test Coverage
 
-- **213 Aiken unit tests** — covering all validator actions, both happy-path and negative cases
+- **226 Aiken unit tests** — covering all validator actions, both happy-path and negative cases
 - **8 Python stateful tests** — multi-step lifecycle scenarios testing UTxO evolution
 - **Red team exploitation attempts** — documented in audit report (all critical/high findings fixed)
 
@@ -386,4 +388,4 @@ The audit results feed into the Apex Fusion Index (AFI):
 
 ---
 
-*This document describes the final v10.6 implementation as deployed on Vector testnet and validated through a complete security audit cycle including code review, test engineering, and red-team adversarial testing.*
+*This document describes the current v12 implementation as deployed on Vector testnet and validated through a complete security audit cycle including code review, test engineering, and red-team adversarial testing.*

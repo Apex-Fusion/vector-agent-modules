@@ -1,6 +1,6 @@
 # Module 1: Adversarial Auditing
 
-> **⚠️ WORK IN PROGRESS** — Contracts are complete and audited. Simulator is under active development (Phase A+B complete, Phase C pending).
+> **WORK IN PROGRESS** — Contracts are complete and audited (v12 with ResetStaleActiveCase exercised on-chain). Simulator is under active development (Phase A+B complete, Phase C pending).
 
 ## What Is This?
 
@@ -46,8 +46,8 @@ Three Aiken (Plutus V3) multi-validators — 4,047 lines total:
 | `claim.ak` | 503 | Claim submission, withdrawal, state transitions |
 | `jury_pool.ak` | 850 | Juror registration, PRNG selection, voting, rewards |
 
-**Tests:** 213/213 Aiken unit tests passing  
-**Testnet:** 13/13 lifecycle steps confirmed (v10.6)
+**Tests:** 226/226 Aiken unit tests passing  
+**Testnet:** 13/13 lifecycle steps confirmed (v11 full path); escape-hatch paths (TimeoutResolve + ResetStaleActiveCase) confirmed on-chain (v12)
 
 ```bash
 cd contracts/
@@ -72,19 +72,19 @@ Python-based simulation engine for testing module economics and agent strategies
 
 **Status:** Phase A (infrastructure) + Phase B (engine) complete. Phase C (module logic + scenarios) in progress.
 
-## Contract Hashes (v10.6)
+## Contract Hashes (v12)
 
 | Validator | Script Hash |
 |-----------|-------------|
-| challenge | `781843681859bcababb90a220ad84604cb324aef4757c6a5c46a96fc` |
-| claim | `6884d7c86a0761da8a61e6a7a346197aa2949fef8030a3eb84944dda` |
-| jury_pool | `b15af09128457e09b23c79119aa0c8c85d25c9fd96656f2611fdc962` |
+| challenge | `e93ec8e10ae9180564f6acb98130a37425974c83204b7309bd5d572e` |
+| claim | `6f02f3191bf806386ba1141192ac80838cd27deb0db68214de8d32e5` |
+| jury_pool | `37e93880f270e784e675dda8cbfb315607b99431b9a8548323a2b0ec` |
 
 ## Folder Structure
 
 ```
 Module-1/
-├── contracts/              ← Aiken smart contract source (v10.6 final)
+├── contracts/              ← Aiken smart contract source (v12, ResetStaleActiveCase)
 │   ├── validators/         ← 3 multi-validators
 │   ├── lib/                ← Shared types, params, utils + test helpers
 │   ├── tests/              ← Test modules

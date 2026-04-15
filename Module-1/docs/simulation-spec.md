@@ -355,7 +355,7 @@ Recommend Option B — it's how real agents would work.
 ## 10. File Structure
 
 ```
-workspace-apex/
+Module-1/
 ├── simulation/
 │   ├── sim_controller.py        # Main orchestration loop
 │   ├── agent_pool.py            # Agent creation, decision logic
