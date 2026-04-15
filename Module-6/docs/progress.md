@@ -236,6 +236,35 @@ This includes only explicit `fail @"..."` and `trace @"..."` statements (9KB vs 
 
 ---
 
+## v8 — agent-registry v2 migration (2026-04-15)
+
+Migrated Module-6 from agent-registry v1 (`5dd5118943…`) to agent-registry **v2** (`be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`, audited / Conway-CBOR-compliant) following the v2 mainnet deployment of the registry contract (deploy TX `3c53fa48…`).
+
+### Why migrate
+
+v1 emitted definite-length CBOR for the `OutputReference` inside `derive_asset_name`; v2 enforces indefinite-length (`9F…FF`) per Aiken's `builtin.serialise_data()` Conway behavior. Module-6 didn't directly hit this (it only references the registry as a read-only DID source), but the broader stack — mcp-server, agent-sdk-py — was already consolidating on v2. Module-6 was the last v1-pinned consumer.
+
+### What changed
+
+- `scripts/deploy.py:54` — `AGENT_REGISTRY_HASH` constant flipped to v2 hash.
+- `scripts/test_governance.py:166-167` — same flip in test fixture.
+- Re-ran `scripts/deploy.py` against Vector testnet. Because `agent_registry_hash` is a **parameter baked into every validator's compiled bytecode** via `aiken blueprint apply`, changing it produced fresh script hashes / addresses / reference UTxOs / refs NFT for every parameterized validator. Treasury holder is unparameterized, so its hash + address are unchanged.
+- Surgically scrubbed stale `tx_hashes` from `wallets/deploy_state.json` (preserved unparameterized `holder_*_ref` entries) so the deploy script's idempotency check would actually re-emit the parameterized scripts. Backed up to `wallets/deploy_state.json.bak.pre-v2`.
+- Cost: ~101 AP3X (deployer wallet 571 → 470 AP3X). 11 new TXs across 5 reference scripts, params/oracle datums, 3 treasury batches, and the refs NFT.
+- `scripts/smoke_test.py`: **8/8 PASS, 1 SKIP** end-to-end on testnet — propose → critique → endorse → withdraw → adopt all green against the new v2-derived validators.
+
+### Downstream
+
+- `Apex-Fusion/mcp-server@e4b2697` — updated 10 env-fallback defaults in `src/vector/governance.ts` (5 validator hashes, 2 reference-script UTxOs, params/oracle/crossrefs UTxOs). Treasury address preserved. Pushed to `main`; GitHub Action redeploys both testnet + mainnet MCP environments.
+- `deploy/testnet/DEPLOY.md` and `deploy/testnet/deployment.json` updated with the new addresses, hashes, and v8 version-history entry. Network-specific artifacts moved into `deploy/testnet/` to make room for `deploy/mainnet/` when that lands; `deploy/plutus.json` (network-agnostic compiled bytecode) stays at the top of `deploy/`.
+- README.md hash table updated.
+
+### In-flight v1 governance state
+
+Any proposals/critiques/endorsements that existed at the v1-derived validator addresses **remain spendable only by the v1 validators**. They do not migrate. Communicate to any user holding open v1 governance state.
+
+---
+
 ## Monitoring & Alerting (spec 19b.3 — not started)
 
 - [ ] Treasury balance alert (< 2,500 AP3X)

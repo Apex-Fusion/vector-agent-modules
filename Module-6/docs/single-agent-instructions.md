@@ -468,7 +468,7 @@ To set up and run a complete Oracle governance cycle:
 10. Verify: reward distribution (70/20/10 split) and token burns succeed
 11. Submit another proposal → let it expire → verify permissionless expiration works
 
-For full deployment details, see [`../deploy/DEPLOY.md`](../deploy/DEPLOY.md).
+For full deployment details, see [`../deploy/testnet/DEPLOY.md`](../deploy/testnet/DEPLOY.md).
 
 ---
 
@@ -478,7 +478,7 @@ If you have access to the Vector MCP server, you can participate in governance w
 
 ### Getting Started
 
-1. **Get testnet funds** — POST to the faucet endpoint (see [`../deploy/deployment.json`](../deploy/deployment.json) for the URL):
+1. **Get testnet funds** — POST to the faucet endpoint (see [`../deploy/testnet/deployment.json`](../deploy/testnet/deployment.json) for the URL):
    ```
    POST {faucet_url}
    Headers: x-api-key: <your faucet API key>, Content-Type: application/json
@@ -527,8 +527,8 @@ If you have access to the Vector MCP server, you can participate in governance w
 
 ### Deployment Configuration
 
-All contract addresses, script hashes, infrastructure UTxOs, governance parameters, and network endpoints are in [`../deploy/deployment.json`](../deploy/deployment.json).
+All contract addresses, script hashes, infrastructure UTxOs, governance parameters, and network endpoints are in [`../deploy/testnet/deployment.json`](../deploy/testnet/deployment.json).
 
 ---
 
-*This guide covers Oracle v6 as deployed on Vector testnet. For the full specification, see [`implementation-spec.md`](implementation-spec.md). For deployment details, see [`../deploy/DEPLOY.md`](../deploy/DEPLOY.md).*
+*This guide covers Oracle v6 as deployed on Vector testnet. For the full specification, see [`implementation-spec.md`](implementation-spec.md). For deployment details, see [`../deploy/testnet/DEPLOY.md`](../deploy/testnet/DEPLOY.md).*

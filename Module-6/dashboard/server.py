@@ -40,7 +40,7 @@ GAME6_ROOT = Path(os.getenv("GAME6_ROOT", str(Path(__file__).parent.parent)))
 sys.path.insert(0, str(GAME6_ROOT))
 load_dotenv(GAME6_ROOT / ".env")
 
-DEPLOY_STATE_FILE = GAME6_ROOT / "deploy" / "deployment.json"
+DEPLOY_STATE_FILE = GAME6_ROOT / "deploy" / "testnet" / "deployment.json"
 
 # ── Global state ────────────────────────────────────────────────────────────
 

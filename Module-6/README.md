@@ -32,7 +32,7 @@ Emergency proposals (5x stake, 12h window) are available for urgent parameter ch
 | [Single-Agent Instructions](docs/single-agent-instructions.md) | Standalone guide for an AI agent to bootstrap and participate |
 | [Implementation Spec](docs/implementation-spec.md) | Full spec — types, validation rules, game theory, reward economics |
 | [Progress Tracker](docs/progress.md) | What's done, what's left, bug history (15 found and fixed) |
-| [Deployment](deploy/DEPLOY.md) | Contract hashes, testnet addresses, GovernanceParams, lifecycle results |
+| [Testnet Deployment](deploy/testnet/DEPLOY.md) | Contract hashes, testnet addresses, GovernanceParams, lifecycle results |
 
 ## Contracts
 
@@ -78,15 +78,17 @@ nix-shell shell.nix --run "python scripts/deploy.py"
 nix-shell shell.nix --run "python scripts/smoke_test.py"
 ```
 
-## Contract Hashes (v6)
+## Contract Hashes (v8 — agent-registry v2)
+
+Built against agent-registry **v2** (`be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`). For the previous v7 hashes see `deploy/testnet/DEPLOY.md` version history.
 
 | Validator | Script Hash |
 |-----------|-------------|
-| proposal_spend | `40fe1895df7bfd4a732cecd3c6f56b942fd36690c0cff9358dc8a0f8` |
-| proposal_mint | `10dff07bb98b5c88b488522c0b7d8bf9ad335907cb20a479ba3b3166` |
-| critique_spend | `9e9aaf7ea0e03695fbe1bf60429e2a715cbc40da82b17f8a52dedeb1` |
-| critique_mint | `1f5614b709a30e35034666dbe13599786d39b3db24471b88c468c74c` |
-| endorsement_spend | `1fac8b35509d379c304fcafdf12b8ed0845af5543dd5a6490fb75b7b` |
+| proposal_spend | `f815f51a76002d6a973e83fecf60f45473e040acee85c631fcce134d` |
+| proposal_mint | `e8f38052352a3d20c5fe025e2a02d615826a154b26f2239286b8d565` |
+| critique_spend | `ced52074861af95e2082004d6061b0fc4bb30fded61f9605bfc20e55` |
+| critique_mint | `2e252a89894d379ce5c0023a57de4627056e4a96da72bd8fedba04bd` |
+| endorsement_spend | `5fc449848d85f30287e5bc0bd2b3e95d872ef97be27f1480c12f1a9d` |
 
 ## Cross-Module Integration
 
@@ -108,10 +110,13 @@ Module-6/
 ├── scripts/                           ← Deployment + testing scripts (Python)
 ├── agents/                            ← Chain analytics agent template
 ├── deploy/                            ← Deployment records + compiled blueprint
-│   ├── DEPLOY.md                      ← Hashes, addresses, params, lifecycle results
-│   ├── deployment.json                ← Machine-readable deployment state
-│   ├── lifecycle-results.json         ← 9/9 test results with tx hashes
-│   └── plutus.json                    ← Compiled Plutus V3 blueprint
+│   ├── plutus.json                    ← Compiled Plutus V3 blueprint (network-agnostic)
+│   ├── README.md                      ← Layout guide
+│   ├── testnet/                       ← Vector testnet deployment artifacts
+│   │   ├── DEPLOY.md                  ← Hashes, addresses, params, lifecycle results
+│   │   ├── deployment.json            ← Machine-readable deployment state
+│   │   └── lifecycle-results.json     ← Test results with tx hashes
+│   └── mainnet/                       ← (placeholder — populated when deployed)
 ├── docs/                              ← Specification + progress tracker
 │   ├── implementation-spec.md
 │   └── progress.md
