@@ -704,7 +704,7 @@ MUST:
   1. Endorser has active DID in Agent Registry
   2. Referenced proposal exists and state == Open OR Amended
   3. endorser_did != proposer_did (cannot self-endorse)
-  4. stake_amount >= MIN_GOVERNANCE_ENDORSEMENT (initially 5 AP3X)
+  4. stake_amount >= MIN_GOVERNANCE_ENDORSEMENT (10 AP3X)
   5. Endorsement token = blake2b_256(endorser_did ++ proposal_ref) — one per pair
   6. GovernanceEndorsementUTXO created at critique validator address
   7. Transaction signed by endorser_credential
@@ -1303,7 +1303,7 @@ All parameters governance-adjustable (self-referential: Module 6 proposals can c
 |-----------|--------------|------|-----------|
 | `MIN_PROPOSAL_STAKE` | 25 | AP3X | Low enough for Type 1, high enough to deter spam |
 | `MIN_CRITIQUE_STAKE` | 5 | AP3X | Very low — encourage critique activity |
-| `MIN_GOVERNANCE_ENDORSEMENT` | 5 | AP3X | Low — endorsements are signals, not commitments |
+| `MIN_GOVERNANCE_ENDORSEMENT` | 10 | AP3X | Meaningful signal — higher than critique stake |
 | `MIN_REVIEW_WINDOW` | 64,800 | slots (~3d) | Enough time for Foundation + critique activity |
 | `MAX_REVIEW_WINDOW` | 604,800 | slots (~28d) | Prevents indefinite capital lockup |
 | `MAX_AMENDMENTS` | 5 | amendments | Prevents infinite revision cycles |
@@ -1314,7 +1314,7 @@ All parameters governance-adjustable (self-referential: Module 6 proposals can c
 | `PROTOCOL_FEE_RATE` | 1,000 | basis points (10%) | Treasury sustainability |
 | `MIN_ADOPTION_REWARD` | 50 | AP3X | Floor for meaningful incentive |
 | `MAX_ADOPTION_REWARD` | 500 | AP3X | Cap to protect treasury |
-| `MAX_INCORPORATED_CRITIQUES` | 5 | critiques | Caps reward dilution |
+| `MAX_INCORPORATED_CRITIQUES` | 10 | critiques | Caps reward dilution |
 | `MAX_TREASURY_REQUEST` | 10,000 | AP3X | Cap on single treasury spend proposals |
 | `EMERGENCY_STAKE_MULTIPLIER` | 5,000 | basis points (5x) | High cost filters false emergencies |
 | `EMERGENCY_REVIEW_WINDOW` | 10,800 | slots (~12h) | Fast Foundation response for real emergencies |
@@ -2005,6 +2005,7 @@ The Foundation needs an off-chain interface to review proposals:
 8. **Reasoning template**: Structured format for adoption/rejection reasoning
 9. **Batch processing**: Review and act on multiple proposals in one session
 10. **Stale proposal cleanup**: Highlight and batch-expire stale proposals
+11. **Agent leaderboard**: All governance participants ranked — proposers, critics, endorsers — with activity counts and adoption metrics
 
 ---
 

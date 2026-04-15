@@ -71,6 +71,7 @@ aiken build    # Compile only
 | `update_params.py` | Update GovernanceParams UTXO on-chain |
 | `recreate_infra.py` | Recreate missing infrastructure UTxOs |
 | `redeploy_proposal.py` | Targeted redeployment of changed validators |
+| `redeploy_ref_scripts.py` | Redeploy reference scripts to unspendable addresses |
 
 ```bash
 # Prerequisites: nix-shell, funded wallet, .env with endpoints
@@ -100,11 +101,11 @@ Built against agent-registry **v2** (`be1a0a2912da180757ed3cd61b56bb8eab0188c19d
 
 ```
 Module-6/
-├── contracts/governance-suggestion/   ← Aiken smart contract source (v6)
+├── contracts/governance-suggestion/   ← Aiken smart contract source (v8)
 │   ├── validators/                    ← 2 multi-validators (proposal, critique)
 │   ├── lib/governance_suggestion/     ← Validation logic, types, params, utils
 │   │   └── tests/                     ← 168 unit/integration/property tests
-│   ├── lib/shared -> ../../shared/    ← Symlink to shared utility library
+│   ├── lib/shared -> ../../../../shared/lib/shared  ← Symlink to shared utility library
 │   ├── plutus.json                    ← Compiled blueprint
 │   └── aiken.toml
 ├── scripts/                           ← Deployment + testing scripts (Python)

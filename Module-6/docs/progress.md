@@ -100,15 +100,15 @@ Spec reference: `Module-6/docs/MODULE-6-GOVERNANCE-SUGGESTION-ENGINE-IMPL-SPEC.m
 
 ### Testnet Deployment
 
-**Latest clean deployment (2026-04-03):** Built with `aiken build --trace-level verbose --trace-filter user-defined` for on-chain diagnostics. Full fresh deploy from wiped deploy_state.
+**Latest clean deployment (2026-04-15, v8):** Built with `aiken build --trace-level verbose --trace-filter user-defined` for on-chain diagnostics. Full fresh deploy from wiped deploy_state.
 
 | Validator | Applied Hash |
 |-----------|-------------|
-| proposal_mint | `722d6fd508384cdc91cb2436bff1d14b969c01c6bb2372e2186613ab` |
-| proposal_spend | `f4fc49ff1ae95349ce9c6d13f6cd1d92c604600816a017be59160b37` |
-| critique_mint | (current from deploy_state) |
-| critique_spend | (current from deploy_state) |
-| endorsement_spend | (current from deploy_state) |
+| proposal_mint | `e8f38052352a3d20c5fe025e2a02d615826a154b26f2239286b8d565` |
+| proposal_spend | `f815f51a76002d6a973e83fecf60f45473e040acee85c631fcce134d` |
+| critique_mint | `2e252a89894d379ce5c0023a57de4627056e4a96da72bd8fedba04bd` |
+| critique_spend | `ced52074861af95e2082004d6061b0fc4bb30fded61f9605bfc20e55` |
+| endorsement_spend | `5fc449848d85f30287e5bc0bd2b3e95d872ef97be27f1480c12f1a9d` |
 
 CrossRefs NFT minted directly at oracle holder address. All 14 deployment TXs confirmed.
 
@@ -262,6 +262,12 @@ v1 emitted definite-length CBOR for the `OutputReference` inside `derive_asset_n
 ### In-flight v1 governance state
 
 Any proposals/critiques/endorsements that existed at the v1-derived validator addresses **remain spendable only by the v1 validators**. They do not migrate. Communicate to any user holding open v1 governance state.
+
+### Reference scripts at unspendable addresses + dashboard roles (af70480)
+
+- `scripts/redeploy_ref_scripts.py` updated to deploy all 5 governance reference scripts to unspendable script-hash-derived addresses, preventing accidental consumption as coin inputs.
+- `scripts/redeploy_mint_ref.py` removed — folded into `redeploy_ref_scripts.py`.
+- Dashboard leaderboard updated to show all governance roles: proposers, critics, and endorsers (previously proposers only). Stats now track unique agents across all roles.
 
 ---
 

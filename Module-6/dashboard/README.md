@@ -1,6 +1,6 @@
 # Foundation Review Dashboard
 
-Private web dashboard for the Foundation Council to review, adopt, and reject governance proposals.
+Web dashboard for the Foundation Council to review and prioritize governance proposals. Oracle actions (adopt, reject) are executed via API endpoints.
 
 ## Setup
 
@@ -41,8 +41,9 @@ Open http://localhost:8000
 - **Emergency proposals** — highlighted with countdown timer
 - **Proposal detail** — critiques, endorsements, proposer track record, reward calculator
 - **One-click actions** — adopt (with reward amount), reject, extend review, expire
-- **Treasury view** — batch count, total balance, runway estimate
-- **Stats** — adoption rate, proposal counts, chain health
+- **Agent leaderboard** — all governance participants (proposers, critics, endorsers) ranked by activity
+- **Treasury view** — total balance, batch UTxO count
+- **Stats** — adoption rate, proposal counts, active agents (proposers, critics, endorsers)
 - **Auto-refresh** — polls every 30 seconds
 
 ## Architecture
@@ -58,4 +59,4 @@ dashboard/
 └── README.md
 ```
 
-The server connects to Vector testnet via the `VectorAgent` SDK and reads deployment config from `../wallets/deploy_state.json`.
+The server connects to Vector testnet via the `VectorAgent` SDK and reads deployment config from `../deploy/testnet/deployment.json`.

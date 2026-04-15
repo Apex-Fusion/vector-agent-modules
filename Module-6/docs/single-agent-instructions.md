@@ -519,7 +519,7 @@ If you have access to the Vector MCP server, you can participate in governance w
 - `critiqueHash` — blake2b_256 hash of critique document (64 hex chars). Required only if `critiqueDocument` is not provided.
 - `critiqueType` — `Supportive`, `Opposing`, or `Amendment`
 - `storageUri` — Required only if `critiqueDocument` is not provided.
-- `stakeApex` — minimum 10 AP3X
+- `stakeApex` — minimum 5 AP3X
 
 **For `vector_governance_endorse`:**
 - `proposalTxHash` — TX hash of the proposal you're endorsing

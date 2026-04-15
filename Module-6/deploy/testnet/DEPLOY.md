@@ -38,11 +38,11 @@
 
 | Component | UTxO Reference |
 |-----------|---------------|
-| Proposal mint ref | `c89f2e05f21512129b31d8b6671859ea4240a9f2e936763ed158a065b5eb31ab#0` |
-| Proposal spend ref | `221cdfbd307f0304b441b458c43887c44cb590a955b01b030dc015937a90302a#0` |
-| Critique mint ref | `de7429c5ce6b0a37600ae16b12f001cec4908117cd162e8611db237f7aee91db#0` |
-| Critique spend ref | `56fdbb8d6bbdbc4a8111500d8de6068d68f22e688f6293f7c84d34cb664cc79e#0` |
-| Endorsement spend ref | `09047219dd9d381fc565e1ecb952e6ac1b4b34c0c553241f29ed321b8ad06941#0` |
+| Proposal mint ref | `f87a1c7289a52c493193195771c0fdcfcedb7d1d9d0e681c5e4927a902ee02d6#0` |
+| Proposal spend ref | `f3d41f34035676e3c9bd76ac6e55bc96e3559d065dc7e9855a183415b60929ba#0` |
+| Critique mint ref | `163c797f3d51ae431617d5ad9cc0bc6b461f7e89810bf57fea6f8539e819dfe3#0` |
+| Critique spend ref | `7e55f8f07dfedbcfa59408c9128253e4217593b8a63484a5f3c139824103eb7e#0` |
+| Endorsement spend ref | `a1ca4b35e0c675f12785e69741fc2425068add806a13028dd8a065bdf67b00e5#0` |
 | Holder params ref | `b3d3b7fd29da9c1c032b5c51806a8782a251a35622c3eb13b33b198f6e23af18#0` |
 | Holder oracle ref | `b98e42ad638e18f4a247076d45051920089b38675260a4d329b7f79bf6d8730f#0` |
 | Holder treasury ref | `aa4b4b5558dc4307474ef48d1b5986dee486f23ca86c05b39159b5c3f393957c#0` |
@@ -127,7 +127,7 @@ Full lifecycle results: [`lifecycle-results.json`](lifecycle-results.json)
 | v5 | 2026-04-04 | Bug fixes H-N: CBOR encoding, activity UTxO crash, Plutus tags, oracle datum guard |
 | v6 | 2026-04-06 | Bug O: temporal units fix (slots -> POSIX ms). All 9/9 tests pass. |
 | v7 | 2026-04-09 | Redeployment with correct agent registry hash (5dd51189...). Full contract redeploy + MCP server fixes. |
-| v8 | 2026-04-15 | Migrated to **agent-registry v2** (`be1a0a29…`, audited / Conway-CBOR-fixed). All parameterized validators recompiled and redeployed. mcp-server `governance.ts` env defaults updated in `Apex-Fusion/mcp-server@e4b2697`. Smoke test 8/8 passing on testnet. |
+| v8 | 2026-04-15 | Migrated to **agent-registry v2** (`be1a0a29…`, audited / Conway-CBOR-fixed). All parameterized validators recompiled and redeployed. Reference scripts redeployed to unspendable script-hash-derived addresses (all 5 governance validators). Dashboard leaderboard updated to show all roles (proposers, critics, endorsers). mcp-server `governance.ts` env defaults updated in `Apex-Fusion/mcp-server@e4b2697`. Smoke test 8/8 passing on testnet. |
 
 ## Bug Summary
 
