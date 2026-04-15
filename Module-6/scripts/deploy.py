@@ -184,11 +184,16 @@ def script_hash_to_testnet_address(script_hash_hex: str) -> str:
 # ── Deployment transactions ─────────────────────────────────────────────────
 
 async def deploy_reference_script(agent, script_cbor_hex: str, label: str) -> str:
-    """Deploy a validator as a reference script, return tx hash."""
-    from pycardano import TransactionBuilder, TransactionOutput, PlutusV3Script
+    """Deploy a validator as a reference script at an unspendable address."""
+    from pycardano import TransactionBuilder, TransactionOutput, PlutusV3Script, Address, Network
+    from pycardano.plutus import script_hash as compute_script_hash
 
     script = PlutusV3Script(bytes.fromhex(script_cbor_hex))
     script_size = len(script_cbor_hex) // 2
+
+    # Send to unspendable script-hash-derived address (prevents accidental consumption)
+    sh = compute_script_hash(script)
+    unspendable_addr = Address(payment_part=sh, network=Network.MAINNET)
 
     # Min UTXO for reference scripts: ~4400 lovelace per byte + 2 AP3X base
     # (Conway era charges heavily for inline scripts)
@@ -201,7 +206,7 @@ async def deploy_reference_script(agent, script_cbor_hex: str, label: str) -> st
 
     builder.add_output(
         TransactionOutput(
-            agent._wallet.payment_address,
+            unspendable_addr,
             min_lovelace,
             script=script,
         )

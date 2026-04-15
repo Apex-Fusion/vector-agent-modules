@@ -1,8 +1,8 @@
 """
-Redeploy consumed spend-validator reference scripts (CIP-33).
+Redeploy consumed reference scripts (CIP-33) to unspendable addresses.
 
-The proposal_spend, critique_spend, and endorsement_spend reference script UTxOs
-were accidentally consumed. This script re-deploys them and updates deploy_state.json.
+Reference script UTxOs are sent to script-hash-derived addresses so they
+cannot be accidentally consumed as coin inputs by subsequent transactions.
 
 Usage:
     cd Module-6 && .venv/bin/python scripts/redeploy_ref_scripts.py
@@ -26,20 +26,27 @@ OGMIOS_URL = os.getenv("VECTOR_OGMIOS_URL", "https://ogmios.vector.testnet.apexf
 SUBMIT_URL = os.getenv("VECTOR_SUBMIT_URL", "https://submit.vector.testnet.apexfusion.org/api/submit/tx")
 EXPLORER_URL = os.getenv("VECTOR_EXPLORER_URL", "https://vector.testnet.apexscan.org")
 
-# The 3 spend reference scripts that need redeployment
+# All 5 governance reference scripts
 SCRIPTS_TO_REDEPLOY = [
     ("proposal.proposal_spend.spend", "proposal_spend"),
+    ("proposal.proposal_mint.mint", "proposal_mint"),
     ("critique.critique_spend.spend", "critique_spend"),
+    ("critique.critique_mint.mint", "critique_mint"),
     ("critique.endorsement_spend.spend", "endorsement_spend"),
 ]
 
 
 async def deploy_reference_script(agent, script_cbor_hex: str, label: str) -> str:
-    """Deploy a validator as a reference script UTxO, return tx hash."""
-    from pycardano import TransactionBuilder, TransactionOutput, PlutusV3Script
+    """Deploy a validator as a reference script UTxO at an unspendable address."""
+    from pycardano import TransactionBuilder, TransactionOutput, PlutusV3Script, Address, Network
+    from pycardano.plutus import script_hash as compute_script_hash
 
     script = PlutusV3Script(bytes.fromhex(script_cbor_hex))
     script_size = len(script_cbor_hex) // 2
+
+    # Send to unspendable script-hash-derived address (prevents accidental consumption)
+    sh = compute_script_hash(script)
+    unspendable_addr = Address(payment_part=sh, network=Network.MAINNET)
 
     # Min UTXO for reference scripts: ~4400 lovelace per byte + 2 AP3X base
     min_lovelace = 2_000_000 + script_size * 4400
@@ -50,7 +57,7 @@ async def deploy_reference_script(agent, script_cbor_hex: str, label: str) -> st
 
     builder.add_output(
         TransactionOutput(
-            agent._wallet.payment_address,
+            unspendable_addr,
             min_lovelace,
             script=script,
         )
@@ -87,7 +94,7 @@ async def main():
 
     validators = state.get("validators", {})
 
-    print("=== Redeploying consumed spend reference scripts ===\n")
+    print("=== Redeploying reference scripts to unspendable addresses ===\n")
 
     from vector_agent import VectorAgent
 

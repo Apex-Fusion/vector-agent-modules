@@ -215,41 +215,69 @@ async def _refresh_cache():
 
         events.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
 
-        # 5. Leaderboard — reuse proposals
-        agent_dids = set()
-        for p in proposals:
-            did = p.get("proposer_did", "")
-            if did:
-                agent_dids.add(did.hex() if isinstance(did, bytes) else did)
-        leaderboard = []
-        for did in agent_dids:
-            try:
-                record = await gov_indexer.get_agent_track_record(did)
-                by_state = record.get("by_state", {})
-                total = record.get("total_proposals", 0)
-                adopted = by_state.get("Adopted", 0)
-                leaderboard.append({
-                    "agent_did": did,
-                    "total_proposals": total,
-                    "adopted": adopted,
-                    "rejected": by_state.get("Rejected", 0),
-                    "expired": by_state.get("Expired", 0),
-                    "open": by_state.get("Open", 0) + by_state.get("Amended", 0),
-                    "adoption_rate": adopted / total if total > 0 else 0.0,
-                })
-            except Exception:
-                pass
-        leaderboard.sort(key=lambda a: (a["adopted"], a["total_proposals"]), reverse=True)
+        # 5. Leaderboard — collect all agent activity from events
+        agent_activity = {}
+        for ev in events:
+            did = ev.get("agent_did", "")
+            if not did:
+                continue
+            if did not in agent_activity:
+                agent_activity[did] = {"proposals": 0, "critiques": 0, "endorsements": 0}
+            if ev["type"] == "proposal":
+                agent_activity[did]["proposals"] += 1
+            elif ev["type"] == "critique":
+                agent_activity[did]["critiques"] += 1
+            elif ev["type"] == "endorsement":
+                agent_activity[did]["endorsements"] += 1
 
-        # 6. Stats — reuse proposals
+        leaderboard = []
+        for did, activity in agent_activity.items():
+            entry = {
+                "agent_did": did,
+                "total_proposals": activity["proposals"],
+                "critiques": activity["critiques"],
+                "endorsements": activity["endorsements"],
+                "adopted": 0,
+                "rejected": 0,
+                "expired": 0,
+                "open": 0,
+                "adoption_rate": 0.0,
+            }
+            if activity["proposals"] > 0:
+                try:
+                    record = await gov_indexer.get_agent_track_record(did)
+                    by_state = record.get("by_state", {})
+                    adopted = by_state.get("Adopted", 0)
+                    entry["adopted"] = adopted
+                    entry["rejected"] = by_state.get("Rejected", 0)
+                    entry["expired"] = by_state.get("Expired", 0)
+                    entry["open"] = by_state.get("Open", 0) + by_state.get("Amended", 0)
+                    total = record.get("total_proposals", 0)
+                    entry["adoption_rate"] = adopted / total if total > 0 else 0.0
+                except Exception:
+                    pass
+            leaderboard.append(entry)
+        leaderboard.sort(key=lambda a: (a["adopted"], a["total_proposals"], a["critiques"], a["endorsements"]), reverse=True)
+
+        # 6. Stats — reuse proposals + events
         by_state = {}
         unique_proposers = set()
+        unique_critics = set()
+        unique_endorsers = set()
         for p in proposals:
             s = p.get("state", "Unknown")
             by_state[s] = by_state.get(s, 0) + 1
             did = p.get("proposer_did", "")
             if did:
                 unique_proposers.add(did if isinstance(did, str) else did.hex())
+        for ev in events:
+            did = ev.get("agent_did", "")
+            if not did:
+                continue
+            if ev["type"] == "critique":
+                unique_critics.add(did)
+            elif ev["type"] == "endorsement":
+                unique_endorsers.add(did)
         total = len(proposals)
         adopted = by_state.get("Adopted", 0)
         stats = {
@@ -257,6 +285,9 @@ async def _refresh_cache():
             "by_state": by_state,
             "adoption_rate": adopted / total if total > 0 else 0.0,
             "unique_proposers": len(unique_proposers),
+            "unique_critics": len(unique_critics),
+            "unique_endorsers": len(unique_endorsers),
+            "unique_agents": len(unique_proposers | unique_critics | unique_endorsers),
             "currently_open": by_state.get("Open", 0) + by_state.get("Amended", 0),
         }
 

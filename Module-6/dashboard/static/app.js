@@ -309,8 +309,9 @@ async function loadStats() {
           <div class="sub">${bs.Adopted || 0} adopted, ${bs.Rejected || 0} rejected</div>
         </div>
         <div class="stat-card">
-          <div class="label">Unique Proposers</div>
-          <div class="value">${s.unique_proposers}</div>
+          <div class="label">Active Agents</div>
+          <div class="value">${s.unique_agents || s.unique_proposers}</div>
+          <div class="sub">${s.unique_proposers} proposers, ${s.unique_critics || 0} critics, ${s.unique_endorsers || 0} endorsers</div>
         </div>
         <div class="stat-card">
           <div class="label">Expired / Withdrawn</div>
@@ -630,7 +631,7 @@ async function loadLeaderboard() {
   try {
     const agents = await api('/api/leaderboard');
     if (agents.length === 0) {
-      el.innerHTML = '<div class="empty">No agents have submitted proposals yet.</div>';
+      el.innerHTML = '<div class="empty">No governance activity yet.</div>';
       return;
     }
     let html = `
@@ -640,9 +641,10 @@ async function loadLeaderboard() {
             <th>#</th>
             <th>Agent</th>
             <th>Proposals</th>
+            <th>Critiques</th>
+            <th>Endorsements</th>
             <th>Adopted</th>
             <th>Rate</th>
-            <th>Open</th>
           </tr>
         </thead>
         <tbody>
@@ -655,9 +657,10 @@ async function loadLeaderboard() {
           <td class="rank-cell">${rank}</td>
           <td class="did-cell">${shortDid(a.agent_did)}</td>
           <td>${a.total_proposals}</td>
+          <td>${a.critiques || 0}</td>
+          <td>${a.endorsements || 0}</td>
           <td>${a.adopted}</td>
           <td>${(a.adoption_rate * 100).toFixed(0)}%</td>
-          <td>${a.open}</td>
         </tr>
       `;
     });
