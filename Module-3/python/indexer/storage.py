@@ -20,7 +20,7 @@ class IndexerStorage:
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
 
@@ -81,6 +81,22 @@ class IndexerStorage:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS sybil_flags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_did TEXT NOT NULL,
+                flag_type TEXT NOT NULL,
+                severity REAL NOT NULL DEFAULT 0.0,
+                details TEXT NOT NULL DEFAULT '',
+                related_dids TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sybil_agent ON sybil_flags(agent_did);
+            CREATE INDEX IF NOT EXISTS idx_stakes_agent ON stakes(agent_did);
+            CREATE INDEX IF NOT EXISTS idx_endorsements_target ON endorsements(target_did);
+            CREATE INDEX IF NOT EXISTS idx_endorsements_endorser ON endorsements(endorser_did);
+            CREATE INDEX IF NOT EXISTS idx_challenges_target ON challenges(target_did);
+            CREATE INDEX IF NOT EXISTS idx_bonuses_agent ON history_bonuses(agent_did);
         """)
         self.conn.commit()
 
@@ -278,6 +294,101 @@ class IndexerStorage:
             "SELECT value FROM indexer_state WHERE key = ?", (key,)
         ).fetchone()
         return row["value"] if row else None
+
+    # ── Sybil Flags ──────────────────────────────────────────────────────
+
+    def clear_sybil_flags(self):
+        self.conn.execute("DELETE FROM sybil_flags")
+        self.conn.commit()
+
+    def upsert_sybil_flag(
+        self, agent_did: str, flag_type: str, severity: float,
+        details: str, related_dids: str,
+    ):
+        self.conn.execute(
+            "INSERT INTO sybil_flags (agent_did, flag_type, severity, details, related_dids) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (agent_did, flag_type, severity, details, related_dids),
+        )
+        self.conn.commit()
+
+    def get_sybil_flags(self, agent_did: str) -> list:
+        rows = self.conn.execute(
+            "SELECT * FROM sybil_flags WHERE agent_did = ?", (agent_did,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_all_sybil_flags(self) -> list:
+        rows = self.conn.execute(
+            "SELECT * FROM sybil_flags ORDER BY severity DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ── Aggregate Queries ──────────────────────────────────────────────────
+
+    def get_decayable_agents(self, current_slot: int, activity_window: int = 180, epoch_length: int = 900) -> list:
+        """Find agents eligible for decay processing."""
+        current_epoch = current_slot // epoch_length
+        cutoff_epoch = current_epoch - activity_window
+        cutoff_slot = cutoff_epoch * epoch_length
+
+        rows = self.conn.execute(
+            "SELECT s.agent_did, s.stake_amount, s.last_updated, a.tier, a.net_score "
+            "FROM stakes s "
+            "LEFT JOIN agent_scores a ON s.agent_did = a.agent_did "
+            "WHERE s.last_updated < ? AND s.stake_amount > 0",
+            (cutoff_slot,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_stats(self) -> dict:
+        """Aggregate statistics for AFI component."""
+        total_agents = self.conn.execute(
+            "SELECT COUNT(*) FROM agent_scores"
+        ).fetchone()[0]
+        total_staked = self.conn.execute(
+            "SELECT COALESCE(SUM(stake_amount), 0) FROM stakes"
+        ).fetchone()[0]
+        total_endorsements = self.conn.execute(
+            "SELECT COUNT(*) FROM endorsements"
+        ).fetchone()[0]
+        total_endorsement_value = self.conn.execute(
+            "SELECT COALESCE(SUM(stake_amount), 0) FROM endorsements"
+        ).fetchone()[0]
+        active_challenges = self.conn.execute(
+            "SELECT COUNT(*) FROM challenges WHERE state = 'Open'"
+        ).fetchone()[0]
+        total_challenges = self.conn.execute(
+            "SELECT COUNT(*) FROM challenges"
+        ).fetchone()[0]
+        sybil_flagged = self.conn.execute(
+            "SELECT COUNT(DISTINCT agent_did) FROM sybil_flags"
+        ).fetchone()[0]
+
+        tier_counts = {}
+        for row in self.conn.execute(
+            "SELECT tier, COUNT(*) as cnt FROM agent_scores GROUP BY tier"
+        ).fetchall():
+            tier_counts[row["tier"]] = row["cnt"]
+
+        return {
+            "total_agents": total_agents,
+            "total_staked_dfm": total_staked,
+            "total_staked_ap3x": total_staked // 1_000_000,
+            "total_endorsements": total_endorsements,
+            "total_endorsement_value_dfm": total_endorsement_value,
+            "active_challenges": active_challenges,
+            "total_challenges": total_challenges,
+            "sybil_flagged_agents": sybil_flagged,
+            "tier_distribution": tier_counts,
+        }
+
+    def get_all_endorsements(self) -> list:
+        """Get all endorsements (for sybil analysis)."""
+        rows = self.conn.execute(
+            "SELECT endorser_did, target_did, stake_amount FROM endorsements"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def close(self):
         self.conn.close()

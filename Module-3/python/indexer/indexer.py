@@ -37,6 +37,7 @@ from reputation_staking.models import (
 from reputation_staking.scoring import compute_decay, compute_reputation_score, get_tier
 
 from indexer.storage import IndexerStorage
+from indexer.sybil import analyze_sybil
 
 logger = logging.getLogger(__name__)
 
@@ -233,11 +234,18 @@ class ReputationIndexer:
         for agent_did in agents:
             self._compute_agent_score(agent_did, current_slot)
 
+        # Run sybil detection
+        sybil_flags = analyze_sybil(self.storage)
+
         self.storage.set_state("last_poll_slot", str(current_slot))
         self.storage.set_state("last_poll_time", str(int(time.time())))
         self.storage.set_state("agents_indexed", str(len(agents)))
+        self.storage.set_state("sybil_flags", str(len(sybil_flags)))
 
-        logger.info("Indexed %d agents at slot %d", len(agents), current_slot)
+        logger.info(
+            "Indexed %d agents at slot %d (%d sybil flags)",
+            len(agents), current_slot, len(sybil_flags),
+        )
         return len(agents)
 
     def run(self):

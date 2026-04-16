@@ -36,14 +36,14 @@ Two Aiken multi-validators on Plutus V3 (Conway), deployed to both testnet and m
 | `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `7e0d53b6797cd770...` | `5168e1871cfdb1e5...` |
 | `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `715726f3670743b1...` | `77196bed7fb84576...` |
 
-110 unit tests, 12/12 smoke test steps passing on both Vector testnet and mainnet (includes CapabilityVerified and CapabilityFalsified paths).
+110 Aiken unit tests, 136 Python SDK tests, 12/12 smoke test steps passing on both Vector testnet and mainnet (includes CapabilityVerified and CapabilityFalsified paths).
 
 ## Python SDK
 
 | Package | Purpose |
 |---------|---------|
-| `reputation_staking` | SDK: client, Ogmios backend, PlutusData types, scoring |
-| `indexer` | Off-chain indexer: UTXO scanning, score computation, REST API |
+| `reputation_staking` | SDK: client, Ogmios backend, PlutusData types, scoring, MCP tools, cross-module bonuses |
+| `indexer` | Off-chain indexer: UTXO scanning, score computation, sybil detection, REST API |
 | `oracle` | Foundation oracle: challenge resolution |
 
 ```bash
@@ -66,6 +66,72 @@ tx = client.create_stake("agent_did_hex", ["code_review"], 10_000_000)
 ```
 
 No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries and the HTTP submit endpoint for transaction submission, matching Module 1 and Module 6. Works with both testnet and mainnet endpoints.
+
+### MCP Server Tools
+
+5 tools for AI agent integration (Section 12.2 of impl spec):
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `reputation_stake` | Write | Stake AP3X to back claimed capabilities |
+| `reputation_endorse` | Write | Endorse another agent by staking AP3X |
+| `reputation_challenge` | Write | Challenge an agent's capability claim |
+| `reputation_browse` | Read | Find agents by capability, tier, or score |
+| `reputation_my_status` | Read | Check your reputation score and breakdown |
+
+Read-only tools use the indexer database. Write tools use `ReputationStakingClient`.
+
+### Indexer CLI
+
+```bash
+# Testnet (default) — polls every 60s
+cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m indexer
+
+# Mainnet
+PYTHONPATH=python:$PYTHONPATH python3 -m indexer --network mainnet
+
+# Single poll (no loop)
+PYTHONPATH=python:$PYTHONPATH python3 -m indexer --once
+
+# With REST API on port 8080
+PYTHONPATH=python:$PYTHONPATH python3 -m indexer --with-api --api-port 8080
+```
+
+### Leaderboard REST API
+
+```
+GET /health                              — Indexer health check
+GET /v1/reputation/agent/{did}           — Full reputation profile
+GET /v1/reputation/leaderboard           — Ranked agents (filter by capability, tier)
+GET /v1/reputation/endorsements/{did}    — Endorsements given/received
+GET /v1/reputation/challenges/{did}      — Active challenges
+GET /v1/reputation/decayable             — Agents eligible for decay
+GET /v1/reputation/stats                 — Aggregate stats (AFI component)
+GET /v1/reputation/sybil                 — Sybil detection flags
+GET /v1/reputation/sybil/{did}           — Sybil flags for specific agent
+GET /v1/tools                            — List MCP tool schemas
+POST /v1/tools/reputation_browse         — Execute browse tool
+POST /v1/tools/reputation_my_status      — Execute status tool
+```
+
+### Sybil Detection
+
+The indexer runs endorsement graph analysis after each poll:
+- **Cycle detection**: Finds A→B→C→A endorsement rings (up to length 5)
+- **Cluster analysis**: Flags agents where >50% of endorsers mutually endorse each other
+- Severity scores (0.0–1.0) stored per-agent in SQLite
+
+### Cross-Module Bonuses
+
+History bonus UTXOs from other modules are indexed and included in reputation scores:
+
+| Module | Source | Bonus |
+|--------|--------|-------|
+| Module 1 | Won audit challenge | +10% of challenge stake |
+| Module 1 | Juror duty (majority vote) | +2 AP3X |
+| Module 6 | Governance proposal adopted | +10 AP3X |
+| Module 9 | Verified useful work | +5 AP3X |
+| Module 12 | Escrow task completed | +3 AP3X |
 
 ## Reputation Formula
 
@@ -139,9 +205,16 @@ Module-3/
       backend.py                              # ChainBackend Protocol (legacy)
       docker_backend.py                       # Docker/cardano-cli backend (legacy)
       utils.py                                # Address helpers, slot<->POSIX conversions
+      mcp_tools.py                            # MCP server tools (5 tools, Phase 1.1)
+      cross_module.py                         # Cross-module bonus integration (Phase 1.1)
     indexer/                                  # Off-chain indexer + REST API
+      __main__.py                             # CLI entrypoint (Phase 1.1)
+      indexer.py                              # UTXO scanning + score computation
+      storage.py                              # SQLite persistence + sybil flags
+      api.py                                  # FastAPI REST API (v1 endpoints)
+      sybil.py                                # Sybil detection (cycle + cluster, Phase 1.1)
     oracle/                                   # Foundation oracle service
-    tests/                                    # Unit tests
+    tests/                                    # 136 unit tests
 
   scripts/
     deploy_docker.py                          # Deploy to Vector testnet via Docker
@@ -178,8 +251,14 @@ cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_mainnet_
 # Run smoke test via Docker (legacy — requires local node)
 cd Module-3 && python3 scripts/smoke_test_docker.py
 
-# Run SDK unit tests
-cd python && python -m pytest tests/
+# Run SDK unit tests (136 tests)
+cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m pytest python/tests/ -v
+
+# Run indexer against live chain (single poll)
+cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m indexer --once
+
+# Run indexer with REST API
+cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m indexer --with-api
 ```
 
 ## External Dependencies

@@ -19,7 +19,7 @@ Legacy (Docker/cardano-cli — requires local node):
     # DockerChainBackend is still available but not used by the main client
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from reputation_staking.constants import DFM_PER_AP3X
 from reputation_staking.models import (
