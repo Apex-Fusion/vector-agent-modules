@@ -8,8 +8,8 @@
   "cross_refs_utxo": "5d5e193b9a1297f816b449db1cfe828eacaafce84b6066eb5da38476e53eaf5f#0",
   "params_utxo": "5d5e193b9a1297f816b449db1cfe828eacaafce84b6066eb5da38476e53eaf5f#1",
   "hashes": {
-    "challenge": "12700f4aabdd63caab38adfb50455da54a4e4bc0402a4b1d5a90d1fb",
     "claim": "a9d22e8b01d282be8007b8d9e3e8af548aaa56f1c3e433c0eddd8760",
+    "challenge": "12700f4aabdd63caab38adfb50455da54a4e4bc0402a4b1d5a90d1fb",
     "jury_pool": "2b01c6b3164237757fc82e64780c63ecfc1d5a733ce919a3e2e75f28"
   },
   "addresses": {
@@ -17,20 +17,7 @@
     "challenge": "addr1wyf8qr6240wk8j4t8zklk5z9tkj55njtcpqz5jcat2gdr7cazrd0t",
     "jury_pool": "addr1wy4sr34nzeprwatleqhxg7qvv0k0c826wv7wjxdrutn472q7yn6fa"
   },
-  "refs_nft_policy": "205d5f77ffebf60b764ba4f1873eff3764f3d1d594e5dac477a928f9",
-  "production_params": {
-    "min_claim_stake": "50 AP3X",
-    "min_juror_bond": "25 AP3X",
-    "jury_size": 5,
-    "min_challenge_window": "30 min",
-    "max_challenge_window": "24 h",
-    "resolution_deadline": "72 h",
-    "commit_window": "30 min",
-    "reveal_window": "30 min",
-    "cleanup_buffer": "10 min",
-    "jury_fee_rate": "10%",
-    "juror_slash_rate": "10%",
-    "oracle_active": false,
-    "min_jury_pool_size": 15
-  }
+  "operator_vkh": "9480077a4c035814acdbce20385b85f0cf0c2c51ff6798ddb5e32c47",
+  "oracle_vkh": "9480077a4c035814acdbce20385b85f0cf0c2c51ff6798ddb5e32c47",
+  "refs_policy": "205d5f77ffebf60b764ba4f1873eff3764f3d1d594e5dac477a928f9"
 }

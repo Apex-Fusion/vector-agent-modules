@@ -1,9 +1,9 @@
-/// Shared utility functions for Module 1: Adversarial Auditing
+/// Shared utility functions for Game 1: Adversarial Auditing
 ///
 /// Helpers for DID verification, stake math, token naming, datum access,
 /// signing checks, and the Phase 1.1 PRNG jury selection algorithm.
 ///
-/// VRF research incorporated (VRF research 2026-03-23):
+/// VRF research incorporated (2026-03-23):
 ///   - Juror selection uses slot-number-based seed (Option C from report)
 ///   - Validator sorts juror inputs internally — never trusts submitter ordering
 ///   - Block hash NOT accepted from redeemer without oracle authentication
@@ -168,26 +168,19 @@ pub fn outputs_at_script(
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// AP3X VALUE HELPERS
+// BASE-COIN VALUE HELPERS (Path B — stakes/bonds in value.coin / lovelace)
 // ══════════════════════════════════════════════════════════════════════
 
-/// Get the AP3X quantity from a value.
-pub fn ap3x_of(
-  value: assets.Value,
-  ap3x_policy: PolicyId,
-  ap3x_name: ByteArray,
-) -> Int {
-  assets.quantity_of(value, ap3x_policy, ap3x_name)
+/// Get the base-coin (lovelace / value.coin) quantity from a value.
+/// Path B: stakes and bonds live in the chain's native base currency,
+/// NOT in a custom native asset.
+pub fn coin_of(value: assets.Value) -> Int {
+  assets.lovelace_of(value)
 }
 
-/// Check that an output carries at least `expected` AP3X.
-pub fn output_has_min_ap3x(
-  output: Output,
-  ap3x_policy: PolicyId,
-  ap3x_name: ByteArray,
-  expected: Int,
-) -> Bool {
-  assets.quantity_of(output.value, ap3x_policy, ap3x_name) >= expected
+/// Check that an output carries at least `expected` base coin.
+pub fn output_has_min_coin(output: Output, expected: Int) -> Bool {
+  assets.lovelace_of(output.value) >= expected
 }
 
 /// Check that an output's payment credential matches the given one.
@@ -310,7 +303,7 @@ pub fn get_cross_refs(
 /// Compute the jury selection seed from a challenge UTXO ref and the
 /// fixed selection slot (challenged_at + selection_delay).
 ///
-/// Phase 1.1+: slot-number entropy (Option C from the VRF report).
+/// Phase 1.1+: slot-number entropy (Option C from VRF research report).
 /// Phase 1.2+: replace slot_number with authenticated oracle block hash.
 pub fn compute_selection_seed(
   challenge_ref: OutputReference,

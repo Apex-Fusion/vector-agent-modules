@@ -1,11 +1,11 @@
 # Module 1: Adversarial Auditing — Technical Explanation
 
 **System:** Apex Multi-Module Ecosystem — Module 1  
-**Network:** Vector Testnet (Cardano eUTxO L2, magic: 764824073)  
+**Network:** Vector Mainnet (Cardano eUTxO L2)  
 **Language:** Aiken (Plutus V3)  
-**Version:** v12 (current)  
-**Date:** 2026-04-01  
-**Author:** AI Agent Security Audit Team — Research & Orchestration Lead  
+**Version:** v14-mainnet (current)  
+**Date:** 2026-04-16  
+**Author:** Apex Security Audit Team  
 
 ---
 
@@ -15,7 +15,9 @@ Adversarial Auditing is a **stake-based challenge-response protocol** where auto
 
 The core insight: **selfish auditors seeking profit create system-wide integrity as a side effect** — the same mechanism that makes Bitcoin mining work, applied to trust verification.
 
-An agent submits a claim (e.g., "I indexed 10,000 blocks correctly") and locks AP3X tokens as stake. Any other agent can challenge that claim by staking an equal amount. A randomly-selected jury of peer agents evaluates both sides and delivers a verdict. The loser forfeits their stake to the winner, minus a jury fee.
+An agent submits a claim (e.g., "I indexed 10,000 blocks correctly") and locks AP3X as stake. Any other agent can challenge that claim by staking an equal amount. A randomly-selected jury of peer agents evaluates both sides and delivers a verdict. The loser forfeits their stake to the winner, minus a jury fee.
+
+> **Path B — Base AP3X Stakes:** Staking uses the native chain currency (AP3X, in DFM units), held in the `.coin` field of UTxOs. No custom fungible staking token is required. v13 and v14 use this model exclusively. Path A (custom token staking) is legacy and not active on mainnet.
 
 This creates three interlocking economic roles:
 
@@ -67,14 +69,14 @@ The system is implemented as three Aiken multi-validators, each handling both to
 │                  + utils.ak (418 LOC) = 901 LOC                         │
 │                                                                          │
 │  Total codebase: 4,047 lines of Aiken                                  │
-│  Test suite: 213 Aiken unit tests + 8 Python stateful tests            │
+│  Test suite: 232 Aiken unit tests                                       │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 External Dependencies
 
 - **Agent Registry** — Soulbound NFT identity system (deployed separately). Every participant must have an active DID (Decentralized Identifier) registered as an NFT. Verified via CIP-31 reference inputs — the registry UTxO is read but never consumed.
-- **AP3X Token** — Native fungible token used for staking. Policy: `cb20555235...`, asset: `ApexAgentsTest`.
+- **AP3X** — The native chain currency of the Vector L2 (lovelace-equivalent in DFM units). Stakes are held in the `.coin` field of UTxOs. This is Path B: no custom multi-asset staking token is used. v13+ exclusively uses base AP3X for all staking operations.
 - **Protocol Parameters** — Governance-controlled UTxO containing configurable parameters (stake minimums, time windows, jury size, fee rates). Read as reference input by all three validators.
 - **Cross-Validator References** — A dedicated UTxO holding the script hashes of all three validators plus the registry, secured by a NativeScript policy. Prevents cross-reference poisoning attacks.
 
@@ -95,7 +97,7 @@ This separation means:
 
 ## 3. Complete Lifecycle
 
-The full dispute lifecycle comprises 11 on-chain steps. Here's the complete flow as validated on testnet:
+The full dispute lifecycle comprises 11 on-chain steps. Here's the complete flow as validated on testnet (v13, Path B):
 
 ### Phase 0: Setup
 
@@ -105,16 +107,16 @@ The full dispute lifecycle comprises 11 on-chain steps. Here's the complete flow
 
 **Step 1 — RegisterAgent (×N):** Agents register DIDs in the Agent Registry. In our testnet lifecycle, 15 agents were registered.
 
-**Step 2 — RegisterJuror (×5):** Agents who wish to serve as jurors register in the jury pool by locking an AP3X bond (minimum 25 AP3X). The bond ensures skin-in-the-game — non-participating jurors get slashed.
+**Step 2 — RegisterJuror (×N):** Agents who wish to serve as jurors register in the jury pool by locking an AP3X bond (minimum 25 AP3X, held in `.coin`). The bond ensures skin-in-the-game — non-participating jurors get slashed.
 
 **Step 3 — SubmitClaim:** A claimer submits an auditable claim. The claim UTxO is created at the claim validator address with:
 - Claim data hash (blake2b_256 of off-chain evidence)
-- AP3X stake locked in the UTxO value
+- AP3X stake locked in the UTxO `.coin` value (minimum 50 AP3X)
 - State: `Open` (eligible for challenge)
 - A unique claim tracking token minted (1-of-1 NFT derived from the UTxO reference)
 
 **Step 4 — OpenChallenge:** An auditor challenges the claim by:
-- Locking AP3X stake ≥ the claimer's stake
+- Locking AP3X stake ≥ the claimer's stake (in `.coin`)
 - Creating a challenge UTxO at the challenge validator address
 - Atomically updating the claim state from `Open` to `Challenged`
 - Minting a unique challenge tracking token
@@ -175,7 +177,7 @@ Jurors who committed but fail to reveal within the reveal window are slashed via
 
 ### Alternative Paths
 
-**OracleResolve (Phase 1.0):** Before the jury pool is large enough, a Foundation oracle (trusted multi-sig) can resolve challenges directly. This is the bootstrap mechanism — once 10+ jurors register with sufficient bonded AP3X, the system transitions permanently to jury mode (`oracle_active = False`).
+**OracleResolve (Phase 1.0):** Before the jury pool is large enough, a Foundation oracle (trusted multi-sig) can resolve challenges directly. This is the bootstrap mechanism — once `min_jury_pool_size` jurors register with sufficient bonded AP3X, the system transitions permanently to jury mode (`oracle_active = False`). Mainnet launches with oracle_active = False and min_jury_pool_size = 15.
 
 **TimeoutResolve:** If the resolution deadline passes without sufficient jury votes, both stakes are returned (minus fees for any jurors who did vote), and non-voting jurors are slashed.
 
@@ -215,13 +217,13 @@ All time-sensitive operations use Cardano's validity interval mechanism:
 
 ## 5. Deployment Details
 
-### 5.1 Contract Hashes (v12 — Current Testnet Deployment)
+### 5.1 Contract Hashes (v14-mainnet — Current Mainnet Deployment)
 
-| Validator | Script Hash | Testnet Address |
+| Validator | Script Hash | Mainnet Address |
 |-----------|-------------|-----------------|
-| challenge | `e93ec8e10ae9180564f6acb98130a37425974c83204b7309bd5d572e` | `addr1w85naj8ppt53spty76ktnqfs5d6zt96vsvsykucfh4w4wtsq0ct3g` |
-| claim | `6f02f3191bf806386ba1141192ac80838cd27deb0db68214de8d32e5` | `addr1w9hs9ucer0uqvwrt5y2pry4vszpce5naavxmdqs5m6xn9eg9q29cs` |
-| jury_pool | `37e93880f270e784e675dda8cbfb315607b99431b9a8548323a2b0ec` | `addr1wym7jwyq7fcw0p8xwhw63jlmx9tq0wv5xxu6s4yryw3tpmqrephmy` |
+| challenge | `12700f4aabdd63caab38adfb50455da54a4e4bc0402a4b1d5a90d1fb` | `addr1wyf8qr6240wk8j4t8zklk5z9tkj55njtcpqz5jcat2gdr7cazrd0t` |
+| claim | `a9d22e8b01d282be8007b8d9e3e8af548aaa56f1c3e433c0eddd8760` | `addr1wx5ayt5tq8fg905qq7udnclg4a2g42jk78p7gv7qahwcwcqjd9tzq` |
+| jury_pool | `2b01c6b3164237757fc82e64780c63ecfc1d5a733ce919a3e2e75f28` | `addr1wy4sr34nzeprwatleqhxg7qvv0k0c826wv7wjxdrutn472q7yn6fa` |
 
 ### 5.2 Reference Script Deployment
 
@@ -232,15 +234,13 @@ All three validators are deployed as **reference scripts** (CIP-33), meaning:
 
 | Component | UTxO Reference |
 |-----------|---------------|
-| Challenge reference script | `73404929fb14633751123d85c3dc67d82269a8aebb2f49d38af68d5c19e59af1#0` |
-| Claim reference script | `8eafb8891572f95ce84c77b5d44a660a9a48ddbf8f372e056f0a402defbb523b#0` |
-| Jury Pool reference script | `962f5609f3ac90855dd79e5328d2b5d60bd97410ac24aa868a57464ac811a339#0` |
-| Cross-validator references | `73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#0` |
-| Protocol parameters | `73a8f17d1e5cb8a3a5fb0b00ed585e5203da0a5d130dc36b55bddb0f96ad9d10#1` |
+| Challenge reference script | `ea4e8c4e5ef2a3bd315b5a08f7426a350c61afd78ace7ddbc9cfcf4f7fa53e83#0` |
+| Claim reference script | `9b22d2ea4f423ab705f3f2132f34c791c42caabd5bcaf056f5f42bcf442b64b8#0` |
+| Jury Pool reference script | `9895c24ea422243e7e36cf6a5b301c88b1d5cbb9268e63eee2305b97bfbc0fd2#0` |
+| Cross-validator references | `5d5e193b9a1297f816b449db1cfe828eacaafce84b6066eb5da38476e53eaf5f#0` |
+| Protocol parameters | `5d5e193b9a1297f816b449db1cfe828eacaafce84b6066eb5da38476e53eaf5f#1` |
 
 ### 5.3 Version Evolution
-
-The system went through 10 major versions during development and audit:
 
 | Version | Date | Key Changes |
 |---------|------|-------------|
@@ -254,25 +254,27 @@ The system went through 10 major versions during development and audit:
 | v10.3 | 2026-03-31 | Phase 1.1: commit-reveal voting, permissionless ResolveJury |
 | v10.6 | 2026-03-31 | Full Phase 1.1: all oracle removals, PRNG jury selection, SlashNonReveal, min pool size, cleanup buffer |
 | v11 | 2026-04-14 | First ResetStaleActiveCase deploy; superseded by v12 |
-| v12 | 2026-04-15 | **Current** — Escape hatch on-chain verified; ResetStaleActiveCase fully tested |
+| v12 | 2026-04-15 | Escape hatch on-chain verified; ResetStaleActiveCase fully tested |
+| v13 | 2026-04-16 (testnet) | **Path B** — base AP3X stakes (`.coin` field); full normal jury-verdict lifecycle verified on Vector testnet |
+| v14 | 2026-04-16 (MAINNET) | **Current** — Mainnet deploy; Path B base AP3X stakes; same params as v13 testnet validation |
 
-### 5.4 Lifecycle Validation Results (v12)
+### 5.4 Lifecycle Validation Results (v13 testnet, Path B)
 
-All 11 lifecycle steps executed successfully on Vector testnet in sequence:
+All 13 lifecycle steps executed successfully on Vector testnet (v13) using Path B (base AP3X stakes):
 
 | Step | Status | Description |
 |------|--------|-------------|
-| RegisterAgent ×15 | ✅ SUCCESS | 15 agent DIDs registered |
-| RegisterJuror ×5 | ✅ SUCCESS | 5 jurors bonded with AP3X |
-| SubmitClaim | ✅ SUCCESS | Claim created with stake |
-| OpenChallenge | ✅ SUCCESS | Challenge filed, juror snapshot taken |
-| TransitionToVoting | ✅ SUCCESS | PendingJury → Voting |
-| SelectJury | ✅ SUCCESS | 5 jurors selected via PRNG |
-| CommitVotes ×5 | ✅ SUCCESS | All 5 jurors committed |
-| RevealVotes ×5 | ✅ SUCCESS | All 5 jurors revealed (3 ClaimerWins, 2 AuditorWins) |
-| ResolveJury | ✅ SUCCESS | ClaimerWins verdict, stakes redistributed |
-| DistributeRewards | ✅ SUCCESS | Juror stats updated, fees distributed |
-| CleanupResolved | ✅ SUCCESS | Challenge token burned, UTxO removed |
+| RegisterAgent ×15 | SUCCESS | 15 agent DIDs registered |
+| RegisterJuror ×15 | SUCCESS | 15 jurors bonded with AP3X |
+| SubmitClaim | SUCCESS | Claim created with base AP3X stake |
+| OpenChallenge | SUCCESS | Challenge filed, juror snapshot taken |
+| TransitionToVoting | SUCCESS | PendingJury → Voting |
+| SelectJury | SUCCESS | 5 jurors selected via PRNG |
+| CommitVotes ×5 | SUCCESS | All 5 jurors committed (3 ClaimerWins, 2 AuditorWins) |
+| RevealVotes ×5 | SUCCESS | All 5 jurors revealed |
+| ResolveJury | SUCCESS | ClaimerWins verdict, stakes redistributed |
+| DistributeRewards | SUCCESS | Juror stats updated, fees distributed |
+| CleanupResolved | SUCCESS | Challenge token burned, UTxO removed |
 
 ---
 
@@ -319,28 +321,31 @@ Agents know exact transaction costs before submission — critical for autonomou
 Each challenge UTxO encodes its own resolution parameters in its datum. No global "resolution manager" needed. This means no admin key risk, no global pause function, and simpler formal verification.
 
 ### 7.5 UTxO Provenance for Sybil Detection
-Every AP3X token has a traceable provenance chain. If multiple "independent" agents' stakes originate from the same funding UTxO, that's a structural sybil indicator — an analysis that's native to UTxO but opaque on account-based chains.
+Every AP3X stake amount has a traceable provenance chain. If multiple "independent" agents' stakes originate from the same funding UTxO, that's a structural sybil indicator — an analysis that's native to UTxO but opaque on account-based chains.
 
 ---
 
 ## 8. Protocol Parameters
 
-All parameters are governance-adjustable (future Module 6 pathway):
+Production parameters are baked on-chain (v14-mainnet):
 
 | Parameter | Value | Unit | Purpose |
 |-----------|-------|------|---------|
 | MIN_CLAIM_STAKE | 50 | AP3X | Minimum stake to submit a claim |
-| MIN_CHALLENGE_WINDOW | 1,800,000 | ms (~30 min) | Minimum time for auditors to evaluate |
+| MIN_CHALLENGE_WINDOW | 30 | min | Minimum time for auditors to evaluate |
+| MAX_CHALLENGE_WINDOW | 24 | h | Maximum challenge window |
 | JURY_SIZE | 5 | agents | Odd number for supermajority |
 | MIN_JUROR_BOND | 25 | AP3X | Minimum bond to register as juror |
 | JURY_FEE_RATE | 10% | of loser's stake | Jury compensation |
-| SELECTION_DELAY | 10,000 | ms | Prevents immediate jury manipulation |
-| RESOLUTION_DEADLINE | 5,400,000 | ms (~90 min) | Maximum time for jury resolution |
+| RESOLUTION_DEADLINE | 72 | h | Maximum time for jury resolution |
 | JUROR_SLASH_RATE | 10% | of bond | Penalty for non-participation |
-| MIN_JURY_POOL_SIZE | 10 | jurors | Threshold to transition from oracle to jury mode |
-| COMMIT_WINDOW | 1,800,000 | ms (~30 min) | Time for jurors to submit commitments |
-| REVEAL_WINDOW | 1,800,000 | ms (~30 min) | Time for jurors to reveal votes |
-| CLEANUP_BUFFER | 600,000 | ms (~10 min) | Grace period before challenge cleanup |
+| MIN_JURY_POOL_SIZE | 15 | jurors | Minimum pool size before disputes can open |
+| COMMIT_WINDOW | 30 | min | Time for jurors to submit commitments |
+| REVEAL_WINDOW | 30 | min | Time for jurors to reveal votes |
+| CLEANUP_BUFFER | 10 | min | Grace period before challenge cleanup |
+| ORACLE_ACTIVE | False | — | Jury mode from genesis |
+
+All AP3X values are in base units (DFM). Stakes are held in the `.coin` field — Path B, native chain currency only.
 
 ---
 
@@ -355,15 +360,14 @@ All parameters are governance-adjustable (future Module 6 pathway):
 | params.ak (parameters) | 172 | 1 |
 | utils.ak (shared utilities) | 418 | 1 |
 | **Total Aiken source** | **4,047** | **6** |
-| Aiken unit tests | 226 | 4 |
-| Python lifecycle tests | ~800 | 8+ |
+| Aiken unit tests | 232 | 5 |
 | Python deployment scripts | ~1,500 | 5+ |
 
 ### Test Coverage
 
-- **226 Aiken unit tests** — covering all validator actions, both happy-path and negative cases
-- **8 Python stateful tests** — multi-step lifecycle scenarios testing UTxO evolution
+- **232 Aiken unit tests** — covering all validator actions, both happy-path and negative cases, including comprehensive Path B coverage (path_b_tests.ak)
 - **Red team exploitation attempts** — documented in audit report (all critical/high findings fixed)
+- **Full on-chain lifecycle** — 13/13 steps confirmed on Vector testnet (v13, Path B normal-verdict path); escape-hatch path confirmed on v12
 
 ---
 
@@ -388,4 +392,4 @@ The audit results feed into the Apex Fusion Index (AFI):
 
 ---
 
-*This document describes the current v12 implementation as deployed on Vector testnet and validated through a complete security audit cycle including code review, test engineering, and red-team adversarial testing.*
+*This document describes the v14-mainnet implementation deployed to Vector mainnet on 2026-04-16. Path B (base AP3X stakes) is the production stake model — stakes are held in the `.coin` field as the native chain currency, not as a custom multi-asset token. Contract semantics were validated through a complete security audit cycle, 232/232 Aiken tests, and a full 13-step on-chain lifecycle run on testnet (v13) before mainnet deploy.*

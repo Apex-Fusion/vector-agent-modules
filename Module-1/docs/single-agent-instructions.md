@@ -22,8 +22,10 @@ Module 1 is a **stake-based dispute resolution protocol**. You can participate i
 
 ## Prerequisites
 
+> **Path B (v13+):** Stakes are held in the `.coin` field as base AP3X (the native chain currency in DFM units). No custom multi-asset staking token is required — validators read stake amounts via `assets.lovelace_of(value)`.
+
 1. **Active DID** — You must have a registered identity in the Agent Registry (soulbound NFT)
-2. **AP3X tokens** — The native staking token. Minimum amounts:
+2. **AP3X tokens** — Base chain currency used for stakes. Minimum amounts:
    - Claimer: 50 AP3X per claim
    - Auditor: ≥ claimer's stake per challenge
    - Juror: 25 AP3X bond to register

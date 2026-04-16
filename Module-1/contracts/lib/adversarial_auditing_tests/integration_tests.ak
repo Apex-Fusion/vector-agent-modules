@@ -1,4 +1,4 @@
-/// integration_tests.ak — Full lifecycle tests for Module 1: Adversarial Auditing
+/// integration_tests.ak — Full lifecycle tests for Game 1: Adversarial Auditing
 ///
 /// Tests the complete flows end-to-end:
 ///   - Happy path: SubmitClaim → WithdrawClaim (no challenge)
@@ -43,12 +43,6 @@ const challenge_validator_hash: ByteArray =
 
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-
-const ap3x_policy_id: ByteArray =
-  #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-
-const ap3x_asset_name: ByteArray =
-  #"415033580000000000000000000000000000000000000000000000000000"
 
 const registry_policy_id: ByteArray =
   #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
@@ -117,8 +111,7 @@ fn challenge_utxo_ref() -> OutputReference {
 }
 
 fn make_ap3x(amount: Int) -> assets.Value {
-  assets.from_lovelace(2_000_000)
-    |> assets.add(ap3x_policy_id, ap3x_asset_name, amount)
+  assets.from_lovelace(amount)
 }
 
 fn claimer_addr() -> Address {
@@ -242,7 +235,7 @@ test lifecycle_submit_then_withdraw_after_window() {
     reference_script: None,
   }
   let stake_returned =
-    assets.quantity_of(claimer_output.value, ap3x_policy_id, ap3x_asset_name) == datum.stake_amount
+    assets.lovelace_of(claimer_output.value) == datum.stake_amount
   // Phase 5: Token burned (qty = -1)
   let burn_val =
     assets.zero |> assets.add(claim_validator_hash, claim_tok_name(), -1)
@@ -290,11 +283,7 @@ test lifecycle_oracle_resolve_claimer_wins() {
     reference_script: None,
   }
   let payout_ok =
-    assets.quantity_of(
-      claimer_payout_output.value,
-      ap3x_policy_id,
-      ap3x_asset_name,
-    ) == total
+    assets.lovelace_of(claimer_payout_output.value) == total
 
   // Both tokens burned
   let claim_burned = True
@@ -332,11 +321,7 @@ test lifecycle_oracle_resolve_auditor_wins() {
     reference_script: None,
   }
   let payout_ok =
-    assets.quantity_of(
-      auditor_payout_output.value,
-      ap3x_policy_id,
-      ap3x_asset_name,
-    ) == total
+    assets.lovelace_of(auditor_payout_output.value) == total
 
   and {
     payout_ok,
@@ -376,9 +361,9 @@ test lifecycle_timeout_resolve_no_oracle() {
   }
 
   let claimer_ok =
-    assets.quantity_of(claimer_refund.value, ap3x_policy_id, ap3x_asset_name) == claim.stake_amount
+    assets.lovelace_of(claimer_refund.value) == claim.stake_amount
   let auditor_ok =
-    assets.quantity_of(auditor_refund.value, ap3x_policy_id, ap3x_asset_name) == ch.stake_amount
+    assets.lovelace_of(auditor_refund.value) == ch.stake_amount
 
   // Oracle NOT required — this is the critical invariant
   let oracle_sig_not_required = True
@@ -445,7 +430,7 @@ test lifecycle_jury_full_flow() {
     juror.cases_resolved == 0 && juror.active_case == None && juror.bond_amount >= params.min_juror_bond
 
   // Step 2: SelectJury — oracle signs, active_case = Some(challenge_token_name)
-  // fix: CR-002-F1 — active_case stores challenge token name, not OutputReference.
+  // fix: Finding-002-F1 — active_case stores challenge token name, not OutputReference.
   let the_challenge_token = challenge_token_name(seed_ref())
   let juror_after_select = JurorDatum {
     ..juror,
@@ -543,11 +528,7 @@ test lifecycle_juror_withdraw_not_active() {
       Some(_) -> False
     }
   let bond_returned_ok =
-    assets.quantity_of(
-      make_ap3x(juror.bond_amount),
-      ap3x_policy_id,
-      ap3x_asset_name,
-    ) == juror.bond_amount
+    assets.lovelace_of(make_ap3x(juror.bond_amount)) == juror.bond_amount
   and {
     not_active,
     bond_returned_ok,
@@ -615,7 +596,7 @@ test adversarial_mark_challenged_atomicity() {
   let token_present =
     assets.quantity_of(continuing_output.value, claim_validator_hash, claim_tok_name()) == 1
   let stake_present =
-    assets.quantity_of(continuing_output.value, ap3x_policy_id, ap3x_asset_name) == claim.stake_amount
+    assets.lovelace_of(continuing_output.value) == claim.stake_amount
 
   and {
     state_ok,

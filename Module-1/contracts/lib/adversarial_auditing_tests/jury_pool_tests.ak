@@ -45,12 +45,6 @@ const challenge_validator_hash: ByteArray =
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-const ap3x_policy_id: ByteArray =
-  #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-
-const ap3x_asset_name: ByteArray =
-  #"415033580000000000000000000000000000000000000000000000000000"
-
 const registry_policy_id: ByteArray =
   #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
 
@@ -91,8 +85,6 @@ const valid_reasoning_hash: ByteArray =
 fn test_config() -> AuditingConfig {
   AuditingConfig {
     registry_policy_id,
-    ap3x_policy_id,
-    ap3x_asset_name,
     oracle_vkh,
     refs_token_policy: #"9999999999999999999999999999999999999999999999999999999999",
   }
@@ -129,7 +121,7 @@ fn challenge_ref() -> OutputReference {
 }
 
 /// The challenge token name — derived from the seed UTxO at OpenChallenge time.
-/// fix: CR-002-F1 — active_case now stores this instead of OutputReference.
+/// fix: Finding-002-F1 — active_case now stores this instead of OutputReference.
 fn test_challenge_token_name() -> ByteArray {
   challenge_token_name(seed_ref())
 }
@@ -157,8 +149,7 @@ fn juror1_addr() -> Address {
 }
 
 fn make_ap3x(amount: Int) -> assets.Value {
-  assets.from_lovelace(2_000_000)
-    |> assets.add(ap3x_policy_id, ap3x_asset_name, amount)
+  assets.from_lovelace(amount)
 }
 
 fn juror_tok_name() -> ByteArray {
@@ -182,7 +173,7 @@ fn fresh_juror_datum() -> JurorDatum {
 
 /// An active JurorDatum (assigned to a case)
 fn active_juror_datum() -> JurorDatum {
-  // fix: CR-002-F1 — active_case stores challenge token name (ByteArray), not OutputReference.
+  // fix: Finding-002-F1 — active_case stores challenge token name (ByteArray), not OutputReference.
   JurorDatum { ..fresh_juror_datum(), active_case: Some(test_challenge_token_name()) }
 }
 
@@ -367,7 +358,7 @@ test test_withdraw_juror_exact_bond_return() {
     datum: NoDatum,
     reference_script: None,
   }
-  assets.quantity_of(return_output.value, ap3x_policy_id, ap3x_asset_name) == datum.bond_amount
+  assets.lovelace_of(return_output.value) == datum.bond_amount
 }
 
 /// Behavioral: Veteran juror can withdraw (cases_resolved doesn't block withdrawal)
@@ -394,7 +385,7 @@ test test_select_jury_permissionless_phase_1_1() {
 /// Behavioral: Juror assigned to challenge — active_case updated
 test test_select_jury_active_case_set() {
   let before = fresh_juror_datum()
-  // fix: CR-002-F1 — active_case stores challenge token name, not OutputReference.
+  // fix: Finding-002-F1 — active_case stores challenge token name, not OutputReference.
   let after = JurorDatum { ..before, active_case: Some(test_challenge_token_name()) }
   and {
     before.active_case == None,
@@ -429,7 +420,7 @@ test test_select_jury_available_jurors_only() {
 /// Behavioral: CastVote requires juror to be assigned to the challenge
 test test_cast_vote_requires_assignment() {
   let datum = active_juror_datum()
-  // fix: CR-002-F1 — active_case stores challenge token name, not OutputReference.
+  // fix: Finding-002-F1 — active_case stores challenge token name, not OutputReference.
   when datum.active_case is {
     Some(token_name) -> token_name == test_challenge_token_name()
     None -> False
@@ -578,7 +569,7 @@ test test_select_jury_no_oracle_needed_phase_1_1() {
 /// Exploit: DistributeRewards with wrong challenge ref — blocked
 test exploit_distribute_rewards_wrong_challenge_ref_blocked() {
   let juror = active_juror_datum()
-  // fix: CR-002-F1 — active_case stores challenge token name (ByteArray).
+  // fix: Finding-002-F1 — active_case stores challenge token name (ByteArray).
   // Juror is assigned to test_challenge_token_name(), attacker uses evil token name.
   let evil_token_name = #"0000000000000000000000000000000000000000000000000000000000000000"
   // assigned check: juror.active_case must match the challenge token name
@@ -594,7 +585,7 @@ test exploit_distribute_rewards_wrong_challenge_ref_blocked() {
 test exploit_cast_vote_not_assigned_blocked() {
   let datum = fresh_juror_datum()
   // datum.active_case == None → not assigned to any challenge
-  // fix: CR-002-F1 — active_case is now Option<ByteArray>.
+  // fix: Finding-002-F1 — active_case is now Option<ByteArray>.
   let assigned_to_challenge =
     when datum.active_case is {
       Some(token_name) -> token_name == test_challenge_token_name()
@@ -1577,7 +1568,7 @@ test test_commit_no_reveal_slash_lifecycle() {
 //       bond preserved, active_case=None, vote_commitment=None,
 //       revealed_verdict=None
 //
-// Author: Test Engineer (Apex Security Audit Team)
+// Author: Contract Author (Apex Security Audit Team)
 // Date: 2026-04-15
 
 /// Helper: a stale juror — active_case set, vote committed, but the
@@ -1837,7 +1828,7 @@ test test_reset_stale_active_case_variant_exists() {
 // branch, we need that end-to-end confidence. Scope is intentionally
 // limited to the ResetStaleActiveCase redeemer only.
 //
-// Author: Test Engineer (Apex Security Audit Team)
+// Author: Contract Author (Apex Security Audit Team) — 2026-04-15
 
 // ---- e2e fixtures ----------------------------------------------------
 

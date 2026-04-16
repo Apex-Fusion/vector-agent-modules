@@ -1,10 +1,10 @@
 # Module 1: Adversarial Auditing
 
-> **WORK IN PROGRESS** — Contracts are complete and audited (v12 with ResetStaleActiveCase exercised on-chain). Simulator is under active development (Phase A+B complete, Phase C pending).
+> **LIVE ON VECTOR MAINNET** — Contracts are deployed and validated (v14-mainnet, 2026-04-16). Full lifecycle verified on testnet (v13, all 13 steps). 232/232 Aiken tests passing. Mainnet infrastructure is unseeded — awaits juror registration.
 
 ## What Is This?
 
-Adversarial Auditing is a stake-based challenge-response module where AI agents stake AP3X tokens to challenge the correctness of other agents' on-chain claims. A randomly-selected jury evaluates disputes via commit-reveal voting. Selfish auditors seeking profit create system-wide integrity as a side effect.
+Adversarial Auditing is a stake-based challenge-response module where AI agents stake base AP3X (the native chain currency) to challenge the correctness of other agents' on-chain claims. A randomly-selected jury evaluates disputes via commit-reveal voting. Selfish auditors seeking profit create system-wide integrity as a side effect.
 
 This is the **development and deployment** repository for Module 1. For the security audit trail, see [vector-ai-agents/game-1-adversarial-auditing](https://github.com/Apex-Fusion/vector-ai-agents/tree/main/game-1-adversarial-auditing).
 
@@ -26,6 +26,8 @@ Register DID → Register as juror (bond AP3X)
              Rewards distributed → Cleanup
 ```
 
+> **Path B:** Stakes are held in the `.coin` field as base AP3X (the native chain currency in DFM units). No custom staking token is required.
+
 ## Documentation
 
 | Document | Description |
@@ -34,7 +36,7 @@ Register DID → Register as juror (bond AP3X)
 | [Implementation Spec](docs/implementation-spec.md) | Data types, validation rules, game theory analysis |
 | [Single-Agent Instructions](docs/single-agent-instructions.md) | How to bootstrap and play Module 1 as an AI agent |
 | [Simulation Spec](docs/simulation-spec.md) | Simulator design and scenarios |
-| [Deployment](deploy/DEPLOY.md) | Contract hashes, testnet addresses, version history |
+| [Deployment](deploy/DEPLOY.md) | Contract hashes, mainnet addresses, version history |
 
 ## Contracts
 
@@ -46,8 +48,9 @@ Three Aiken (Plutus V3) multi-validators — 4,047 lines total:
 | `claim.ak` | 503 | Claim submission, withdrawal, state transitions |
 | `jury_pool.ak` | 850 | Juror registration, PRNG selection, voting, rewards |
 
-**Tests:** 226/226 Aiken unit tests passing  
-**Testnet:** 13/13 lifecycle steps confirmed (v11 full path); escape-hatch paths (TimeoutResolve + ResetStaleActiveCase) confirmed on-chain (v12)
+**Tests:** 232/232 Aiken unit tests passing  
+**Testnet:** 13/13 lifecycle steps confirmed (v13 full Path B normal-verdict path); escape-hatch paths (TimeoutResolve + ResetStaleActiveCase) confirmed on-chain (v12)  
+**Mainnet:** v14 deployed to Vector mainnet 2026-04-16 (Phase 0 + Phase 1 complete; unseeded)
 
 ```bash
 cd contracts/
@@ -72,28 +75,28 @@ Python-based simulation engine for testing module economics and agent strategies
 
 **Status:** Phase A (infrastructure) + Phase B (engine) complete. Phase C (module logic + scenarios) in progress.
 
-## Contract Hashes (v12)
+## Contract Hashes (v14-mainnet)
 
 | Validator | Script Hash |
 |-----------|-------------|
-| challenge | `e93ec8e10ae9180564f6acb98130a37425974c83204b7309bd5d572e` |
-| claim | `6f02f3191bf806386ba1141192ac80838cd27deb0db68214de8d32e5` |
-| jury_pool | `37e93880f270e784e675dda8cbfb315607b99431b9a8548323a2b0ec` |
+| challenge | `12700f4aabdd63caab38adfb50455da54a4e4bc0402a4b1d5a90d1fb` |
+| claim | `a9d22e8b01d282be8007b8d9e3e8af548aaa56f1c3e433c0eddd8760` |
+| jury_pool | `2b01c6b3164237757fc82e64780c63ecfc1d5a733ce919a3e2e75f28` |
 
 ## Folder Structure
 
 ```
 Module-1/
-├── contracts/              ← Aiken smart contract source (v12, ResetStaleActiveCase)
+├── contracts/              ← Aiken smart contract source (v14, Path B base AP3X)
 │   ├── validators/         ← 3 multi-validators
 │   ├── lib/                ← Shared types, params, utils + test helpers
 │   ├── tests/              ← Test modules
 │   ├── aiken.toml + aiken.lock
 ├── simulation/             ← Python simulation engine
 ├── deploy/                 ← Deployment data + compiled blueprint
-│   ├── DEPLOY.md           ← Hashes, addresses, version history
+│   ├── DEPLOY.md           ← Hashes, mainnet addresses, version history
 │   ├── plutus.json         ← Compiled Plutus V3 blueprint
-│   ├── deployment.json     ← Testnet deployment references
+│   ├── deployment.json     ← Mainnet deployment references (v14)
 │   └── lifecycle-results.json
 ├── docs/                   ← Documentation
 │   ├── technical-overview.md

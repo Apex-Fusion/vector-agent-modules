@@ -24,7 +24,11 @@ NETWORK = Network.MAINNET
 REGISTRY_POLICY = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
 REGISTRY_ADDR = "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42"
 AP3X_POLICY_ID = "cb20555235cc1630cba8f36027b145bea0d928131431e20854e57609"
-AP3X_ASSET_NAME = "417065784167656e747354657374"  # "ApexAgentsTest"
+# Legacy — Path A only; Path B (v13+) uses base AP3X held in .coin field, no asset name
+# needed. Constant retained here for backward compatibility with simulation code
+# (wallet_factory.py, tx_builder.py, world_state.py) that has not yet been migrated
+# to Path B. Do not use in new code — stake outputs should reference value.coin directly.
+AP3X_ASSET_NAME = "417065784167656e747354657374"  # "ApexAgentsTest" — Path A legacy
 
 # ═══════════════════════════════════════════════════════════════════════
 # PATHS

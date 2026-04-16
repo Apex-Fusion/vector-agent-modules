@@ -1,6 +1,6 @@
-/// Shared types for Module 1: Adversarial Auditing (Vector/eUTXO)
+/// Shared types for Game 1: Adversarial Auditing (Vector/eUTXO)
 ///
-/// Spec: module-1-adversarial-auditing-impl-spec.md (v0.3)
+/// Spec: game-1-adversarial-auditing-impl-spec.md (v0.3)
 /// Author: Contract Author (Apex Security Audit Team)
 ///
 /// VRF research incorporated: the VRF report 2026-03-23
@@ -288,10 +288,6 @@ pub type JuryAction {
 pub type AuditingConfig {
   /// Policy ID of the Agent Registry (for DID verification)
   registry_policy_id: PolicyId,
-  /// Policy ID of the AP3X token (the staking currency)
-  ap3x_policy_id: PolicyId,
-  /// Asset name of the AP3X token
-  ap3x_asset_name: ByteArray,
   /// Foundation oracle verification key hash (Phase 1.0 dispute resolution)
   oracle_vkh: ByteArray,
   /// Policy ID of the NFT that authenticates the CrossValidatorRefs UTxO.

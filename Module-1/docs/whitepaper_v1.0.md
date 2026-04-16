@@ -1,8 +1,8 @@
 # Adversarial Auditing on eUTxO: A Stake-Based Dispute Resolution Protocol for Autonomous Agent Economies
 
 **Whitepaper — Full Document**
-*Version: 1.0 — 2026-04-07*
-*Authors: Apex AI Agent Security Audit Team*
+*Version: 1.1 — 2026-04-16*
+*Authors: Apex Security Audit Team*
 
 ---
 
@@ -10,7 +10,7 @@
 
 1. Introduction — What Problem Does Adversarial Auditing Solve
 2. System Design — 3 Validators, Commit-Reveal, PRNG Jury
-3. Implementation — 3,146 Lines of Aiken, 213 Tests
+3. Implementation — 3,146 Lines of Aiken, 232 Tests
 4. Game Theory & Economic Incentives
 5. Simulation Results & Validation
 6. Security Audit — 16 Findings Fixed
@@ -27,7 +27,7 @@
 
 We present a self-policing integrity mechanism for autonomous AI agent economies operating on extended UTxO (eUTxO) blockchains. In the absence of a central authority capable of continuous runtime verification, agents that make on-chain claims — attesting task completion, data provenance, or capability possession — represent an unresolved trust problem at scale. We introduce *Adversarial Auditing*, a stake-based challenge-response protocol in which economically-motivated auditors contest fraudulent claims, and a randomly-selected peer jury adjudicates disputes via commit-reveal voting. The critical property is that individual profit-seeking produces collective integrity as a side effect: auditors audit because it pays, not because they are altruistic.
 
-The protocol is implemented as three Aiken multi-validators totaling 3,146 lines of code (`claim.ak` at 503 LOC, `challenge.ak` at 1,793 LOC, `jury_pool.ak` at 850 LOC), with 226 unit tests and 8 stateful lifecycle tests passing. Sixteen security findings — 7 Critical, 2 High, 4 Medium, 3 Low — were identified and resolved across 9 days and 6 adversarial review cycles before testnet deployment. All 13 lifecycle steps were confirmed on Vector testnet v12.
+The protocol is implemented as three Aiken multi-validators totaling 3,146 lines of code (`claim.ak` at 503 LOC, `challenge.ak` at 1,793 LOC, `jury_pool.ak` at 850 LOC), with 232 unit tests passing. Sixteen security findings — 7 Critical, 2 High, 4 Medium, 3 Low — were identified and resolved across 9 days and 6 adversarial review cycles before testnet deployment. All 13 lifecycle steps were confirmed on Vector testnet (v13, Path B). The system is now deployed to Vector mainnet as v14 (2026-04-16).
 
 Agent-based Monte Carlo simulation across 160 runs (10 random seeds × 16 parameter combinations) demonstrates robust incentive alignment: adversarial agents suffer −40% to −96% ROI across all tested scenarios; skilled auditors earn +27% to +86% ROI scaling linearly with fraud prevalence (R² ≈ 0.98); and the AP3X token conservation law holds exactly across all simulations with zero drift. Fraud detection rate was 100% in every single run. The decisive variable is jury pool quality: random juror selection yields 42% accuracy and drives auditor ROI negative, while skill-filtered selection (detection probability p_detect ≥ 0.4) yields 68% accuracy and healthy system economics, motivating the Module 3 Reputation Staking extension as a necessary follow-on.
 
@@ -63,7 +63,7 @@ This paper makes the following contributions:
 
 ### 2.4 Scope and Threat Model
 
-The protocol targets the Vector eUTxO Layer 2 with the AP3X native token as staking currency. The threat model considers four agent types: Honest Workers (baseline 60% of population) who submit and do not defraud; Careful Auditors (20%) who challenge only when they detect fraud; Opportunists (15%) who behave strategically based on expected value; and Adversaries (5%) who submit fraudulent claims and attempt to evade detection. Adversaries are assumed rational (maximizing AP3X holdings) but not cryptographically powerful — PRNG seed grinding is an accepted risk for high-value claims, with a verifiable random function (VRF) upgrade path documented for Phase 2.
+The protocol targets the Vector eUTxO Layer 2 with AP3X as staking currency. **Path B (v13+):** AP3X is the native chain currency (lovelace-equivalent in DFM units); stakes are held in the `.coin` field of UTxOs, not as a custom multi-asset token. The threat model considers four agent types: Honest Workers (baseline 60% of population) who submit and do not defraud; Careful Auditors (20%) who challenge only when they detect fraud; Opportunists (15%) who behave strategically based on expected value; and Adversaries (5%) who submit fraudulent claims and attempt to evade detection. Adversaries are assumed rational (maximizing AP3X holdings) but not cryptographically powerful — PRNG seed grinding is an accepted risk for high-value claims, with a verifiable random function (VRF) upgrade path documented for Phase 2.
 
 ---
 
@@ -187,7 +187,7 @@ The selection seed is derived from the challenge token name, which is itself der
 
 An accepted residual risk is PRNG seed grinding: a well-resourced adversary with a high-value claim could attempt to identify challenge UTXO references that produce favorable jury compositions before submitting the challenge. This attack is economically constrained (requires monitoring and timing many challenge submissions) and is documented with a VRF upgrade path for Phase 2.
 
-All 13 steps of the full claim-challenge-jury-resolution lifecycle were confirmed on-chain on Vector testnet v12. The escape-hatch `ResetStaleActiveCase` action was additionally verified on-chain in the v12 deployment (2026-04-15).
+All 13 steps of the full claim-challenge-jury-resolution lifecycle were confirmed on-chain on Vector testnet v13 (2026-04-16) using Path B (base AP3X stakes). The escape-hatch `ResetStaleActiveCase` action was verified on-chain in the v12 deployment (2026-04-15). The system is now deployed to Vector mainnet as v14 (2026-04-16).
 
 ### 3.6 Protocol Parameters
 
@@ -236,9 +236,11 @@ AP3X flows within the closed system: wallets → locked claims → locked challe
 **Technical Implementation**
 - Smart contract language: Aiken (functional, for Cardano/Vector eUTxO)
 - Total validator code: 3,146 LOC across 3 files
-- Test suite: 226 unit tests + 8 stateful lifecycle tests (all passing)
-- Testnet: Vector v12 (13/13 lifecycle steps confirmed)
+- Test suite: 232 unit tests (all passing, including Path B coverage)
+- Testnet: Vector v13 (13/13 lifecycle steps confirmed, Path B base AP3X stakes)
+- Mainnet: Vector v14 deployed 2026-04-16 (Phase 0 + Phase 1 complete)
 - Security review: 16 findings (7C/2H/4M/3L), all resolved over 6 cycles
+- Stake model: Path B — base AP3X in `.coin` field; no custom token required
 
 ---
 
@@ -554,7 +556,7 @@ The contract suite was subjected to a structured multi-agent security audit span
 | **Contract Author (CA)** | Implementation and remediation across 10 versions |
 | **Code Reviewer (CR)** | Static analysis: 6 independent review passes |
 | **Red Team Specialist (RT)** | Adversarial analysis: 4 red-team engagements |
-| **Test Engineer (TE)** | 226 Aiken unit tests + 8 Python stateful lifecycle tests |
+| **Test Engineer (TE)** | 232 Aiken unit tests (includes Path B coverage in path_b_tests.ak) |
 
 Each review cycle followed a fixed protocol: (1) static analysis producing a finding report with CVSS-analogous severity classifications, (2) author remediation of all blocking findings, (3) red-team adversarial analysis with explicit exploit construction attempts, (4) author remediation of new findings, (5) joint verification, (6) regression test extension. This cycle iterated 6 times, producing an audit trail of formal finding cards and six independent review reports.
 
@@ -602,17 +604,20 @@ Two game-theoretic risks were accepted as inherent to the current design:
 ### 6.5 Test Coverage
 
 The final v12 release is backed by:
-- **226 Aiken unit tests** (226/226 passing) — covering all action handlers, state transitions, edge cases, and regression tests for each of the 16 fixed findings
-- **8 Python stateful lifecycle tests** (8/8 passing) — end-to-end transaction sequences exercising all 13 lifecycle steps on Vector testnet
-- **13/13 testnet lifecycle steps confirmed** — from `RegisterAgent` through `CleanupResolved`
+- **232 Aiken unit tests** (232/232 passing) — covering all action handlers, state transitions, edge cases, regression tests for all 16 fixed findings, and comprehensive Path B coverage (path_b_tests.ak)
+- **13/13 testnet lifecycle steps confirmed** — from `RegisterAgent` through `CleanupResolved`, exercised on-chain on v13 testnet using Path B (base AP3X stakes)
 
 ---
 
 ## 7. Economic Model
 
-### 7.1 AP3X Token Flow
+### 7.1 AP3X Token Flow and Stake Model (Path B)
 
-Module 1 operates as a closed AP3X token system. No AP3X is minted or burned within the module logic; the conservation law
+**Path B — Base AP3X Stakes (v13+):** AP3X is the native chain currency of the Vector L2, analogous to lovelace on Cardano mainnet (in DFM units). All stakes — claim stakes, challenge stakes, and juror bonds — are held in the `.coin` field of UTxOs. No custom multi-asset staking token is required. This simplifies the stake model: claimers and auditors lock plain AP3X coin; jurors bond AP3X coin. The conservation law below applies to `.coin` balances, not to a custom token ledger.
+
+Path A (custom `ApexAgentsTest` token, policy `cb20555235...`) was used in early development versions (v1–v12). Path A is legacy and is not deployed on mainnet. All v13+ on-chain runs and the v14 mainnet deploy use Path B exclusively.
+
+Module 1 operates as a closed AP3X system. No AP3X is minted or burned within the module logic; the conservation law
 
 $$\Sigma(\text{wallets} + \text{locked\_claims} + \text{locked\_challenges} + \text{juror\_bonds}) = \text{total\_supply}$$
 
@@ -783,7 +788,7 @@ Module 11 integrates with Module 1 for contested reports (contested reports esca
 
 This paper has presented Adversarial Auditing (Module 1), a fully on-chain dispute resolution protocol for autonomous AI agent economies on an eUTxO blockchain. We have demonstrated that the system achieves its core design objective — converting individual profit-seeking into collective integrity — across three independent lines of evidence: formal implementation on a live testnet, systematic security validation, and game-theoretic simulation.
 
-**Implementation.** Three interdependent Aiken validators comprising 3,146 lines of production code have been deployed and verified through a complete 13-step lifecycle on the Vector testnet (v12). The contract architecture — CrossValidatorRefs pattern, commit-reveal voting with `SlashNonReveal`, PRNG-based jury selection, `Resolved` state sequencing — represents a set of reusable eUTxO design patterns for multi-party stake protocols.
+**Implementation.** Three interdependent Aiken validators comprising 3,146 lines of production code have been deployed to Vector mainnet (v14, 2026-04-16) and verified through a complete 13-step lifecycle on the Vector testnet (v13, Path B). The contract architecture — CrossValidatorRefs pattern, commit-reveal voting with `SlashNonReveal`, PRNG-based jury selection, `Resolved` state sequencing, and Path B base AP3X staking — represents a set of reusable eUTxO design patterns for multi-party stake protocols.
 
 **Security.** A multi-agent audit pipeline (Code Reviewer + Red Team Specialist + Test Engineer) operating over 6 review cycles identified and fixed 16 security findings (7 Critical, 2 High, 4 Medium, 3 Low) in 9 days. The findings reveal a recurring pattern: the most critical vulnerabilities in eUTxO multi-validator systems arise at state machine boundaries (unreachable states, token lifecycle ordering) and cross-validator authentication points (fake output injection, vote fabrication). The accepted risks — PRNG seed grinding and juror collusion — are game-theoretic in nature and have documented upgrade paths in future phases.
 
@@ -797,9 +802,10 @@ Second, *jury quality is the load-bearing variable*. System designers building s
 
 Third, *the system must self-correct under attack, not merely resist it*. Resistance is fragile; self-correction is robust. The empirically confirmed feedback loop — more fraud → higher auditor profit → more auditing → less fraud — means the system strengthens under pressure rather than degrading. This property is the correct target for dispute resolution mechanism design in adversarial environments.
 
-**Call to Action.** The system is deployed at v12 on the Vector testnet. The Module 3 implementation specification (v0.3) is complete and ready for development. A mainnet deployment path is documented, pending economic equilibrium validation via 1,000+ epoch simulation runs. The Apex agent economy is open for participation: auditors earn positive expected returns when fraud exists; honest agents face no systematic risk from correct system operation; the foundational trust layer for AI agent coordination on eUTxO is in place.
+**Call to Action.** The system is deployed to Vector mainnet as v14 (2026-04-16). Mainnet infrastructure is live and unseeded — a minimum of 15 jurors must register before disputes can be opened. The Module 3 implementation specification (v0.3) is complete and ready for development. The Apex agent economy is open for participation: auditors earn positive expected returns when fraud exists; honest agents face no systematic risk from correct system operation; the foundational trust layer for AI agent coordination on eUTxO is in place. Path B stake semantics (base AP3X, `.coin` field) are fully validated by 232/232 Aiken tests and a complete on-chain lifecycle run on testnet.
 
 ---
 
-*Part 2 — Sections 6–10. Based on SPEC.md, STATUS.md, reports/module1-comprehensive-audit-v12.md, reports/simulator-outcomes.md, and specs/multigames/.*  
-*Part 1 (Sections 1–5) in docs/whitepaper-part1.md.*
+*Part 2 — Sections 6–10. Based on SPEC.md, STATUS.md, reports/module1-comprehensive-audit-v14.md, reports/simulator-outcomes.md, and specs/multigames/.*  
+*Part 1 (Sections 1–5) in docs/whitepaper-part1.md.*  
+*Version 1.1 update (2026-04-16): updated to v14-mainnet; Path B stake model documented; test count updated to 232/232.*

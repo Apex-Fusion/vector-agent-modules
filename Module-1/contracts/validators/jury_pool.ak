@@ -1,4 +1,4 @@
-/// jury_pool.ak — Jury Pool Multi-Validator for Module 1: Adversarial Auditing
+/// jury_pool.ak — Jury Pool Multi-Validator for Game 1: Adversarial Auditing
 ///
 /// Controls juror registration, selection, voting, and reward distribution.
 ///
@@ -52,7 +52,7 @@ use adversarial_auditing/types.{
   RevealVote, SelectJury, SlashNonReveal, Verdict, Voting, WithdrawJuror,
 }
 use adversarial_auditing/utils.{
-  ap3x_of, count_script_inputs, credential_signed,
+  count_script_inputs, credential_signed,
   exactly_one_burned, exactly_one_minted, find_input, find_output_at_script,
   get_cross_refs, is_valid_hash, juror_token_name, outputs_at_script,
   tx_ends_before, tx_started_after, verify_active_did, vkh_signed,
@@ -171,7 +171,7 @@ validator jury_pool(config: AuditingConfig, params: ProtocolParams) {
 // this into a dedicated FeeDistribute action with on-chain accounting.
 //
 // Note: this is a transitional Phase 1.0 mechanism. In Phase 1.1, the preferred
-// approach is Option A from code review: distribute jury fees directly to juror
+// approach is Option A from the design review: distribute jury fees directly to juror
 // outputs in the ResolveJury tx, eliminating the fee pool UTXO entirely.
 
 fn validate_receive_jury_fee(
@@ -219,7 +219,7 @@ fn validate_register_juror(
         let bond_ok = juror.bond_amount >= params.min_juror_bond
 
         let ap3x_locked =
-          ap3x_of(out.value, config.ap3x_policy_id, config.ap3x_asset_name) == juror.bond_amount
+          assets.lovelace_of(out.value) == juror.bond_amount
 
         // Initial stats must be zeroed; not yet assigned to any case.
         let stats_fresh =
@@ -293,7 +293,7 @@ fn validate_withdraw_juror(
     list.any(tx.outputs, fn(o) {
       and {
         o.address.payment_credential == juror.juror_credential,
-        ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == juror.bond_amount,
+        assets.lovelace_of(o.value) == juror.bond_amount,
       }
     })
 
@@ -411,7 +411,7 @@ fn validate_select_jury(
               updated.active_case == Some(challenge_token_name),
               updated.vote_commitment == None,
               updated.revealed_verdict == None,
-              ap3x_of(out.value, config.ap3x_policy_id, config.ap3x_asset_name) == juror.bond_amount,
+              assets.lovelace_of(out.value) == juror.bond_amount,
             }
           }
           _ -> False
@@ -504,7 +504,7 @@ fn validate_commit_vote(
               updated.active_case == juror.active_case,
               updated.vote_commitment == Some(commitment_hash),
               updated.revealed_verdict == None,
-              ap3x_of(out.value, config.ap3x_policy_id, config.ap3x_asset_name) == juror.bond_amount,
+              assets.lovelace_of(out.value) == juror.bond_amount,
             }
           }
           _ -> False
@@ -617,7 +617,7 @@ fn validate_reveal_vote(
               updated.active_case == juror.active_case,
               updated.vote_commitment == None,
               updated.revealed_verdict == Some(verdict),
-              ap3x_of(out.value, config.ap3x_policy_id, config.ap3x_asset_name) == juror.bond_amount,
+              assets.lovelace_of(out.value) == juror.bond_amount,
             }
           }
           _ -> False
@@ -712,7 +712,7 @@ fn validate_slash_non_reveal(
               updated.active_case == None,
               updated.vote_commitment == None,
               updated.revealed_verdict == None,
-              ap3x_of(out.value, config.ap3x_policy_id, config.ap3x_asset_name) == remaining_bond,
+              assets.lovelace_of(out.value) == remaining_bond,
             }
           }
           _ -> False
@@ -823,7 +823,7 @@ fn validate_distribute_rewards(
             // Only accept the output that matches this specific juror's DID.
             if updated.juror_did == juror.juror_did {
               let ap3x_out =
-                ap3x_of(out.value, config.ap3x_policy_id, config.ap3x_asset_name)
+                assets.lovelace_of(out.value)
               and {
                 updated.juror_credential == juror.juror_credential,
                 updated.registered_at == juror.registered_at,
@@ -870,3 +870,4 @@ fn validate_distribute_rewards(
 // (check_reset_stale_active_case_with_refs) so that tests can exercise
 // the exact code the spend handler dispatches to. See that module for
 // preconditions and continuing-output requirements.
+

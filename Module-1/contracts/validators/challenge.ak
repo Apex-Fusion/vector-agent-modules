@@ -1,4 +1,4 @@
-/// challenge.ak — Challenge Multi-Validator for Module 1: Adversarial Auditing
+/// challenge.ak — Challenge Multi-Validator for Game 1: Adversarial Auditing
 ///
 /// Controls the lifecycle of challenge UTXOs.
 /// Each challenge is an independent UTXO referencing a specific claim.
@@ -41,7 +41,7 @@ use adversarial_auditing/types.{
   Verdict, Voting,
 }
 use adversarial_auditing/utils.{
-  ap3x_of, challenge_token_name, claim_token_name, count_script_inputs,
+  challenge_token_name, claim_token_name, count_script_inputs,
   credential_signed, exactly_one_burned, exactly_one_minted, find_input,
   find_output_at_script, get_cross_refs, is_valid_hash, outputs_at_script,
   select_jurors_prng, sort_dids, tx_contains_slot, tx_ends_before,
@@ -73,7 +73,7 @@ validator challenge(config: AuditingConfig, params: ProtocolParams) {
         // Mint handler permits: no challenge token minted or burned in this tx.
         // The claim token burn (at claim policy) still happens — that's not our policy.
         //
-        // fix: CR-002-F2 — Defensive guard note:
+        // fix: Finding-002-F2 — Defensive guard note:
         // In a valid ResolveJury tx, no challenge tokens are minted or burned, so
         // the challenge policy won't appear in tx.mint at all — this mint handler
         // simply doesn't execute. If an attacker forces the policy into tx.mint
@@ -225,11 +225,7 @@ fn validate_open_challenge(
                     )
                   let stake_sufficient = ch.stake_amount >= claim.stake_amount
                   let ap3x_locked =
-                    ap3x_of(
-                      chal_output.value,
-                      config.ap3x_policy_id,
-                      config.ap3x_asset_name,
-                    ) == ch.stake_amount
+                    assets.lovelace_of(chal_output.value) == ch.stake_amount
                   and {
                     no_self_audit,
                     within_window,
@@ -267,7 +263,7 @@ fn validate_open_challenge(
         // VRF research: frozen at challenge time; sorted for lexicographic PRNG.
         let jurors_sorted = ch.eligible_jurors == sort_dids(ch.eligible_jurors)
 
-        // fix: RT-V7 — minimum pool size to resist juror planting + seed grinding.
+        // fix: Finding-V7 — minimum pool size to resist juror planting + seed grinding.
         // Require >= 3 * jury_size eligible jurors in jury mode.
         // C(15,5) = 3,003 panels — planting 3 sybils gives only 0.33% per seed.
         // In oracle mode (oracle_active=True), pool is not used — skip check.
@@ -366,7 +362,7 @@ fn validate_submit_evidence(
               // State MUST be immutable — prevents auditor from transitioning
               // PendingOracle→PendingJury (or any other state) via SubmitEvidence.
               updated.state == ch.state,
-              ap3x_of(out.value, config.ap3x_policy_id, config.ap3x_asset_name) == ch.stake_amount,
+              assets.lovelace_of(out.value) == ch.stake_amount,
             }
           }
           _ -> False
@@ -500,7 +496,7 @@ fn validate_resolve_jury(
             Script(h) -> h == refs.jury_pool_hash
             _ -> False
           }
-        // fix: CR-CR-02 — verify juror NFT token is present.
+        // fix: Finding-CR-02 — verify juror NFT token is present.
         // Without this, attackers can create fake UTxOs at jury_pool address
         // with fabricated JurorDatum containing desired verdicts.
         // Juror tokens are 1-of-1 NFTs — unforgeable.
@@ -588,11 +584,7 @@ fn validate_resolve_jury(
                       // AP3X stake preserved (stakes distributed separately to winners).
                       // Note: the AP3X in the continuing output holds the auditor's stake.
                       // Winner payouts and jury fee are separate outputs.
-                      ap3x_of(
-                        out.value,
-                        config.ap3x_policy_id,
-                        config.ap3x_asset_name,
-                      ) == ch.stake_amount,
+                      assets.lovelace_of(out.value) == ch.stake_amount,
                     }
                   }
                   _ -> False
@@ -629,7 +621,7 @@ fn validate_resolve_jury(
       ch.stake_amount,
     )
 
-  // fix: CR-002-F3 — enforce exactly one continuing output at challenge script address.
+  // fix: Finding-002-F3 — enforce exactly one continuing output at challenge script address.
   // Prevents UTxO pollution from extra outputs (even though they'd lack the challenge token).
   let single_challenge_output =
     list.length(outputs_at_script(tx.outputs, refs.challenge_validator_hash)) == 1
@@ -702,7 +694,7 @@ fn validate_timeout_resolve(
       fn(o) {
         and {
           o.address.payment_credential == claimer_cred,
-          ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == claim_stake,
+          assets.lovelace_of(o.value) == claim_stake,
         }
       },
     )
@@ -713,7 +705,7 @@ fn validate_timeout_resolve(
       fn(o) {
         and {
           o.address.payment_credential == ch.auditor_credential,
-          ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == ch.stake_amount,
+          assets.lovelace_of(o.value) == ch.stake_amount,
         }
       },
     )
@@ -809,11 +801,7 @@ fn validate_transition_to_voting(
                 challenge_token_name,
               ) == 1,
               // AP3X stake preserved.
-              ap3x_of(
-                out.value,
-                config.ap3x_policy_id,
-                config.ap3x_asset_name,
-              ) == ch.stake_amount,
+              assets.lovelace_of(out.value) == ch.stake_amount,
             }
           }
           _ -> False
@@ -821,7 +809,7 @@ fn validate_transition_to_voting(
       None -> False
     }
 
-  // fix: CR-002-F3 — enforce exactly one continuing output at challenge script address.
+  // fix: Finding-002-F3 — enforce exactly one continuing output at challenge script address.
   let single_challenge_output =
     list.length(outputs_at_script(tx.outputs, refs.challenge_validator_hash)) == 1
 
@@ -861,7 +849,7 @@ fn validate_cleanup_resolved(
       _ -> False
     }
 
-  // fix: CR-P11-04 + RT-V5 — Time lock with buffer for DistributeRewards.
+  // fix: Finding-P11-04 + Finding-V5 — Time lock with buffer for DistributeRewards.
   // Must be after resolution_deadline + cleanup_buffer to give jurors time to claim fees.
   let after_cleanup_allowed =
     tx_started_after(tx, ch.challenged_at + ch.resolution_deadline + params.cleanup_buffer)
@@ -881,7 +869,7 @@ fn validate_cleanup_resolved(
       None -> False
     }
 
-  // fix: CR-002-F4 — verify no outputs remain at challenge script address after burn.
+  // fix: Finding-002-F4 — verify no outputs remain at challenge script address after burn.
   // Prevents UTxO pollution (tokenless junk outputs at the challenge address).
   let no_challenge_outputs =
     list.length(outputs_at_script(tx.outputs, refs.challenge_validator_hash)) == 0
@@ -923,7 +911,7 @@ fn find_claim_stake(
     )
   is {
     Some(inp) ->
-      ap3x_of(inp.output.value, config.ap3x_policy_id, config.ap3x_asset_name)
+      assets.lovelace_of(inp.output.value)
     None -> 0
   }
 }
@@ -1000,14 +988,14 @@ fn verify_oracle_distribution(
       list.any(tx.outputs, fn(o) {
         and {
           o.address.payment_credential == claimer_cred,
-          ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == total,
+          assets.lovelace_of(o.value) == total,
         }
       })
     AuditorWins ->
       list.any(tx.outputs, fn(o) {
         and {
           o.address.payment_credential == auditor_cred,
-          ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == total,
+          assets.lovelace_of(o.value) == total,
         }
       })
     Inconclusive ->
@@ -1015,13 +1003,13 @@ fn verify_oracle_distribution(
         list.any(tx.outputs, fn(o) {
           and {
             o.address.payment_credential == claimer_cred,
-            ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == claim_stake,
+            assets.lovelace_of(o.value) == claim_stake,
           }
         }),
         list.any(tx.outputs, fn(o) {
           and {
             o.address.payment_credential == auditor_cred,
-            ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == auditor_stake,
+            assets.lovelace_of(o.value) == auditor_stake,
           }
         }),
       }
@@ -1051,7 +1039,7 @@ fn verify_jury_distribution(
         list.any(tx.outputs, fn(o) {
           and {
             o.address.payment_credential == claimer_cred,
-            ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == claimer_payout,
+            assets.lovelace_of(o.value) == claimer_payout,
           }
         })
       // fix: NEW-R2-03 — jury fee must reach jury pool
@@ -1061,7 +1049,7 @@ fn verify_jury_distribution(
             Script(h) ->
               and {
                 h == refs.jury_pool_hash,
-                ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == jury_fee,
+                assets.lovelace_of(o.value) == jury_fee,
               }
             _ -> False
           }
@@ -1078,7 +1066,7 @@ fn verify_jury_distribution(
         list.any(tx.outputs, fn(o) {
           and {
             o.address.payment_credential == auditor_cred,
-            ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == auditor_payout,
+            assets.lovelace_of(o.value) == auditor_payout,
           }
         })
       // fix: NEW-R2-03 — jury fee must reach jury pool
@@ -1088,7 +1076,7 @@ fn verify_jury_distribution(
             Script(h) ->
               and {
                 h == refs.jury_pool_hash,
-                ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == jury_fee,
+                assets.lovelace_of(o.value) == jury_fee,
               }
             _ -> False
           }
@@ -1106,14 +1094,14 @@ fn verify_jury_distribution(
         list.any(tx.outputs, fn(o) {
           and {
             o.address.payment_credential == claimer_cred,
-            ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == claim_stake - half_fee,
+            assets.lovelace_of(o.value) == claim_stake - half_fee,
           }
         })
       let auditor_ok =
         list.any(tx.outputs, fn(o) {
           and {
             o.address.payment_credential == auditor_cred,
-            ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == auditor_stake - half_fee,
+            assets.lovelace_of(o.value) == auditor_stake - half_fee,
           }
         })
       // fix: NEW-R2-03 — jury fee must reach jury pool
@@ -1123,7 +1111,7 @@ fn verify_jury_distribution(
             Script(h) ->
               and {
                 h == refs.jury_pool_hash,
-                ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == total_jury_fee,
+                assets.lovelace_of(o.value) == total_jury_fee,
               }
             _ -> False
           }
@@ -1148,7 +1136,6 @@ fn verify_jury_distribution(
 // Strategy: build a KNOWN-GOOD base TX that passes all checks, then
 // break one check at a time to verify each condition independently.
 //
-// Author: Apex Security Audit Team — debugging Step 4 blocker
 // Date: 2026-03-29
 
 // ── Test constants ──────────────────────────────────────────────────
@@ -1161,12 +1148,6 @@ const t_challenge_validator_hash: ByteArray =
 
 const t_jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-
-const t_ap3x_policy_id: ByteArray =
-  #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-
-const t_ap3x_asset_name: ByteArray =
-  #"415033580000000000000000000000000000000000000000000000000000"
 
 const t_registry_policy_id: ByteArray =
   #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
@@ -1203,8 +1184,6 @@ const t_valid_evidence_hash: ByteArray =
 fn t_config() -> AuditingConfig {
   AuditingConfig {
     registry_policy_id: t_registry_policy_id,
-    ap3x_policy_id: t_ap3x_policy_id,
-    ap3x_asset_name: t_ap3x_asset_name,
     oracle_vkh: t_oracle_vkh,
     refs_token_policy: t_refs_token_policy,
   }
@@ -1249,8 +1228,9 @@ fn t_chl_token_name() -> ByteArray {
 }
 
 fn t_make_ap3x(amount: Int) -> assets.Value {
-  assets.from_lovelace(2_000_000)
-    |> assets.add(t_ap3x_policy_id, t_ap3x_asset_name, amount)
+  // Path B: stakes/bonds live in base coin (value.coin / lovelace), no
+  // custom native asset. Keeping the name `t_make_ap3x` for churn-minimization until test fixtures are updated.
+  assets.from_lovelace(amount)
 }
 
 fn t_cross_refs() -> CrossValidatorRefs {

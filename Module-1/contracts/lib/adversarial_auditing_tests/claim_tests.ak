@@ -39,12 +39,6 @@ const challenge_validator_hash: ByteArray =
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-const ap3x_policy_id: ByteArray =
-  #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-
-const ap3x_asset_name: ByteArray =
-  #"415033580000000000000000000000000000000000000000000000000000"
-
 const registry_policy_id: ByteArray =
   #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
 
@@ -82,8 +76,6 @@ const valid_claim_hash: ByteArray =
 fn test_config() -> AuditingConfig {
   AuditingConfig {
     registry_policy_id,
-    ap3x_policy_id,
-    ap3x_asset_name,
     oracle_vkh,
     refs_token_policy: #"9999999999999999999999999999999999999999999999999999999999",
   }
@@ -148,10 +140,9 @@ fn claimer_addr() -> Address {
   }
 }
 
-/// Make AP3X value + lovelace
+/// Path B: stake is base coin only (no multi-asset stake)
 fn make_ap3x(amount: Int) -> assets.Value {
-  assets.from_lovelace(2_000_000)
-    |> assets.add(ap3x_policy_id, ap3x_asset_name, amount)
+  assets.from_lovelace(amount)
 }
 
 /// Derive the claim token name from seed_ref
@@ -272,7 +263,7 @@ test test_submit_claim_valid_passes() {
   let has_token =
     assets.quantity_of(output.value, claim_validator_hash, the_claim_token_name()) == 1
   let has_stake =
-    assets.quantity_of(output.value, ap3x_policy_id, ap3x_asset_name) == datum.stake_amount
+    assets.lovelace_of(output.value) == datum.stake_amount
   let has_inline_datum =
     when output.datum is {
       InlineDatum(_) -> True
@@ -326,7 +317,7 @@ test test_withdraw_claim_stake_returned_exactly() {
     datum: NoDatum,
     reference_script: None,
   }
-  assets.quantity_of(claimer_output.value, ap3x_policy_id, ap3x_asset_name) == datum.stake_amount
+  assets.lovelace_of(claimer_output.value) == datum.stake_amount
 }
 
 /// Behavioral: claim token burned on WithdrawClaim

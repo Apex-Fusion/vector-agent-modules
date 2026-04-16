@@ -44,12 +44,6 @@ const challenge_validator_hash: ByteArray =
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-const ap3x_policy_id: ByteArray =
-  #"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-
-const ap3x_asset_name: ByteArray =
-  #"415033580000000000000000000000000000000000000000000000000000"
-
 const registry_policy_id: ByteArray =
   #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
 
@@ -93,8 +87,6 @@ const valid_reasoning_hash: ByteArray =
 fn test_config() -> AuditingConfig {
   AuditingConfig {
     registry_policy_id,
-    ap3x_policy_id,
-    ap3x_asset_name,
     oracle_vkh,
     refs_token_policy: #"9999999999999999999999999999999999999999999999999999999999",
   }
@@ -167,8 +159,7 @@ fn auditor_addr() -> Address {
 }
 
 fn make_ap3x(amount: Int) -> assets.Value {
-  assets.from_lovelace(2_000_000)
-    |> assets.add(ap3x_policy_id, ap3x_asset_name, amount)
+  assets.from_lovelace(amount)
 }
 
 fn challenge_tok_name() -> ByteArray {
@@ -342,7 +333,7 @@ test test_oracle_resolve_claimer_wins_payout() {
     datum: NoDatum,
     reference_script: None,
   }
-  assets.quantity_of(payout_output.value, ap3x_policy_id, ap3x_asset_name) == total
+  assets.lovelace_of(payout_output.value) == total
 }
 
 /// Behavioral: OracleResolve — auditor wins → full stake to auditor
@@ -356,7 +347,7 @@ test test_oracle_resolve_auditor_wins_payout() {
     datum: NoDatum,
     reference_script: None,
   }
-  assets.quantity_of(payout_output.value, ap3x_policy_id, ap3x_asset_name) == total
+  assets.lovelace_of(payout_output.value) == total
 }
 
 /// Behavioral: OracleResolve — inconclusive → both get stakes back
@@ -376,8 +367,8 @@ test test_oracle_resolve_inconclusive_both_returned() {
     reference_script: None,
   }
   and {
-    assets.quantity_of(claimer_out.value, ap3x_policy_id, ap3x_asset_name) == claim_stake,
-    assets.quantity_of(auditor_out.value, ap3x_policy_id, ap3x_asset_name) == auditor_stake,
+    assets.lovelace_of(claimer_out.value) == claim_stake,
+    assets.lovelace_of(auditor_out.value) == auditor_stake,
   }
 }
 
@@ -788,11 +779,7 @@ test test_resolve_jury_v10_token_preserved_in_output() {
       challenge_tok_name(),
     ) == 1
   let has_ap3x =
-    assets.quantity_of(
-      continuing_output.value,
-      ap3x_policy_id,
-      ap3x_asset_name,
-    ) == ch.stake_amount
+    assets.lovelace_of(continuing_output.value) == ch.stake_amount
   and {
     has_token,
     has_ap3x,
@@ -871,12 +858,12 @@ test exploit_resolve_jury_v10_change_ap3x_amount_blocked() {
     reference_script: None,
   }
   let ap3x_matches =
-    assets.quantity_of(bad_output.value, ap3x_policy_id, ap3x_asset_name) == ch.stake_amount
+    assets.lovelace_of(bad_output.value) == ch.stake_amount
   // AP3X doesn't match → check fails → attack blocked
   ap3x_matches == False
 }
 
-/// Fail: ResolveJury produces two outputs at challenge address (CR-002-F3)
+/// Fail: ResolveJury produces two outputs at challenge address (Finding-002-F3)
 /// The single_challenge_output check must reject multi-output pollution
 test exploit_resolve_jury_v10_two_outputs_at_challenge_addr_blocked() {
   let ch = voting_challenge_datum()
@@ -903,7 +890,7 @@ test exploit_resolve_jury_v10_two_outputs_at_challenge_addr_blocked() {
         _ -> False
       }
     })
-  // CR-002-F3: must be exactly 1, not 2
+  // Finding-002-F3: must be exactly 1, not 2
   challenge_output_count == 1 == False
 }
 
@@ -1008,7 +995,7 @@ test exploit_cleanup_resolved_on_pending_jury_blocked() {
   state_ok == False
 }
 
-/// Fail: CleanupResolved leaves outputs at challenge address (CR-002-F4)
+/// Fail: CleanupResolved leaves outputs at challenge address (Finding-002-F4)
 /// After cleanup, NO outputs should remain at the challenge script address
 test exploit_cleanup_resolved_leaves_outputs_blocked() {
   // After burn, attacker leaves a junk output at challenge script address
@@ -1026,7 +1013,7 @@ test exploit_cleanup_resolved_leaves_outputs_blocked() {
         _ -> False
       }
     })
-  // CR-002-F4: must be 0 after cleanup
+  // Finding-002-F4: must be 0 after cleanup
   challenge_output_count == 0 == False
 }
 
@@ -1336,7 +1323,7 @@ test test_prng_empty_pool_returns_empty() {
   list.length(result) == 0
 }
 
-/// fix: RT-V7 — pool too small for jury mode → should fail
+/// fix: Finding-V7 — pool too small for jury mode → should fail
 test test_open_challenge_fail_pool_too_small() {
   // Pool of 10 is too small (need >= 3 * jury_size = 15)
   let small_pool = [
@@ -1357,7 +1344,7 @@ test test_open_challenge_fail_pool_too_small() {
   pool_large_enough == False
 }
 
-/// fix: RT-V5 — CleanupResolved before buffer expires → should fail
+/// fix: Finding-V5 — CleanupResolved before buffer expires → should fail
 test test_cleanup_resolved_fail_before_buffer() {
   // challenged_at + resolution_deadline + cleanup_buffer = 1000 + 5_400_000 + 1_800_000 = 7_201_000
   let challenged_at = 1_000

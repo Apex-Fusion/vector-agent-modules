@@ -1,4 +1,4 @@
-/// claim.ak — Claim Multi-Validator for Module 1: Adversarial Auditing
+/// claim.ak — Claim Multi-Validator for Game 1: Adversarial Auditing
 ///
 /// Controls the lifecycle of claim UTXOs. Each claim is an independent UTXO
 /// — fully parallelizable. No global state contention.
@@ -30,7 +30,7 @@ use adversarial_auditing/types.{
   SubmitClaim, WithdrawClaim,
 }
 use adversarial_auditing/utils.{
-  ap3x_of, challenge_token_name, claim_token_name, count_script_inputs,
+  challenge_token_name, claim_token_name, count_script_inputs,
   credential_signed, exactly_one_burned, exactly_one_minted, find_input,
   find_output_at_script, get_cross_refs, is_valid_hash, outputs_at_script,
   tx_contains_slot, tx_started_after, verify_active_did,
@@ -182,11 +182,7 @@ fn validate_submit_claim(
 
         // AP3X locked in output must exactly match declared stake_amount.
         let ap3x_locked =
-          ap3x_of(
-            clm_output.value,
-            config.ap3x_policy_id,
-            config.ap3x_asset_name,
-          ) == clm_d.stake_amount
+          assets.lovelace_of(clm_output.value) == clm_d.stake_amount
 
         // Claim hash must be exactly 32 bytes (blake2b_256 output).
         let hash_ok = is_valid_hash(clm_d.claim_hash)
@@ -284,7 +280,7 @@ fn validate_withdraw_claim(
       fn(o) {
         and {
           o.address.payment_credential == clm.claimer_credential,
-          ap3x_of(o.value, config.ap3x_policy_id, config.ap3x_asset_name) == clm.stake_amount,
+          assets.lovelace_of(o.value) == clm.stake_amount,
         }
       },
     )
@@ -386,11 +382,7 @@ fn validate_mark_challenged(
               }
             // AP3X stake must remain locked in the continuing output
             let ap3x_preserved =
-              ap3x_of(
-                out.value,
-                config.ap3x_policy_id,
-                config.ap3x_asset_name,
-              ) == clm.stake_amount
+              assets.lovelace_of(out.value) == clm.stake_amount
             // fix: NEW-R2-01 — claim token must stay in continuing output
             let token_preserved =
               assets.quantity_of(
@@ -454,7 +446,7 @@ fn validate_forfeit_claim(
     }
 
   // 3. Challenge must be resolving in this TX.
-  // fix: Finding-002 + CR-v10-F1 — accept EITHER:
+  // fix: Finding-002 + Finding-v10-F1 — accept EITHER:
   //   (a) Challenge token burned (OracleResolve, TimeoutResolve) — original path
   //   (b) Challenge UTxO transitions to Resolved{..} state (ResolveJury)
   //
@@ -466,7 +458,7 @@ fn validate_forfeit_claim(
       dict.to_pairs(assets.tokens(tx.mint, refs.challenge_validator_hash)),
       fn(p) { p.2nd == -1 },
     )
-  // fix: CR-v10-F1 + RT-001 — check for Resolved{..} state in continuing
+  // fix: Finding-v10-F1 + Finding-001 — check for Resolved{..} state in continuing
   // output AND verify it contains a legitimate challenge token.
   // CRITICAL: In eUTxO, anyone can create outputs at any script address without
   // the script executing. Without token verification, an attacker can fabricate
