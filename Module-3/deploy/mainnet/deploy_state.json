@@ -1,0 +1,35 @@
+{
+  "tx_hashes": {
+    "reputation_spend_ref": "dfa32f9c7a625f500a753bd4226b546c776f34cd68987e540786d50cacfa14bb",
+    "endorsement_spend_ref": "ee44ccf072c900ab5ae9cd1b5acc5d5b80f52eddba5add6e522c6c4f39ae34bc",
+    "params_utxo": "705d6b572ac634fa1ec1fc9d4d35303be17b6f5a9ce30030955bb0f0d0d7a7fe",
+    "cross_refs_nft": "d79b722817548b4ba57ad5c887e7ee084ada3d1ad25a0ba7e152a5946dc5ccaa"
+  },
+  "reputation_validator_hash": "5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093",
+  "endorsement_validator_hash": "77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf",
+  "network": "vector-mainnet",
+  "wallet_address": "addr1vy23etdh29umav6up9xy6pdw6h8e4s00222729s6cs2pmeq079m7d",
+  "wallet_vkey_hash": "151cadb75179beb35c094c4d05aed5cf9ac1ef5295e5161ac4141de4",
+  "refs_token_policy": "09dce01a3c2f2fddeda34a547bb4a5ef9f156feae6c4f45d6d74af84",
+  "reputation_address": "addr1w9gk3cv8rn7mre2urrhpwwkteh8qjgzy5j9u9c3l8w34pyc76uluq",
+  "endorsement_address": "addr1w9m3j6ld07uy2asssqxvwfqu73ykuqxhjqw7jpulkqera0cjm7mmz",
+  "params_holder_address": "addr1w8uc78dvuxkgq4s4enqr276wevmr5saegl7fnudxvxzssecjx7n6t",
+  "agent_registry_hash": "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01",
+  "ap3x_policy_id": "",
+  "ap3x_asset_name": "",
+  "module1_refs_token_policy": "205d5f77ffebf60b764ba4f1873eff3764f3d1d594e5dac477a928f9",
+  "validators": {
+    "endorsement.endorsement.mint": {
+      "hash": "77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf"
+    },
+    "endorsement.endorsement.spend": {
+      "hash": "77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf"
+    },
+    "reputation.reputation.mint": {
+      "hash": "5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093"
+    },
+    "reputation.reputation.spend": {
+      "hash": "5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093"
+    }
+  }
+}

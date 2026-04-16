@@ -29,14 +29,14 @@ Agent Registry
 
 ## Contracts
 
-Two Aiken multi-validators on Plutus V3 (Conway):
+Two Aiken multi-validators on Plutus V3 (Conway), deployed to both testnet and mainnet:
 
-| Validator | Handles | Hash |
-|-----------|---------|------|
-| `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `7e0d53b6797cd770...` |
-| `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `715726f3670743b1...` |
+| Validator | Handles | Testnet Hash | Mainnet Hash |
+|-----------|---------|-------------|-------------|
+| `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `7e0d53b6797cd770...` | `5168e1871cfdb1e5...` |
+| `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `715726f3670743b1...` | `77196bed7fb84576...` |
 
-110 unit tests, 12/12 smoke test steps passing on Vector testnet (includes CapabilityVerified and CapabilityFalsified paths).
+110 unit tests, 12/12 smoke test steps passing on both Vector testnet and mainnet (includes CapabilityVerified and CapabilityFalsified paths).
 
 ## Python SDK
 
@@ -65,7 +65,7 @@ client = ReputationStakingClient.from_deploy_state(
 tx = client.create_stake("agent_did_hex", ["code_review"], 10_000_000)
 ```
 
-No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries and the Vector testnet HTTP submit endpoint for transaction submission, matching Module 1 and Module 6.
+No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries and the HTTP submit endpoint for transaction submission, matching Module 1 and Module 6. Works with both testnet and mainnet endpoints.
 
 ## Reputation Formula
 
@@ -85,9 +85,22 @@ R(agent) = self_stake + endorsements - challenges + history_bonus - decay
 
 ## Contract Hashes
 
+**Mainnet:**
 ```
-reputation_validator:  7e0d53b6797cd770...
-endorsement_validator: 715726f3670743b1...
+reputation_validator:  5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093
+endorsement_validator: 77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf
+refs_token_policy:     09dce01a3c2f2fddeda34a547bb4a5ef9f156feae6c4f45d6d74af84
+```
+
+**Testnet:**
+```
+reputation_validator:  7e0d53b6797cd7707eb923b0ab044d4e03ef54cf115a6c14fadfb38e
+endorsement_validator: 715726f3670743b145b92d859cc5025128a99de88cd5ac42120258b4
+refs_token_policy:     b07ad1a1244a388d54463fce3c68aa8d4ddc5a3297159d20590d574f
+```
+
+**Shared (both networks):**
+```
 agent_registry:        be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01
 treasury (stub):       ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6
 params_holder:         f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867
@@ -133,13 +146,18 @@ Module-3/
   scripts/
     deploy_docker.py                          # Deploy to Vector testnet via Docker
     deploy_ogmios.py                          # Deploy to Vector testnet via Ogmios (remote)
-    smoke_test_ogmios.py                      # Full lifecycle smoke test — remote/Ogmios (12 steps)
+    deploy_mainnet_ogmios.py                  # Deploy to Vector mainnet via Ogmios
+    smoke_test_ogmios.py                      # Full lifecycle smoke test — testnet (12 steps)
+    smoke_test_mainnet_ogmios.py              # Full lifecycle smoke test — mainnet (12 steps)
     smoke_test_docker.py                      # Legacy smoke test — Docker/cardano-cli
     setup_wallet_docker.py                    # Docker-based wallet setup
 
-  deploy/                                     # Deployment artifacts (gitignored)
-    deploy_state.json                         # Current deployment hashes + tx IDs
-    plutus.json                               # Applied blueprint (with config)
+  deploy/                                     # Deployment artifacts
+    deploy_state.json                         # Testnet deployment hashes + tx IDs
+    plutus.json                               # Testnet applied blueprint (with config)
+    mainnet/
+      deploy_state.json                       # Mainnet deployment hashes + tx IDs
+      plutus.json                             # Mainnet applied blueprint (with config)
 ```
 
 ## Building and Testing
@@ -152,7 +170,10 @@ cd reputation-staking && aiken build
 aiken check
 
 # Run smoke test on Vector testnet (remote — no Docker required)
-cd Module-3 && python3 scripts/smoke_test_ogmios.py
+cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_ogmios.py
+
+# Run smoke test on Vector mainnet
+cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_mainnet_ogmios.py
 
 # Run smoke test via Docker (legacy — requires local node)
 cd Module-3 && python3 scripts/smoke_test_docker.py
@@ -165,7 +186,7 @@ cd python && python -m pytest tests/
 
 - **Agent Registry** (`be1a0a...`): Agents must have a soulbound NFT before staking
 - **ProtocolParams**: Datum UTxO at a holder address (22 fields, Module 3-specific)
-- **AP3X Token**: Native currency on Vector testnet (= ADA/lovelace)
+- **AP3X Token**: Native currency on Vector (= ADA/lovelace)
 - **Foundation Oracle**: Phase 1.0 uses dev wallet key for challenge resolution
 - **Module 1** (Adversarial Auditing): Challenge escalation path via `EscalateToAudit` / `ResolveEscalation`
 
@@ -181,11 +202,20 @@ Module 3 uses the same remote chain interaction pattern as Module 1 and Module 6
 
 The legacy Docker/cardano-cli backend (`DockerChainBackend`) is preserved for local-node testing but is not used by the main client.
 
-## Vector Testnet Details
+## Vector Network Details
 
+**Mainnet:**
+```
+Ogmios:       https://ogmios.vector.mainnet.apexfusion.org (HTTP JSON-RPC)
+Submit:       https://submit.vector.mainnet.apexfusion.org/api/submit/tx
+Network:      mainnet (Vector uses mainnet network magic)
+System start: 2025-08-29T16:40:00Z, 1s slots
+```
+
+**Testnet:**
 ```
 Ogmios:       https://ogmios.vector.testnet.apexfusion.org (HTTP JSON-RPC)
 Submit:       https://submit.vector.testnet.apexfusion.org/api/submit/tx
-Network:      mainnet (Vector uses mainnet network magic)
+Network:      mainnet (Vector testnet also uses mainnet network magic)
 System start: 2025-07-09T10:38:04Z, 1s slots
 ```
