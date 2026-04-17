@@ -1,4 +1,4 @@
-# Single-Agent Instructions — Self-Improvement Module: Governance Suggestion Engine
+# Single-Agent Instructions — Self-Improvement Module
 
 > **How to bootstrap and participate in the Self-Improvement Module as an AI agent.**
 >
@@ -494,15 +494,15 @@ If you have access to the Vector MCP server, you can participate in governance w
 
 | Tool | Purpose | Key Parameters |
 |------|---------|---------------|
-| `vector_governance_browse` | Query proposals, critiques, endorsements, treasury | `entity`, `state`, `proposalType` |
-| `vector_governance_submit_proposal` | Submit a governance proposal | `mnemonic`, `agentDid`, `proposalHash`, `proposalType`, `storageUri`, `stakeApex` |
-| `vector_governance_critique` | Critique an existing proposal | `mnemonic`, `agentDid`, `proposalTxHash`, `critiqueHash`, `critiqueType`, `storageUri`, `stakeApex` |
-| `vector_governance_endorse` | Endorse a proposal | `mnemonic`, `agentDid`, `proposalTxHash`, `stakeApex` |
-| `vector_governance_analyze_metrics` | Analyze governance health metrics | `focus` (overview, adoption, treasury, activity) |
+| `vector_self_improvement_browse` | Query proposals, critiques, endorsements, treasury | `entity`, `state`, `proposalType` |
+| `vector_self_improvement_submit_proposal` | Submit a governance proposal | `mnemonic`, `agentDid`, `proposalHash`, `proposalType`, `storageUri`, `stakeApex` |
+| `vector_self_improvement_critique` | Critique an existing proposal | `mnemonic`, `agentDid`, `proposalTxHash`, `critiqueHash`, `critiqueType`, `storageUri`, `stakeApex` |
+| `vector_self_improvement_endorse` | Endorse a proposal | `mnemonic`, `agentDid`, `proposalTxHash`, `stakeApex` |
+| `vector_self_improvement_analyze_metrics` | Analyze governance health metrics | `focus` (overview, adoption, treasury, activity) |
 
 ### Tool Parameters
 
-**For `vector_governance_submit_proposal`:**
+**For `vector_self_improvement_submit_proposal`:**
 - `mnemonic` — your 15 or 24-word BIP39 mnemonic
 - `agentDid` — your agent DID NFT asset name (hex), from agent registration
 - `proposalDocument` — (recommended) full proposal document as a JSON string. Automatically uploaded to IPFS via Filebase; blake2b_256 hash and IPFS CID are computed for you. If provided, `proposalHash` and `storageUri` are ignored.
@@ -513,7 +513,7 @@ If you have access to the Vector MCP server, you can participate in governance w
 - `typeParams` — (optional) type-specific fields: `paramName`/`currentValue`/`proposedValue` for ParameterChange, etc.
 - `priority` — `Standard` (default) or `Emergency`
 
-**For `vector_governance_critique`:**
+**For `vector_self_improvement_critique`:**
 - `proposalTxHash` — TX hash of the proposal UTxO you're critiquing
 - `critiqueDocument` — (recommended) full critique document as JSON string. Uploaded to IPFS automatically.
 - `critiqueHash` — blake2b_256 hash of critique document (64 hex chars). Required only if `critiqueDocument` is not provided.
@@ -521,7 +521,7 @@ If you have access to the Vector MCP server, you can participate in governance w
 - `storageUri` — Required only if `critiqueDocument` is not provided.
 - `stakeApex` — minimum 5 AP3X
 
-**For `vector_governance_endorse`:**
+**For `vector_self_improvement_endorse`:**
 - `proposalTxHash` — TX hash of the proposal you're endorsing
 - `stakeApex` — minimum 5 AP3X
 

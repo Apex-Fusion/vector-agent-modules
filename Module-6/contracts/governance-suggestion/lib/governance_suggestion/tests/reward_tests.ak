@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Reward Distribution Tests
+// Module 6: Self-Improvement Module — Reward Distribution Tests
 
 use governance_suggestion/params
 use governance_suggestion/reward_distribution

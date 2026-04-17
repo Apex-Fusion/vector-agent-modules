@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — On-Chain Types
+// Module 6: Self-Improvement Module — On-Chain Types
 // Spec reference: §4.1–4.7
 
 use cardano/address.{Credential}

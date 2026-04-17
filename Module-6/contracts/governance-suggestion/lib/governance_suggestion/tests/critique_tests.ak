@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Critique & Endorsement Tests
+// Module 6: Self-Improvement Module — Critique & Endorsement Tests
 
 use aiken/builtin
 use aiken/crypto.{blake2b_256}

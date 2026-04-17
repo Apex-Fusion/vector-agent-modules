@@ -40,7 +40,7 @@ pkgs.mkShell {
   ];
 
   shellHook = ''
-    echo "=== Vector Module 6: Governance Suggestion Engine ==="
+    echo "=== Vector Module 6: Self-Improvement Module ==="
     echo ""
     echo "  Aiken:   $(aiken --version 2>/dev/null || echo 'checking...')"
     echo "  Python:  $(python --version)"

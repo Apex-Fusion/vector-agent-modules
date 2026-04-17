@@ -1,4 +1,4 @@
-# Module 6: Governance Suggestion Engine — Progress Tracker
+# Module 6: Self-Improvement Module — Progress Tracker
 
 Spec reference: `Module-6/docs/MODULE-6-GOVERNANCE-SUGGESTION-ENGINE-IMPL-SPEC.md` (v0.4)
 

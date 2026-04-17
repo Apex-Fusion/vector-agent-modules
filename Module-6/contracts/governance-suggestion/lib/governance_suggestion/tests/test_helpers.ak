@@ -1,4 +1,4 @@
-// Oracle: Governance Suggestion Engine — Test Helpers
+// Oracle: Self-Improvement Module — Test Helpers
 // Transaction construction builders for validator-level mock transaction tests.
 //
 // These helpers construct Input, Output, and reference input objects that

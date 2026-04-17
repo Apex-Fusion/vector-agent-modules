@@ -1,7 +1,7 @@
 {
   "preamble": {
     "title": "vector/governance-suggestion",
-    "description": "Module 6: Governance Suggestion Engine — advisory governance for Vector L2",
+    "description": "Module 6: Self-Improvement Module — advisory governance for Vector L2",
     "version": "0.1.0",
     "plutusVersion": "v3",
     "compiler": {

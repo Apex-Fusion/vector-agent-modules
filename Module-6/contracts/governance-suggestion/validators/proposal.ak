@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Proposal Multi-Validator
+// Module 6: Self-Improvement Module — Proposal Multi-Validator
 // Handles both minting (proposal tokens, activity tokens) and spending (proposal lifecycle)
 
 use aiken/collection/list

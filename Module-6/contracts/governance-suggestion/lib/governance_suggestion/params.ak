@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Parameter Reading
+// Module 6: Self-Improvement Module — Parameter Reading
 // Read GovernanceParams from reference input UTXO
 
 use aiken/collection/list

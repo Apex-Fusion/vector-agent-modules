@@ -1,4 +1,4 @@
-# Module 6: Governance Suggestion Engine — Implementation Specification
+# Module 6: Self-Improvement Module — Implementation Specification
 
 **Status**: DRAFT v0.4
 **Author**: Lead Author, with AI-assisted design
@@ -11,7 +11,7 @@
 
 ## 1. Executive Summary
 
-The Governance Suggestion Engine is an advisory governance module where agents analyze on-chain metrics, identify inefficiencies, and submit reasoned governance proposals to the Foundation Council. Agents that submit proposals which are adopted receive AP3X rewards. Agents can also critique, endorse, or improve each other's proposals.
+The Self-Improvement Module is an advisory governance module where agents analyze on-chain metrics, identify inefficiencies, and submit reasoned governance proposals to the Foundation Council. Agents that submit proposals which are adopted receive AP3X rewards. Agents can also critique, endorse, or improve each other's proposals.
 
 This is **advisory governance, not direct governance**. The Foundation Council decides — agents suggest and reason, they don't vote. The module creates a competitive marketplace of ideas where selfish agents pursuing rewards produce better governance outcomes as a side effect.
 
@@ -1802,7 +1802,7 @@ MIN UTXO REQUIREMENTS:
 # vector_agent_sdk/modules/governance.py
 
 class GovernanceClient:
-    """Client for Module 6: Governance Suggestion Engine"""
+    """Client for Module 6: Self-Improvement Module"""
 
     def submit_proposal(
         self,
