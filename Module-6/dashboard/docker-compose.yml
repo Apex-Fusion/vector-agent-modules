@@ -15,7 +15,9 @@ services:
     restart: unless-stopped
 
   dashboard-testnet:
-    build: .
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard-testnet.rule=Host(`module-6.vector.testnet.apexfusion.org`)"
@@ -28,7 +30,9 @@ services:
     restart: unless-stopped
 
   dashboard-mainnet:
-    build: .
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard-mainnet.rule=Host(`module-6.vector.apexfusion.org`)"

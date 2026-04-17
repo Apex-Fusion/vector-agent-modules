@@ -6,11 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
+# Build context is Module-6/ (see docker-compose.yml build.context),
+# so paths below are relative to Module-6/.
+COPY dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py .
-COPY static/ ./static/
+COPY dashboard/server.py .
+COPY dashboard/static/ ./static/
 COPY deploy/testnet/deployment.json ./deploy/testnet/deployment.json
 COPY deploy/mainnet/deployment.json ./deploy/mainnet/deployment.json
 
