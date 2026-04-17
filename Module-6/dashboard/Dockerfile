@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 COPY static/ ./static/
 COPY deploy/testnet/deployment.json ./deploy/testnet/deployment.json
+COPY deploy/mainnet/deployment.json ./deploy/mainnet/deployment.json
 
 EXPOSE 8000
 

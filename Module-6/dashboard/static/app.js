@@ -3,11 +3,11 @@
 let pollInterval = null;
 let allProposals = [];
 const POLL_MS = 30000;
-const EXPLORER = 'https://vector.testnet.apexscan.org';
+let EXPLORER = '';
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   // Tab switching
   document.querySelectorAll('.tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -23,7 +23,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.target === e.currentTarget) closeModal();
   });
 
-  // Initial load
+  try {
+    const cfg = await (await fetch('/api/config')).json();
+    EXPLORER = cfg.explorer || '';
+  } catch (e) {
+    console.error('Failed to load /api/config', e);
+  }
+
   refresh();
   startPoll();
 });
