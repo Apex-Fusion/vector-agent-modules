@@ -94,6 +94,7 @@ ENDORSE_SYBIL = 5 * AP3X       # at min_endorsement, mutual
 ALPHA_CYCLE_STAKES = [475, 475, 440, 420]  # AP3X per cycle
 BETA_CHALLENGE_STAKE = 300 * AP3X   # × 1 cycle  → 300 bonus
 OPEN_CHALLENGE_STAKE = 25 * AP3X    # at min_challenge_stake; vs Epsilon
+RESOLVED_CHALLENGE_STAKE = 25 * AP3X  # minted + resolved, not distributed → visible on Challenges tab
 
 
 # ── State management ───────────────────────────────────────────────────────
@@ -480,6 +481,60 @@ def main():
          lambda: client.mint_endorsement(
              endorser_did=sybil2_did, target_did=sybil1_did,
              capabilities=["code_review"], stake_amount=ENDORSE_SYBIL))
+
+    # ── Resolved challenge (mint + resolve, no distribute) ────────────────
+    # Delta challenges Gamma's data_analysis capability. Resolved as
+    # CapabilityFalsified — remains at the endorsement address in Resolved
+    # state so the Challenges tab has a non-Open example. No distribute step,
+    # so no history bonus is minted and no tier changes.
+    if "resolved_challenge_mint_tx" not in state:
+        print(f"\n--- Resolved challenge: Delta vs Gamma data_analysis ({RESOLVED_CHALLENGE_STAKE // AP3X} AP3X) — mint ---")
+        try:
+            evidence = b"demo_resolved_challenge_evidence"
+            ehash = hashlib.blake2b(evidence, digest_size=32).hexdigest()
+            tx_hash, cd = client.mint_challenge(
+                challenger_did=delta_did,
+                target_did=gamma_did,
+                capability="data_analysis",
+                stake_amount=RESOLVED_CHALLENGE_STAKE,
+                evidence_hash=ehash,
+                evidence_uri="ipfs://demo-resolved-challenge",
+            )
+        except Exception as e:
+            print(f"  FAIL: {e}")
+            import traceback; traceback.print_exc()
+            save_state(state)
+            sys.exit(1)
+        state["resolved_challenge_mint_tx"] = tx_hash
+        state["resolved_challenge_datum_cbor"] = cd.to_cbor().hex()
+        save_state(state)
+        print(f"  OK: tx {tx_hash[:16]}...   waiting {TX_WAIT}s")
+        time.sleep(TX_WAIT)
+    else:
+        print(f"\n[skip] Resolved challenge mint — already done ({state['resolved_challenge_mint_tx'][:16]}...)")
+
+    if "resolved_challenge_resolve_tx" not in state:
+        print("\n--- Resolved challenge — resolve Falsified ---")
+        try:
+            cd = _load_cd(state["resolved_challenge_datum_cbor"])
+            tx_hash = client.resolve_challenge(
+                challenger_did=delta_did,
+                target_did=gamma_did,
+                capability="data_analysis",
+                outcome_constructor=1,  # CapabilityFalsified
+                challenge_datum=cd,
+            )
+        except Exception as e:
+            print(f"  FAIL: {e}")
+            import traceback; traceback.print_exc()
+            save_state(state)
+            sys.exit(1)
+        state["resolved_challenge_resolve_tx"] = tx_hash
+        save_state(state)
+        print(f"  OK: tx {tx_hash[:16]}...   (stays Resolved — no distribute)")
+        time.sleep(TX_WAIT)
+    else:
+        print(f"\n[skip] Resolved challenge resolve — already done ({state['resolved_challenge_resolve_tx'][:16]}...)")
 
     # ── Open challenge against Epsilon (unresolved, pushes to Unverified) ─
     if "open_challenge_mint_tx" not in state:

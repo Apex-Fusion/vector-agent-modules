@@ -93,7 +93,33 @@ docker compose --env-file .env.mainnet.example -p module3-mainnet up --build -d
 
 Note: both stacks bind Traefik to port 80, so same-host co-hosting only
 works if you drop one of the Traefik services and share a single
-reverse proxy.
+reverse proxy — see the next section.
+
+### Co-hosting with Module 6's Traefik
+
+If the VM already runs Module 6 (or anything else with a Traefik on port
+80), use `docker-compose.shared-traefik.yml`. It omits the Traefik
+service, drops the port 80 binding, and joins Module 6's **existing**
+Docker network as an external reference — no edits to Module 6 required.
+
+```bash
+# 1. Find the network Module 6's Traefik is already on:
+docker network ls | grep module
+# e.g. "module-6_default"
+
+# 2. Configure and deploy:
+cd Module-3/dashboard
+cp .env.mainnet.example .env
+# edit .env:
+#   DASHBOARD_HOST=<your-module-3-hostname>
+#   TRAEFIK_NETWORK=module-6_default   (or whatever step 1 returned)
+
+docker compose -f docker-compose.shared-traefik.yml -p module3-mainnet up --build -d
+```
+
+Module 6's Traefik auto-discovers the Module 3 dashboard container by its
+labels and routes `DASHBOARD_HOST` to it. No port 80 conflict, no second
+Traefik instance, no Module 6 changes.
 
 ### Mainnet deployment checklist
 
@@ -113,6 +139,7 @@ reverse proxy.
 | `NETWORK`          | `testnet` or `mainnet`                             | Drives indexer `--network` flag + dashboard `/api/config` |
 | `DASHBOARD_HOST`   | `module-3.vector.testnet.apexfusion.org`           | Traefik `Host()` rule — must be a live DNS A record pointing at the VM |
 | `INDEXER_INTERVAL` | `60`                                               | Indexer poll interval in seconds |
+| `TRAEFIK_NETWORK`  | `module-6_default`                                 | Only for `docker-compose.shared-traefik.yml` — the existing Traefik's Docker network |
 
 Point the DNS A record for `DASHBOARD_HOST` at the VM, then open the URL.
 
