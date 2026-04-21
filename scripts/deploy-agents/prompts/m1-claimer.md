@@ -45,13 +45,29 @@ CWD is `~/vector-agents/state/m1-claimer/`. Keep `state.json`, `journal.md`, `ev
 
 ## SDK quick-start
 
+For reading your wallet balance and for DID registration, use the **Module-3** Ogmios backend (same one m3-staker uses — it points at the correct Vector testnet endpoint):
+
 ```python
 import os, sys
 user = os.environ["USER"]
+sys.path.insert(0, f"/home/{user}/code/vector-agent-modules/Module-3/python")
+from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
+ctx = OgmiosHttpContext()
+skey, vkey, addr = load_wallet(f"/home/{user}/vector-agents/wallets/m1-claimer.skey")
+balance_lovelace = sum(u.output.amount.coin for u in ctx.utxos(addr))
+# expect 100 AP3X = 100_000_000 lovelace if freshly funded; if < 60 AP3X, pull from master faucet
+```
+
+For **DID registration**: copy the self-signing pattern from `~/code/vector-agent-modules/Module-3/scripts/smoke_test_ogmios.py:register_agent` — same Agent Registry contract for all modules.
+
+For **submitting claims** (once you have a DID):
+
+```python
 sys.path.insert(0, f"/home/{user}/code/vector-agent-modules/Module-1")
-# simulation/ isn't a package-installed SDK — import from its modules directly:
 from simulation.tx_builder import build_submit_claim, DeploymentState
-from simulation.config import OGMIOS_URL  # etc
+# Module-1's OgmiosContext from simulation.config may point at a different
+# endpoint — prefer the Module-3 OgmiosHttpContext above for balance/utxo
+# queries. Only use simulation.tx_builder for Module-1-specific tx building.
 ```
 
 Stop on anything unexpected. Journal, exit.

@@ -19,19 +19,25 @@ CWD is `~/vector-agents/state/m6-critic/`. Keep `state.json`, `journal.md`, `eve
 }
 ```
 
+## HARD RULES — READ FIRST
+
+- **ONE cycle per run.** You will **not** write a helper script that loops or calls itself. You will **not** submit more than one on-chain tx in a single invocation. If you submit two critiques in one invocation, that is a bug.
+- **DID first, everything else second.** If `state.json.did_hex` is null OR is not a 64-char hex string (a wallet address is NOT a DID), your only action this run is to register a real DID. Do not submit critiques against any proposal with a placeholder DID — the tx will either fail on-chain validation or get your stake rejected, wasting AP3X.
+- **Copy the working pattern.** DID registration lives at `~/code/vector-agent-modules/Module-3/scripts/smoke_test_ogmios.py:register_agent`. Copy it verbatim; adapt only the wallet path. Do not reinvent.
+
 ## Run protocol
 
-1. **Orient.** Read state + journal. List recent proposals via `GovernanceIndexer.get_proposals(state="Open")`.
+1. **Orient.** Read state + journal. Verify `did_hex` is either null (then bootstrap) or a valid 64-char hex string (then proceed).
 
-2. **Reconcile.** landed → update; >2h pending → discard; else wait.
+2. **Reconcile.** If `pending_tx` is set: landed → move did_hex/fields to top level, clear pending_tx; `prepared_ts` older than 2h → discard and journal; else stop this run.
 
-3. **Decide ONE action:**
-   a. **Bootstrap** — no DID → register in Agent Registry using the self-signing pattern at `~/code/vector-agent-modules/Module-3/scripts/smoke_test_ogmios.py:register_agent` (copy verbatim; same registry contract across modules). Broadcast, record tx_hash + did_hex in state.json.pending_tx, stop.
-   b. **Handle resolved critiques** — any active_critiques whose parent proposal is now Adopted/Rejected/Expired: record outcome, remove from list.
-   c. **New critique** — if `len(active_critiques) < 5`: fetch each open proposal's doc (via the URI in its datum), assess rigorously. If you can point to a concrete flaw in data/methodology/scope *or* a specific improvement that would raise adoption odds, submit a critique (`GovernanceClient.submit_critique(...)` with 5 AP3X stake). **One per run, max. Good critique or no critique.**
+3. **Decide ONE action — and STOP after executing it:**
+   a. **Bootstrap** — if `did_hex` is not a 64-char hex string: register in Agent Registry using the pattern above. Broadcast, record tx_hash + did_hex in `state.json.pending_tx`, STOP.
+   b. **Handle resolved critiques** — any active_critiques whose parent proposal is now Adopted/Rejected/Expired: record outcome, remove from list. STOP.
+   c. **New critique** — ONLY if `did_hex` is real AND `len(active_critiques) < 5`: fetch ONE open proposal's doc (via the URI in its datum), assess rigorously. If you can point to a concrete flaw in data/methodology/scope *or* a specific improvement that would raise adoption odds, submit exactly one critique (`GovernanceClient.submit_critique(...)` with 5 AP3X stake). STOP.
    d. **Otherwise** → noop.
 
-4. **Record.** Atomic state write, journal, events.
+4. **Record.** Atomic state write, journal, events. Then exit — do not re-enter the protocol.
 
 ## Budget
 
