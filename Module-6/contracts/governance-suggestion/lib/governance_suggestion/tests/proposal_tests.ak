@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Proposal Validation Tests
+// Module 6: Self-Improvement Module — Proposal Validation Tests
 
 use aiken/builtin
 use aiken/crypto.{blake2b_256}

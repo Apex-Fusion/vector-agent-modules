@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Emergency Proposal Validation
+// Module 6: Self-Improvement Module — Emergency Proposal Validation
 // Spec reference: §5.1b
 //
 // Emergency proposals require:

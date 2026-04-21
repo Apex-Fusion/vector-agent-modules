@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Reward Distribution
+// Module 6: Self-Improvement Module — Reward Distribution
 // Spec reference: §7.2, §11.5
 
 use aiken/collection/list

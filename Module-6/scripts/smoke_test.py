@@ -53,7 +53,7 @@ def blake2b_256(data: str) -> bytes:
 async def smoke_test():
     """Run end-to-end governance smoke test."""
     print("=" * 60)
-    print("Module 6: Governance Suggestion Engine — Smoke Test")
+    print("Module 6: Self-Improvement Module — Smoke Test")
     print("=" * 60)
 
     state = load_deploy_state()

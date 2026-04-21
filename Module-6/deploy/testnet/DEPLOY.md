@@ -1,4 +1,4 @@
-# Deployment — Module 6: Governance Suggestion Engine
+# Deployment — Module 6: Self-Improvement Module
 
 **Network:** Vector Testnet (Cardano eUTxO L2, magic: 764824073)  
 **Language:** Aiken (Plutus V3)  

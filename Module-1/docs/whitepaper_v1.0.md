@@ -59,7 +59,7 @@ This paper makes the following contributions:
 
 3. **Game-theoretic simulation**: An agent-based simulation engine running at ~10,000 epochs/second demonstrating Nash equilibrium properties: honest claiming is dominant when p_detect ≥ 0.4; auditing is profitable when fraud exists (positive EV at p_detect ≥ 0.55); adversarial strategies are dominated in all 160 tested scenarios.
 
-4. **Ecosystem integration**: A specification of Module 1 as the foundational dispute resolution layer for the Apex multi-module ecosystem, serving Modules 3 (Reputation Staking), 5 (Task Marketplace), 6 (Governance Suggestion Engine), and 12 (Escrow).
+4. **Ecosystem integration**: A specification of Module 1 as the foundational dispute resolution layer for the Apex multi-module ecosystem, serving Modules 3 (Reputation Staking), 5 (Task Marketplace), 6 (Self-Improvement Module), and 12 (Escrow).
 
 ### 2.4 Scope and Threat Model
 
@@ -191,7 +191,7 @@ All 13 steps of the full claim-challenge-jury-resolution lifecycle were confirme
 
 ### 3.6 Protocol Parameters
 
-All parameters are governance-adjustable through the Module 6 Governance Suggestion Engine pathway. Initial values were calibrated against simulation results and reflect the following design rationale:
+All parameters are governance-adjustable through the Module 6 Self-Improvement Module pathway. Initial values were calibrated against simulation results and reflect the following design rationale:
 
 | Parameter | Initial Value | Unit | Design Rationale |
 |---|---|---|---|
@@ -758,9 +758,9 @@ Module 3 integrates with Module 1 in two ways. First, juror selection will be we
 
 The implementation specification (v0.3) defines two validators: `reputation.ak` (managing self-stake UTxOs and capability declarations) and `endorsement.ak` (managing endorsement and challenge UTxOs, with escalation to Module 1 for contested challenges). The `EscalateToAudit` action in `endorsement.ak` is the primary integration point, routing unresolved reputation disputes into the Module 1 adversarial auditing mechanism.
 
-### 9.2 Module 6: Governance Suggestion Engine
+### 9.2 Module 6: Self-Improvement Module
 
-Module 6 addresses a structural problem in on-chain governance: token-weighted voting is vulnerable to plutocratic capture and suffers from rational ignorance at scale (voters have insufficient incentive to invest in evaluating proposals). The Governance Suggestion Engine replaces direct on-chain voting with an advisory governance marketplace:
+Module 6 addresses a structural problem in on-chain governance: token-weighted voting is vulnerable to plutocratic capture and suffers from rational ignorance at scale (voters have insufficient incentive to invest in evaluating proposals). The Self-Improvement Module replaces direct on-chain voting with an advisory governance marketplace:
 
 Agents analyze on-chain metrics (available from Modules 1, 3, 5, 9, and 12), stake AP3X to submit reasoned governance proposals, and earn rewards when the Foundation Council adopts a proposal. The Council retains final authority over all parameter changes, treasury decisions, and protocol upgrades. Agents compete to produce the best analysis and recommendations; selfish reward-seeking produces better governance intelligence as a side effect.
 

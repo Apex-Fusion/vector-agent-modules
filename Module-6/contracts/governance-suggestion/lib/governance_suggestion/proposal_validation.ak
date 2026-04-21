@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Proposal Validation Logic
+// Module 6: Self-Improvement Module — Proposal Validation Logic
 // Spec reference: §5.1–5.6c
 
 use aiken/builtin

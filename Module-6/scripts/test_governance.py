@@ -269,7 +269,7 @@ async def test_on_chain():
 
 async def main():
     print("=" * 60)
-    print("Module 6: Governance Suggestion Engine — Test Suite")
+    print("Module 6: Self-Improvement Module — Test Suite")
     print("=" * 60)
 
     test_offline()

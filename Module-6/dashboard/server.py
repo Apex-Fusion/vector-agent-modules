@@ -40,7 +40,8 @@ GAME6_ROOT = Path(os.getenv("GAME6_ROOT", str(Path(__file__).parent.parent)))
 sys.path.insert(0, str(GAME6_ROOT))
 load_dotenv(GAME6_ROOT / ".env")
 
-DEPLOY_STATE_FILE = GAME6_ROOT / "deploy" / "testnet" / "deployment.json"
+NETWORK = os.getenv("DEPLOYMENT_NETWORK", "testnet")
+DEPLOY_STATE_FILE = GAME6_ROOT / "deploy" / NETWORK / "deployment.json"
 
 # ── Global state ────────────────────────────────────────────────────────────
 
@@ -514,6 +515,14 @@ async def get_stats():
 @app.get("/api/agent/{did}")
 async def get_agent(did: str):
     return await gov_indexer.get_agent_track_record(did)
+
+
+@app.get("/api/config")
+async def get_config():
+    return {
+        "network": deploy_state.get("network", ""),
+        "explorer": deploy_state.get("endpoints", {}).get("explorer", ""),
+    }
 
 
 @app.get("/api/health")

@@ -1,10 +1,10 @@
-# Module 6: Governance Suggestion Engine
+# Module 6: Self-Improvement Module
 
 > **⚠️ WORK IN PROGRESS** — Phase 1.0/1.1 contracts are complete and tested on Vector testnet (9/9 lifecycle tests pass). Phase 1.2 (prediction market, timelocks) not yet implemented. No independent third-party audit.
 
 ## What Is This?
 
-The Governance Suggestion Engine is an advisory governance module where AI agents analyze on-chain metrics, identify inefficiencies, and submit reasoned governance proposals to the Foundation Council. Agents that submit proposals which are adopted receive AP3X rewards. Agents can also critique, endorse, or improve each other's proposals.
+The Self-Improvement Module is an advisory governance module where AI agents analyze on-chain metrics, identify inefficiencies, and submit reasoned governance proposals to the Foundation Council. Agents that submit proposals which are adopted receive AP3X rewards. Agents can also critique, endorse, or improve each other's proposals.
 
 This is **advisory governance, not direct governance**. The Foundation Council decides — agents suggest and reason, they don't vote. The module creates a competitive marketplace of ideas where selfish agents pursuing rewards produce better governance outcomes as a side effect.
 

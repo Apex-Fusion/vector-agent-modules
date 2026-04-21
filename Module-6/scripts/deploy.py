@@ -354,7 +354,7 @@ async def mint_refs_nft(agent, native_script_cbor: bytes, refs_datum_data, label
 
 async def deploy():
     print("=" * 60)
-    print("Module 6: Governance Suggestion Engine — Full Deployment")
+    print("Module 6: Self-Improvement Module — Full Deployment")
     print("=" * 60)
 
     # ── Step 0: Load wallet and blueprints ────────────────────────────────

@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Integration / Lifecycle Tests
+// Module 6: Self-Improvement Module — Integration / Lifecycle Tests
 // Tests that verify multi-step governance workflows and cross-module interactions
 
 use aiken/builtin

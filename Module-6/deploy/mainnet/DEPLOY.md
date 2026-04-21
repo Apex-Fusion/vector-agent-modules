@@ -1,4 +1,4 @@
-# Deployment — Module 6: Self-Improvement Module (Governance Suggestion Engine)
+# Deployment — Module 6: Self-Improvement Module
 
 **Network:** Vector Mainnet
 **Language:** Aiken (Plutus V3)

@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Proposer Activity Tracking
+// Module 6: Self-Improvement Module — Proposer Activity Tracking
 // Rate limiting and cooldown enforcement via ProposerActivity UTXO
 
 use aiken/builtin

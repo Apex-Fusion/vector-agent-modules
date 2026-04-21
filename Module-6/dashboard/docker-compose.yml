@@ -14,14 +14,31 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
 
-  dashboard:
-    build: .
+  dashboard-testnet:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.dashboard.rule=Host(`module-6.vector.testnet.apexfusion.org`)"
-      - "traefik.http.routers.dashboard.entrypoints=web"
-      - "traefik.http.services.dashboard.loadbalancer.server.port=8000"
+      - "traefik.http.routers.dashboard-testnet.rule=Host(`module-6.vector.testnet.apexfusion.org`)"
+      - "traefik.http.routers.dashboard-testnet.entrypoints=web"
+      - "traefik.http.services.dashboard-testnet.loadbalancer.server.port=8000"
     environment:
+      - DEPLOYMENT_NETWORK=testnet
       - VECTOR_OGMIOS_URL=https://ogmios.vector.testnet.apexfusion.org
       - GOVERNANCE_WALLET_ADDRESS=addr1vxt9kdayzu20uyjju4mc0eyrd68dnudwey5wnauqgrw9vmqlz2935
+    restart: unless-stopped
+
+  dashboard-mainnet:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard-mainnet.rule=Host(`module-6.vector.apexfusion.org`)"
+      - "traefik.http.routers.dashboard-mainnet.entrypoints=web"
+      - "traefik.http.services.dashboard-mainnet.loadbalancer.server.port=8000"
+    environment:
+      - DEPLOYMENT_NETWORK=mainnet
+      - VECTOR_OGMIOS_URL=https://ogmios.vector.mainnet.apexfusion.org
     restart: unless-stopped

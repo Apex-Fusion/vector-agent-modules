@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Critique & Endorsement Multi-Validator
+// Module 6: Self-Improvement Module — Critique & Endorsement Multi-Validator
 // Handles minting (critique/endorsement tokens) and spending (critique/endorsement lifecycle)
 
 use aiken/collection/list

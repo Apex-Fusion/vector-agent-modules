@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Critique & Endorsement Validation
+// Module 6: Self-Improvement Module — Critique & Endorsement Validation
 // Spec reference: §5.7–5.9
 
 use aiken/builtin

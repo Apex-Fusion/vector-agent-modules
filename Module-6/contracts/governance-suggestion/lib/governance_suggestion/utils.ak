@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Utilities
+// Module 6: Self-Improvement Module — Utilities
 // DID verification, oracle checks, and token name derivation.
 // Delegates to shared library (vector/shared) for cross-module functions.
 

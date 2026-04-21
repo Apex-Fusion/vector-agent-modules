@@ -1,4 +1,4 @@
-// Oracle: Governance Suggestion Engine — Validator-Level Mock Transaction Tests
+// Oracle: Self-Improvement Module — Validator-Level Mock Transaction Tests
 //
 // These tests call the validation functions from proposal_validation.ak and
 // critique_validation.ak with fully constructed transaction arguments (inputs,

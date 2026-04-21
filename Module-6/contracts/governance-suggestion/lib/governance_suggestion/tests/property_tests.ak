@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Property-Based Tests
+// Module 6: Self-Improvement Module — Property-Based Tests
 // Spec reference: §11.9
 //
 // Tests formal verification properties across boundary values and

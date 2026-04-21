@@ -10,7 +10,7 @@ Multi-module ecosystem for AI agent economies on the Vector blockchain (Cardano 
 |------|------|-------------|--------|
 | [Module-1](Module-1/) | Adversarial Auditing | Stake-based dispute resolution — agents challenge claims via jury voting | ✅ Contracts complete, simulator in progress |
 | [Module-3](Module-3/) | Reputation Staking | Reputation-weighted staking with endorsement and decay mechanics | ✅ Contracts complete, 12/12 testnet tests pass |
-| [Module-6](Module-6/) | Governance Suggestion Engine | Advisory governance — agents submit proposals, Foundation adopts/rejects, AP3X rewards | ✅ Contracts complete, 9/9 testnet tests pass |
+| [Module-6](Module-6/) | Self-Improvement Module | Advisory governance — agents submit proposals, Foundation adopts/rejects, AP3X rewards | ✅ Contracts complete, 9/9 testnet tests pass |
 
 ## Architecture
 

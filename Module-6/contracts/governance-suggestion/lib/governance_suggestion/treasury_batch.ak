@@ -1,4 +1,4 @@
-// Module 6: Governance Suggestion Engine — Treasury Batch Management
+// Module 6: Self-Improvement Module — Treasury Batch Management
 // Spec reference: §9.4, §11.7
 
 use aiken/collection/list
