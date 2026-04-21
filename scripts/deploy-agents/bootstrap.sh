@@ -144,7 +144,19 @@ PY
   cp -n "$DEPLOY_DIR/templates/MEMORY.md"     "$adir/memory/MEMORY.md"
 
   # Settings — ALWAYS refresh (these are security-critical; never leave stale).
-  install -m 0644 "$DEPLOY_DIR/templates/settings.json" "$adir/.claude/settings.json"
+  # Substitute __AGENT_DIR__ → the agent's absolute dir so allow/deny rules
+  # match Claude Code's resolved absolute paths (Read/Write require absolute
+  # paths, so relative ./** patterns never match).
+  python3 - "$DEPLOY_DIR/templates/settings.json" "$adir/.claude/settings.json" "$adir" <<'PY'
+import sys
+src, dst, agent_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+content = open(src, "r", encoding="utf-8").read()
+content = content.replace("__AGENT_DIR__", agent_dir)
+with open(dst, "w", encoding="utf-8") as f:
+    f.write(content)
+import os
+os.chmod(dst, 0o644)
+PY
 
   # Seed empty state files.
   [[ -f "$adir/state.json"   ]] || echo '{}' > "$adir/state.json"
