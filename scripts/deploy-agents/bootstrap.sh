@@ -144,17 +144,18 @@ PY
   cp -n "$DEPLOY_DIR/templates/MEMORY.md"     "$adir/memory/MEMORY.md"
 
   # Settings — ALWAYS refresh (these are security-critical; never leave stale).
-  # Substitute __AGENT_DIR__ → the agent's absolute dir so allow/deny rules
-  # match Claude Code's resolved absolute paths (Read/Write require absolute
-  # paths, so relative ./** patterns never match).
+  # Substitute __AGENT_DIR__ → //absolute-agent-dir so allow/deny rules match
+  # Claude Code's resolved absolute paths. The `//` prefix is required by
+  # Claude Code's permission path-matcher to denote an absolute filesystem
+  # path (a single `/` is interpreted as relative to the project root).
   python3 - "$DEPLOY_DIR/templates/settings.json" "$adir/.claude/settings.json" "$adir" <<'PY'
-import sys
+import sys, os
 src, dst, agent_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 content = open(src, "r", encoding="utf-8").read()
-content = content.replace("__AGENT_DIR__", agent_dir)
+# Claude Code permission syntax: // prefix marks an absolute filesystem path.
+content = content.replace("__AGENT_DIR__", "/" + agent_dir)
 with open(dst, "w", encoding="utf-8") as f:
     f.write(content)
-import os
 os.chmod(dst, 0o644)
 PY
 
