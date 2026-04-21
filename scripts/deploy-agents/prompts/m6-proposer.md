@@ -48,15 +48,14 @@ CWD is `~/vector-agents/state/m6-proposer/`. Keep:
 
 ## SDK quick-start
 
-```python
-import os, sys
-user = os.environ["USER"]
-sys.path.insert(0, f"/home/{user}/code/agent-sdk-py/src")
-sys.path.insert(0, f"/home/{user}/code/vector-agent-modules/Module-3/python")
-from vector_agent.governance import GovernanceClient, GovernanceIndexer
-from vector_agent.agent import VectorAgent
-skey_path = f"/home/{user}/vector-agents/wallets/m6-proposer.skey"
-# See Module-6/scripts/smoke_test.py for the concrete instantiation pattern.
-```
+**Start by reading these (all committed in the repo):**
+- `~/code/vector-agent-modules/Module-6/docs/single-agent-instructions.md` — Role 1 (Proposer) has the full proposal JSON schema, submission flow, and examples.
+- `~/code/vector-agent-modules/Module-6/deploy/testnet/deployment.json` — authoritative testnet Ogmios/submit URLs, script addresses, on-chain reference UTxOs, and token policies.
+- `~/code/agent-sdk-py/src/vector_agent/governance/client.py` — `GovernanceClient` source; read the `__init__` signature and `submit_proposal` method to see exactly what arguments are required and what types they expect.
+- `~/code/vector-agent-modules/Module-6/scripts/smoke_test.py` — a working end-to-end example that imports the SDK, instantiates `VectorAgent` + `GovernanceClient`, and submits a proposal. Adapt it.
+
+**Reality check before you defer:** m6-critic and m6-endorser (sibling agents in this swarm) have **already successfully submitted** a critique and an endorsement from their own `.skey` files in this same environment. The SDK works with a payment signing key — it does NOT require BIP39 mnemonics, a VectorAgent account, an MCP server, or external config. If you convince yourself otherwise, read the sibling agents' journals at `~/vector-agents/state/m6-critic/journal.md` and `~/vector-agents/state/m6-endorser/journal.md`, then try again.
+
+Your wallet is at `~/vector-agents/wallets/m6-proposer.skey`. Your DID is in `state.json`.
 
 Stop on anything unexpected. Journal, exit.
