@@ -23,6 +23,24 @@ ROLE="${1:-}"
 [[ -n "$ROLE" ]] || { echo "usage: $(basename "$0") <role>" >&2; exit 2; }
 [[ "$ROLE" =~ ^m[1-9]-[a-z]+$ ]] || { echo "invalid role: $ROLE" >&2; exit 2; }
 
+# ── Per-role model selection ─────────────────────────────────────────────
+# Default model is Haiku (cheap, fast). Roles that need robust error
+# recovery or on-chain branch decisions get Sonnet — Haiku tends to invent
+# "blockers" and never acknowledge successful submissions, burning stake
+# silently. See MODEL_OVERRIDES below.
+DEFAULT_MODEL="claude-haiku-4-5"
+case "$ROLE" in
+  # m6-proposer: Haiku hallucinated "cannot submit" while MCP was actually
+  # broadcasting; Sonnet correctly reconciled prior submissions and did
+  # on-chain-error-driven fallback (ParameterChange → GeneralSuggestion).
+  m6-proposer) MODEL="claude-sonnet-4-6" ;;
+  *)           MODEL="$DEFAULT_MODEL"    ;;
+esac
+
+# Environment override wins, for quick A/B testing without committing:
+#   MODEL=claude-sonnet-4-6 ~/vector-agents/run.sh m6-critic
+MODEL="${MODEL_OVERRIDE:-$MODEL}"
+
 BASE="$HOME/vector-agents"
 PROMPT="$BASE/prompts/$ROLE.md"
 STATE_DIR="$BASE/state/$ROLE"
@@ -35,7 +53,7 @@ export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 
 cd "$STATE_DIR"
 {
-  printf '\n=== %s START %s (pid=%d) ===\n' "$(date -Iseconds)" "$ROLE" "$$"
+  printf '\n=== %s START %s (pid=%d, model=%s) ===\n' "$(date -Iseconds)" "$ROLE" "$$" "$MODEL"
 } >>"$LOG"
 
 rc=0
@@ -68,7 +86,7 @@ if ! timeout --signal=TERM --kill-after=15s 600s \
         --add-dir "$HOME/code/agent-sdk-py" \
         --add-dir "$HOME/code/vector-ai-agents" \
         --dangerously-skip-permissions \
-        --model claude-haiku-4-5 \
+        --model "$MODEL" \
       >>"$LOG" 2>&1
 then
   rc=$?
