@@ -4,7 +4,10 @@
 #   run.sh m3-staker
 #
 # Minimalism on purpose:
-#   - No permission sandbox beyond --permission-mode acceptEdits
+#   - --permission-mode bypassPermissions: the agent can read/write/bash freely.
+#     Threat model: one machine, one unix user, test funds; blast radius of a
+#     rogue agent is its own ~100 AP3X. `acceptEdits` would auto-deny Bash in
+#     headless mode and the agent would no-op.
 #   - No flock (cron stagger handles it; if a run overshoots, next run just
 #     queues and the 12h cadence absorbs it)
 #   - 10-minute hard ceiling so a stuck run can't chew through the day
@@ -34,7 +37,7 @@ cd "$STATE_DIR"
 rc=0
 if ! timeout --signal=TERM --kill-after=15s 600s \
       claude -p "$(cat "$PROMPT")" \
-        --permission-mode acceptEdits \
+        --permission-mode bypassPermissions \
         --model sonnet \
       >>"$LOG" 2>&1
 then
