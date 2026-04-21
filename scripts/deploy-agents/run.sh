@@ -40,10 +40,6 @@ cd "$STATE_DIR"
 
 rc=0
 # Why each flag matters (learned from quota-burn incident):
-#   --bare  skips CLAUDE.md auto-discovery, plugin sync, auto-memory, hooks.
-#           Vector-agent-modules has ~50 CLAUDE.md files; without --bare each
-#           run loads them all. Also prevents the /fewer-permission-prompts
-#           skill from being available (so the agent can't fall into it).
 #   --add-dir extends the session sandbox. Without this, the agent can only
 #           read from CWD and any attempt to read the SDK, wallet file, or
 #           master wallet gets denied — the agent then burns tokens trying
@@ -51,17 +47,25 @@ rc=0
 #   --dangerously-skip-permissions is stronger than bypassPermissions; it
 #           eliminates every permission check, which matches our threat
 #           model (one machine, one user, test funds) and prevents the agent
-#           from entering permission-debug loops.
+#           from entering permission-debug loops (the main quota burner
+#           observed in the first smoke tests — the agent would invoke
+#           /fewer-permission-prompts skill recursively).
+#
+# Note: we used to also pass --bare to skip CLAUDE.md auto-discovery and
+# plugin sync, but --bare disables OAuth auth ("OAuth and keychain are never
+# read"), which breaks our Pro-subscription login. Since the agent's CWD
+# (~/vector-agents/state/<role>/) has no CLAUDE.md in its ancestry, auto-
+# discovery doesn't pull in the repo's CLAUDE.md files anyway. Plugin sync
+# still runs but that's a small fixed cost.
 if ! timeout --signal=TERM --kill-after=15s 600s \
       claude -p "$(cat "$PROMPT")" \
-        --bare \
         --add-dir "$HOME/vector-agents/wallets" \
         --add-dir "$HOME/vector-agents/master" \
         --add-dir "$HOME/code/vector-agent-modules" \
         --add-dir "$HOME/code/agent-sdk-py" \
         --add-dir "$HOME/code/vector-ai-agents" \
         --dangerously-skip-permissions \
-        --model sonnet \
+        --model claude-haiku-4-5 \
       >>"$LOG" 2>&1
 then
   rc=$?
