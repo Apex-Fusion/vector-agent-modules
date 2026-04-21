@@ -28,7 +28,7 @@ CWD is `~/vector-agents/state/m6-proposer/`. Keep:
 2. **Reconcile.** landed → update; >2h pending → discard; else wait.
 
 3. **Decide ONE action:**
-   a. **Bootstrap** — if no DID: register in Agent Registry (same pattern as Module-3 smoke_test), stop.
+   a. **Bootstrap** — if no DID: register in Agent Registry using the self-signing pattern at `~/code/vector-agent-modules/Module-3/scripts/smoke_test_ogmios.py:register_agent` (copy it verbatim and adapt; same registry contract for all modules). Broadcast the tx, record tx_hash + did_hex in `state.json.pending_tx`, stop.
    b. **Handle resolved proposals** — if any entry in `active_proposals` is now Adopted/Rejected/Expired on chain: record outcome + reward, remove from list.
    c. **Submit new proposal** — only if ALL of:
       - `len(active_proposals) < 3`

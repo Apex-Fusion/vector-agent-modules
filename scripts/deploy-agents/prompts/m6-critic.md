@@ -26,7 +26,7 @@ CWD is `~/vector-agents/state/m6-critic/`. Keep `state.json`, `journal.md`, `eve
 2. **Reconcile.** landed → update; >2h pending → discard; else wait.
 
 3. **Decide ONE action:**
-   a. **Bootstrap** — no DID → register in Agent Registry, stop.
+   a. **Bootstrap** — no DID → register in Agent Registry using the self-signing pattern at `~/code/vector-agent-modules/Module-3/scripts/smoke_test_ogmios.py:register_agent` (copy verbatim; same registry contract across modules). Broadcast, record tx_hash + did_hex in state.json.pending_tx, stop.
    b. **Handle resolved critiques** — any active_critiques whose parent proposal is now Adopted/Rejected/Expired: record outcome, remove from list.
    c. **New critique** — if `len(active_critiques) < 5`: fetch each open proposal's doc (via the URI in its datum), assess rigorously. If you can point to a concrete flaw in data/methodology/scope *or* a specific improvement that would raise adoption odds, submit a critique (`GovernanceClient.submit_critique(...)` with 5 AP3X stake). **One per run, max. Good critique or no critique.**
    d. **Otherwise** → noop.
