@@ -1,0 +1,69 @@
+# Compose file for co-hosting Module 3's dashboard on a VM that already
+# runs Module 6's Traefik (or any shared Traefik).
+#
+# Differences from docker-compose.yml:
+#   - No Traefik service — an existing Traefik handles routing.
+#   - No port 80 binding — the existing Traefik owns it.
+#   - Dashboard container joins the existing Traefik's network as an
+#     external reference, so Traefik can reach it.
+#
+# No Module 6 changes required. Just point TRAEFIK_NETWORK at the
+# network Module 6's Traefik is already on. Find it with:
+#
+#     docker network ls | grep module
+#
+# (typically something like `module-6_default`)
+#
+# Then deploy:
+#
+#     cp .env.mainnet.example .env
+#     # edit .env: set TRAEFIK_NETWORK=module-6_default (or whatever)
+#     docker compose -f docker-compose.shared-traefik.yml -p module3-mainnet up --build -d
+
+services:
+  indexer:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    command: [
+      "python", "-m", "indexer",
+      "--network", "${NETWORK:?set NETWORK=testnet or mainnet in .env}",
+      "--db", "/data/reputation_index.db",
+      "--interval", "${INDEXER_INTERVAL:-60}"
+    ]
+    working_dir: /app/python
+    environment:
+      - PYTHONPATH=/app/python
+    volumes:
+      - indexer-data:/data
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    depends_on:
+      - indexer
+    environment:
+      - DEPLOYMENT_NETWORK=${NETWORK:?set NETWORK=testnet or mainnet in .env}
+      - INDEXER_DB=/data/reputation_index.db
+      - MODULE3_ROOT=/app
+    volumes:
+      - indexer-data:/data
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:?set TRAEFIK_NETWORK in .env to the network Module 6 Traefik is on}"
+      - "traefik.http.routers.module3-dashboard.rule=Host(`${DASHBOARD_HOST:?set DASHBOARD_HOST in .env}`)"
+      - "traefik.http.routers.module3-dashboard.entrypoints=web"
+      - "traefik.http.services.module3-dashboard.loadbalancer.server.port=8000"
+    restart: unless-stopped
+
+volumes:
+  indexer-data:
+
+networks:
+  traefik:
+    name: ${TRAEFIK_NETWORK:?set TRAEFIK_NETWORK in .env to the network Module 6 Traefik is on}
+    external: true

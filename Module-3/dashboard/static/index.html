@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Module 3 — Reputation Staking</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Reputation Staking</h1>
+      <span class="network-badge" id="network-badge">—</span>
+    </div>
+    <div class="controls">
+      <span id="status" class="status">Connecting...</span>
+      <button onclick="refresh()">Refresh</button>
+    </div>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="leaderboard">Leaderboard</div>
+    <div class="tab" data-tab="challenges">Challenges</div>
+    <div class="tab" data-tab="sybil">Sybil Detection</div>
+    <div class="tab" data-tab="stats">Stats</div>
+  </div>
+
+  <div class="content">
+    <!-- Leaderboard Tab -->
+    <div id="tab-leaderboard" class="tab-panel active">
+      <div class="filter-bar">
+        <select id="filter-tier" onchange="loadLeaderboard()">
+          <option value="">All tiers</option>
+          <option value="elite">Elite</option>
+          <option value="trusted">Trusted &amp; above</option>
+          <option value="established">Established &amp; above</option>
+          <option value="novice">Novice &amp; above</option>
+        </select>
+        <input type="text" id="filter-capability" placeholder="Filter by capability (e.g. code_review)" oninput="debouncedLeaderboard()">
+        <input type="text" id="filter-search" placeholder="Search agent DID..." oninput="renderLeaderboard()">
+      </div>
+      <div id="leaderboard-content" class="loading">Loading leaderboard...</div>
+    </div>
+
+    <!-- Challenges Tab -->
+    <div id="tab-challenges" class="tab-panel">
+      <div class="filter-bar">
+        <select id="challenge-state-filter" onchange="renderChallenges()">
+          <option value="">All states</option>
+          <option value="Open">Open</option>
+          <option value="Escalated">Escalated</option>
+          <option value="Resolved">Resolved</option>
+        </select>
+      </div>
+      <div id="challenges-content" class="loading">Loading challenges...</div>
+    </div>
+
+    <!-- Sybil Tab -->
+    <div id="tab-sybil" class="tab-panel">
+      <div class="explainer">
+        <div class="explainer-title">About sybil detection</div>
+        <div class="explainer-body">
+          The indexer flags suspicious endorsement patterns: cycles
+          (A &rarr; B &rarr; C &rarr; A), mutual endorsements, and
+          dense clusters. Severity is 0.0–1.0. These flags are advisory
+          &mdash; the chain itself doesn't enforce them.
+        </div>
+      </div>
+      <div id="sybil-content" class="loading">Loading sybil flags...</div>
+    </div>
+
+    <!-- Stats Tab -->
+    <div id="tab-stats" class="tab-panel">
+      <div id="stats-content" class="loading">Loading stats...</div>
+    </div>
+  </div>
+
+  <!-- Agent Detail Modal -->
+  <div id="modal-overlay" class="modal-overlay">
+    <div class="modal">
+      <h2>
+        <span id="modal-title">Agent</span>
+        <button class="close" onclick="closeModal()">&times;</button>
+      </h2>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

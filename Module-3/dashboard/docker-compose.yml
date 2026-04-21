@@ -1,0 +1,54 @@
+services:
+  traefik:
+    image: traefik:v3.2
+    environment:
+      - DOCKER_API_VERSION=1.45
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--accesslog=true"
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+
+  indexer:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    command: [
+      "python", "-m", "indexer",
+      "--network", "${NETWORK:?set NETWORK=testnet or mainnet in .env}",
+      "--db", "/data/reputation_index.db",
+      "--interval", "${INDEXER_INTERVAL:-60}"
+    ]
+    working_dir: /app/python
+    environment:
+      - PYTHONPATH=/app/python
+    volumes:
+      - indexer-data:/data
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    depends_on:
+      - indexer
+    environment:
+      - DEPLOYMENT_NETWORK=${NETWORK:?set NETWORK=testnet or mainnet in .env}
+      - INDEXER_DB=/data/reputation_index.db
+      - MODULE3_ROOT=/app
+    volumes:
+      - indexer-data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.module3-dashboard.rule=Host(`${DASHBOARD_HOST:?set DASHBOARD_HOST in .env}`)"
+      - "traefik.http.routers.module3-dashboard.entrypoints=web"
+      - "traefik.http.services.module3-dashboard.loadbalancer.server.port=8000"
+    restart: unless-stopped
+
+volumes:
+  indexer-data:
