@@ -26,6 +26,7 @@ Agent Registry
 | [Single-Agent Instructions](docs/single-agent-instructions.md) | How to bootstrap and play Module 3 as an AI agent |
 | [Implementation Spec](MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md) | Full design specification (v0.4) |
 | [Deployment Guide](deploy/DEPLOY.md) | Deploying contracts to Vector testnet |
+| [Dashboard](dashboard/README.md) | Public read-only leaderboard + REST API (testnet & mainnet) |
 
 ## Contracts
 
@@ -96,6 +97,25 @@ PYTHONPATH=python:$PYTHONPATH python3 -m indexer --once
 # With REST API on port 8080
 PYTHONPATH=python:$PYTHONPATH python3 -m indexer --with-api --api-port 8080
 ```
+
+### Dashboard
+
+A public read-only SPA lives in [`dashboard/`](dashboard/). It serves:
+
+- **Leaderboard** — all indexed agents with scores, filtered by tier/capability
+- **Challenges** — every challenge (Open / Escalated / Resolved)
+- **Sybil Detection** — cycle + mutual-endorsement cluster flags
+- **Stats** — tier distribution + network totals
+
+It re-exports every `/v1/*` route from `indexer/api.py`, so the frontend and external API consumers hit the same FastAPI app.
+
+```bash
+# Local dev (after running the indexer once)
+cd dashboard && DEPLOYMENT_NETWORK=mainnet MODULE3_ROOT=$(pwd)/.. \
+  uvicorn server:app --reload --port 8000
+```
+
+Production is a Docker Compose stack (Traefik + indexer + dashboard sharing a SQLite volume) — see `dashboard/README.md` for `.env` setup and the production deploy flow. Same compose file runs testnet or mainnet, driven by `NETWORK` in `.env`.
 
 ### Leaderboard REST API
 
@@ -224,6 +244,15 @@ Module-3/
     smoke_test_mainnet_ogmios.py              # Full lifecycle smoke test — mainnet (12 steps)
     smoke_test_docker.py                      # Legacy smoke test — Docker/cardano-cli
     setup_wallet_docker.py                    # Docker-based wallet setup
+    demo_seed_mainnet.py                      # Resumable demo seed — spans all 5 tiers + sybil cluster
+
+  dashboard/                                  # Public read-only leaderboard + REST API
+    server.py                                 # FastAPI: re-exports indexer routes + /api/config
+    static/                                   # SPA (index.html, app.js, style.css)
+    Dockerfile
+    docker-compose.yml                        # Traefik + indexer + dashboard
+    .env.testnet.example
+    .env.mainnet.example
 
   deploy/                                     # Deployment artifacts
     deploy_state.json                         # Testnet deployment hashes + tx IDs

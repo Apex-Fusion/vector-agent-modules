@@ -775,7 +775,7 @@ class ReputationStakingClient:
         hbonus_datum = HistoryBonusDatum(
             agent_did=bytes.fromhex(target_did),
             source=HistoryBonusSourceChallengeWon(),
-            bonus_points=0,
+            bonus_points=challenge_amount,
             source_ref=OutputReference(
                 transaction_id=bytes.fromhex(resolved_tx_hash),
                 output_index=resolved_tx_idx,
@@ -1059,7 +1059,7 @@ class ReputationStakingClient:
         hbonus_datum = HistoryBonusDatum(
             agent_did=bytes.fromhex(challenger_did),
             source=HistoryBonusSourceChallengeWon(),
-            bonus_points=0,
+            bonus_points=challenge_amount,
             source_ref=OutputReference(
                 transaction_id=bytes.fromhex(resolved_tx_hash),
                 output_index=resolved_tx_idx,

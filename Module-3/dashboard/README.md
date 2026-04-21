@@ -10,17 +10,19 @@ challenges, sybil-detection flags, and aggregate network stats.
 cd Module-3
 
 # 1. Populate the SQLite index (one-shot or long-running)
-PYTHONPATH=python python -m indexer --network testnet --once \
+#    --network mainnet hits Vector mainnet; omit or pass --network testnet for testnet
+PYTHONPATH=python python -m indexer --network mainnet --once \
     --db dashboard/reputation_index.db
 
 # 2. Serve the dashboard (static SPA + REST API on the same port)
 cd dashboard
 pip install -r requirements.txt
-INDEXER_DB=$(pwd)/reputation_index.db \
+DEPLOYMENT_NETWORK=mainnet \
   MODULE3_ROOT=$(pwd)/.. \
-  DEPLOYMENT_NETWORK=testnet \
   uvicorn server:app --reload --port 8000
 ```
+
+`INDEXER_DB` defaults to `reputation_index.db` in the dashboard working directory — no env var needed if you indexed to that path. Override with `INDEXER_DB=/abs/path/to.db` if you keep separate per-network files.
 
 Open <http://localhost:8000>.
 
@@ -93,6 +95,17 @@ Note: both stacks bind Traefik to port 80, so same-host co-hosting only
 works if you drop one of the Traefik services and share a single
 reverse proxy.
 
+### Mainnet deployment checklist
+
+- [x] Contracts deployed — hashes in `deploy/mainnet/deploy_state.json`
+- [x] Indexer runs clean on Vector mainnet (`--network mainnet`)
+- [x] `/api/config`, `/v1/reputation/*`, `/v1/tools/*`, `/health` all live
+- [x] Sybil detection (cycles + clusters) wired into the indexer loop
+- [ ] DNS A record for `DASHBOARD_HOST` pointed at the VM
+- [ ] VM has Docker + docker-compose installed, ports 80 reachable
+- [ ] Optional: Traefik Let's Encrypt resolver + `entrypoints.websecure` for HTTPS (the shipped compose is HTTP-only)
+- [ ] Optional: off-host backups for the `indexer-data` volume (SQLite is rebuildable from on-chain, so this is convenience not durability)
+
 ### `.env` variables
 
 | Variable           | Example (testnet)                                  | Description |
@@ -121,3 +134,29 @@ dashboard/
 The dashboard server re-exports every route from `indexer/api.py`
 (`/health`, `/v1/reputation/*`, `/v1/tools/*`), so the frontend talks to
 the same FastAPI app as external API consumers.
+
+## Contract addresses (driven by `/api/config`)
+
+These come from `deploy/<network>/deploy_state.json` at server start and are surfaced to the frontend for explorer links.
+
+**Mainnet:**
+```
+reputation_validator:   5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093
+endorsement_validator:  77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf
+refs_token_policy:      09dce01a3c2f2fddeda34a547bb4a5ef9f156feae6c4f45d6d74af84
+reputation_address:     addr1w9gk3cv8rn7mre2urrhpwwkteh8qjgzy5j9u9c3l8w34pyc76uluq
+endorsement_address:    addr1w9m3j6ld07uy2asssqxvwfqu73ykuqxhjqw7jpulkqera0cjm7mmz
+Ogmios:                 https://ogmios.vector.mainnet.apexfusion.org
+Explorer:               https://explorer.vector.mainnet.apexfusion.org
+```
+
+**Testnet:**
+```
+reputation_validator:   7e0d53b6797cd7707eb923b0ab044d4e03ef54cf115a6c14fadfb38e
+endorsement_validator:  715726f3670743b145b92d859cc5025128a99de88cd5ac42120258b4
+refs_token_policy:      b07ad1a1244a388d54463fce3c68aa8d4ddc5a3297159d20590d574f
+Ogmios:                 https://ogmios.vector.testnet.apexfusion.org
+Explorer:               https://explorer.vector.testnet.apexfusion.org
+```
+
+Shared (both networks): `agent_registry` `be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`, `params_holder` `f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867`.
