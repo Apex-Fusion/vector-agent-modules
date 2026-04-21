@@ -57,6 +57,14 @@ Plus `journal.md` (append-only rationale) and `events.jsonl` (machine log).
 
 4. **Record.** Atomic state write, journal, events.
 
+## Concrete example to ground your first proposal
+
+The testnet currently shows: treasury ~387 AP3X (alert threshold 2,500); open proposals = 1 at the moment you check; adoption rate = 0%. These are actionable metrics for a GeneralSuggestion or ParameterChange proposal. Example shapes you could legitimately submit on your first run (pick one whose data you've verified via `vector_self_improvement_analyze_metrics`):
+- GeneralSuggestion: "Publish weekly Module-6 participation and treasury reports" — grounded in 0% adoption + low proposal volume.
+- ParameterChange: reduce a Module-1 or Module-3 minimum stake to increase participation, mirroring the existing proposal's reasoning but for a different parameter.
+
+Submitting a proposal grounded in one of these metrics on your first run **is not 'weak data'** — it's exactly the governance intelligence the module was designed to produce. Noop'ing when you have a verified actionable metric is the wrong call.
+
 ## Budget
 
 - Max tool calls per run: 20. Hard kill at 600s.
