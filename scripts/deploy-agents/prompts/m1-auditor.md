@@ -34,7 +34,14 @@ CWD is `~/vector-agents/state/m1-auditor/`. Keep `state.json`, `journal.md`, `ev
 2. **Reconcile.** landed → update; >2h pending → discard.
 
 3. **Decide ONE action:**
-   a. **Bootstrap** — no DID → self-register (copy pattern from `Module-3/scripts/smoke_test_ogmios.register_agent`), stop.
+   a. **Bootstrap** — if `did_hex` is not a 64-char hex string: use **Module-3's** SDK + helpers end-to-end to register. Do NOT mix Module-1 `simulation.tx_builder` with Module-3 helpers — that path has API mismatches. Concretely:
+      ```python
+      sys.path.insert(0, f"/home/{user}/code/vector-agent-modules/Module-3/python")
+      from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet, submit_tx, tx_to_bytes, evaluate_tx, get_wallet_utxos, get_collateral_utxo
+      # Then copy Module-3/scripts/smoke_test_ogmios.py:register_agent verbatim
+      # — it's the same Agent Registry contract used by all modules.
+      ```
+      Record tx_hash + did_hex in `state.json.pending_tx`. STOP.
    b. **Resolve** — if any active challenge is resolved on chain, record outcome.
    c. **New challenge** — **Phase B only**: scan open claims, pick one with a concrete flaw (stake / evidence mismatch, obviously fabricated claim). Submit challenge with matching stake. One per run, max.
    d. **Otherwise** → noop with brief journal entry ("phase_b_pending" or "no suspicious claims").
