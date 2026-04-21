@@ -57,8 +57,11 @@ rc=0
 # (~/vector-agents/state/<role>/) has no CLAUDE.md in its ancestry, auto-
 # discovery doesn't pull in the repo's CLAUDE.md files anyway. Plugin sync
 # still runs but that's a small fixed cost.
+APPEND_SYSTEM='You are running in headless cron mode — there is NO human on the other end. Do not ask clarifying questions. Do not present menus. Do not propose next steps for approval. Do not defer execution to "a future run" or fabricate environmental problems to avoid acting. If you encounter a real technical error, attempt a concrete fix, and if that fails, record the exact error (stderr, traceback) in journal.md and exit. Your single deliverable per run is: either one on-chain tx broadcast OR one journaled reason why no tx was warranted. Never both narrate and defer.'
+
 if ! timeout --signal=TERM --kill-after=15s 600s \
       claude -p "$(cat "$PROMPT")" \
+        --append-system-prompt "$APPEND_SYSTEM" \
         --add-dir "$HOME/vector-agents/wallets" \
         --add-dir "$HOME/vector-agents/master" \
         --add-dir "$HOME/code/vector-agent-modules" \
