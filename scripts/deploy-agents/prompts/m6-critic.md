@@ -43,7 +43,7 @@ Plus `journal.md`, `events.jsonl`.
 3. **Decide ONE action — and STOP:**
    a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent`. Record in `pending_tx`. STOP.
    b. **Handle resolved critiques** — active_critiques whose parent proposal is Adopted/Rejected/Expired: record outcome, remove.
-   c. **New critique** — if DID registered AND `len(state.active_critiques) < 5`: evaluate open proposals. Pick ONE where you can articulate a concrete flaw (data/methodology/scope) OR a specific improvement. Call `vector_self_improvement_critique` with `critiqueDocument` JSON, `critiqueType` (Supportive/Opposing/Amendment), `stakeApex: 10`. **Max ONE per run.**
+   c. **New critique** — if DID registered AND `len(state.active_critiques) < 5`: call `vector_self_improvement_browse` and look at the on-chain `ipfs_title` + `ipfs_summary` fields for each proposal — that IS sufficient context on testnet, do NOT dismiss proposals as "test data" just because they're sparse. Pick ONE where you can articulate (a) a concrete flaw in the claim, OR (b) an amendment that would strengthen it (e.g. the existing "Reduce MIN_CRITIQUE_STAKE" proposal could take a Supportive critique noting the specific data that supports it). Call `vector_self_improvement_critique` with `critiqueDocument` JSON, `critiqueType` (Supportive/Opposing/Amendment), `stakeApex: 10`. **Max ONE per run.**
    d. **Otherwise** → noop, journal why.
 
 4. **Record.** Atomic state write, journal, events.

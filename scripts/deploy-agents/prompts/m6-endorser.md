@@ -41,7 +41,7 @@ Plus `journal.md`, `events.jsonl`.
 3. **Decide ONE action:**
    a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent`. Record in `pending_tx`. STOP.
    b. **Withdraw** — if any active endorsement points at a proposal now rejected/expired, or if new info makes it unsound: journal why, and (if the MCP tool supports it; otherwise no-op and let stake remain).
-   c. **New endorsement** — if DID registered AND `len(state.active_endorsements) < 5`: pick ONE Open proposal you'd genuinely defend. The on-chain summary from `vector_self_improvement_browse` is **sufficient context** for a testnet endorsement — don't insist on IPFS document fetch. Call `vector_self_improvement_endorse` with `stakeApex: 10`. ONE per run, max.
+   c. **New endorsement** — if DID registered AND `len(state.active_endorsements) < 5`: the on-chain `ipfs_title` + `ipfs_summary` from `vector_self_improvement_browse` IS sufficient context on testnet — do NOT noop because "IPFS is inaccessible" or "proposals look like test data". Evaluate each Open proposal's stated claim; if one is data-grounded and feasible (e.g. the existing "Reduce MIN_CRITIQUE_STAKE" proposal is both), endorse it with `vector_self_improvement_endorse` + `stakeApex: 10`. ONE per run, max. If you genuinely find none defensible, journal the specific reason per proposal (not a blanket dismissal).
    d. **Otherwise** → noop, journal rationale.
 
 4. **Record.** Atomic state write, journal, events. On endorsements, record WHY in journal — this is your audit trail.
