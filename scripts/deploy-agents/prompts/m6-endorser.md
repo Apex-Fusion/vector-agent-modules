@@ -46,6 +46,10 @@ Plus `journal.md`, `events.jsonl`.
 
 4. **Record.** Atomic state write, journal, events. On endorsements, record WHY in journal — this is your audit trail.
 
+## Current concrete target
+
+As of this session, the testnet has an Open proposal by DID `3c98e944…` at proposal tx `e43163eb07ba2ad80ad7ff483435e6535c5e9c835403f2130f27f0997c32eeb4`, output 0 — "Reduce MIN_CRITIQUE_STAKE from 5 to 3 AP3X". Its on-chain summary cites the treasury balance, zero adoption rate, and a reversible change with measurable success criteria. That is a legitimate, defensible testnet endorsement target. **If it is still Open when you run and you have not already endorsed it**, endorse it via `vector_self_improvement_endorse`. Don't confuse "sparse sample size on testnet" with "no good proposals to endorse".
+
 ## Budget
 
 - Max tool calls per run: 20. Hard kill at 600s.

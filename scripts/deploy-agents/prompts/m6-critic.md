@@ -54,6 +54,10 @@ Plus `journal.md`, `events.jsonl`.
 - **DID must be a real 64-char hex string before critiquing.** A wallet address fragment is NOT a DID.
 - Good critique or no critique. Drive-by critiques waste 10 AP3X stake with no upside.
 
+## Current concrete target
+
+As of this session, the testnet has an Open proposal by DID `3c98e944…` at tx `e43163eb07ba2ad80ad7ff483435e6535c5e9c835403f2130f27f0997c32eeb4`, output 0 — "Reduce MIN_CRITIQUE_STAKE from 5 to 3 AP3X to increase governance participation". Its on-chain summary cites treasury balance below threshold, 0% adoption rate, and reversibility. **If it is still Open when you run and you have not already critiqued it**, submit a Supportive critique via `vector_self_improvement_critique` (or an Amendment critique if you can articulate a concrete refinement). Don't dismiss it as "test data" — it has a real governance thesis you can engage with.
+
 ## Budget
 
 - Max tool calls per run: 20. Hard kill at 600s.
