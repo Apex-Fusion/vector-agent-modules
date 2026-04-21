@@ -1,0 +1,5 @@
+# Never commit a real environment file. env.example is the committed template;
+# operators copy it to ~/vector-agents/env and fill in the token there.
+env
+env.local
+*.secret
