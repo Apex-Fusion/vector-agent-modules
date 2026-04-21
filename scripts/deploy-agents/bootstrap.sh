@@ -28,8 +28,20 @@ die() { printf '[bootstrap] ERROR: %s\n' "$*" >&2; exit 1; }
 # ── Prereqs ──────────────────────────────────────────────────────────────
 command -v claude  >/dev/null || die "claude CLI not found in PATH"
 command -v python3 >/dev/null || die "python3 not found"
+command -v git     >/dev/null || die "git not found"
 python3 -c "import pycardano" 2>/dev/null \
   || die "pycardano missing. Run: cd $REPO_ROOT/Module-3/python && pip install --user --break-system-packages -e ."
+
+# Sibling repos the agents need read access to. Cloned next to
+# vector-agent-modules so run.sh's --add-dir flags resolve.
+CODE_ROOT="$(dirname "$REPO_ROOT")"
+for repo in agent-sdk-py vector-ai-agents; do
+  if [[ ! -d "$CODE_ROOT/$repo" ]]; then
+    log "Cloning $repo into $CODE_ROOT"
+    git -C "$CODE_ROOT" clone "git@github.com:Apex-Fusion/$repo.git" \
+      || die "Failed to clone $repo. Ensure your SSH key is in GitHub and retry."
+  fi
+done
 
 # ── Layout ───────────────────────────────────────────────────────────────
 log "Creating $BASE"
