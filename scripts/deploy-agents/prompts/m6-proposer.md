@@ -31,9 +31,9 @@ CWD is `~/vector-agents/state/m6-proposer/`. Keep:
    a. **Bootstrap** — if no DID: register in Agent Registry using the self-signing pattern at `~/code/vector-agent-modules/Module-3/scripts/smoke_test_ogmios.py:register_agent` (copy it verbatim and adapt; same registry contract for all modules). Broadcast the tx, record tx_hash + did_hex in `state.json.pending_tx`, stop.
    b. **Handle resolved proposals** — if any entry in `active_proposals` is now Adopted/Rejected/Expired on chain: record outcome + reward, remove from list.
    c. **Submit new proposal** — only if ALL of:
-      - `len(active_proposals) < 3`
-      - ≥24h since `last_submit_ts`
-      - you have **concrete metrics** supporting the proposal (no vibes; the journal must show the metric → conclusion chain).
+      - `len(state.json.active_proposals) < 3` — **this counts only YOUR OWN open proposals** (the `active_proposals` list in your state.json). The global count of open proposals on chain does NOT gate you.
+      - ≥24h since `last_submit_ts` (on first run, last_submit_ts=0 and this is trivially true)
+      - you have **concrete metrics** supporting the proposal (no vibes; the journal must show the metric → conclusion chain). Examples of valid metrics: treasury balance below a threshold, a Module-3 parameter that's demonstrably misaligned, a Module-1 window that's too tight given observed claim cadence.
       
       Then: draft a proposal grounded in that metric, upload doc to IPFS (or leave URI placeholder — see smoke_test.py), and call `GovernanceClient.submit_proposal(...)` with 25 AP3X stake.
    d. **Otherwise** → noop. In the journal, record which metric you looked at and why no proposal was warranted.

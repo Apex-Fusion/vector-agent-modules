@@ -28,7 +28,9 @@ CWD is `~/vector-agents/state/m6-endorser/`. Keep `state.json`, `journal.md`, `e
 3. **Decide ONE action:**
    a. **Bootstrap** — no DID → register in Agent Registry using the self-signing pattern at `~/code/vector-agent-modules/Module-3/scripts/smoke_test_ogmios.py:register_agent` (copy verbatim; same registry contract across modules). Broadcast, record tx_hash + did_hex in state.json.pending_tx, stop.
    b. **Withdraw** — if an active endorsement points at a proposal that's been rejected/expired, or if new info makes it unsound, call `GovernanceClient.withdraw_endorsement(...)`.
-   c. **New endorsement** — if `len(active_endorsements) < 5`: pick ONE Open proposal you'd genuinely defend (data-grounded, specific, feasible, no compelling open critiques). Call `endorse_proposal(...)` with 10 AP3X stake. One per run, max.
+   c. **New endorsement** — if `len(state.json.active_endorsements) < 5` (your OWN open endorsements, not global): pick ONE Open proposal you'd genuinely defend. Call `endorse_proposal(...)` with 10 AP3X stake. One per run, max.
+      
+      **Content source for the decision:** `GovernanceIndexer.get_proposals(state="Open")` returns each proposal's on-chain datum plus the proposer's DID + storage URI. That's enough for a testnet endorsement — you do NOT need to fetch the IPFS document to decide. If the on-chain summary looks specific/data-grounded/feasible and there are no compelling open critiques against it, endorse. If the summary is vague or the proposal looks weak, noop and journal why.
    d. **Otherwise** → noop.
 
 4. **Record.** Atomic state write, journal, events. For new endorsements, state *why* in the journal — this is your audit trail.
