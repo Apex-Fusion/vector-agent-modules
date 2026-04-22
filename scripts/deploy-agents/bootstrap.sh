@@ -125,9 +125,13 @@ HOME=$USER_HOME
 PATH=$USER_HOME/.local/bin:$USER_HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 
 # Morning slot
-0  0  * * *  $BASE/run.sh m1-claimer
-20 1  * * *  $BASE/run.sh m1-auditor
-40 2  * * *  $BASE/run.sh m1-juror
+# m1 paused: Phase B tx builders (build_open_challenge / _commit_vote /
+# _reveal_vote / _register_juror / _resolve_jury) don't exist in the repo.
+# On-chain validators are live; Python client is not. Re-enable once a
+# Module1Client is implemented or deploy_and_run_v10.py is recovered.
+# 0  0  * * *  $BASE/run.sh m1-claimer
+# 20 1  * * *  $BASE/run.sh m1-auditor
+# 40 2  * * *  $BASE/run.sh m1-juror
 0  4  * * *  $BASE/run.sh m3-staker
 20 5  * * *  $BASE/run.sh m3-endorser
 40 6  * * *  $BASE/run.sh m3-challenger
@@ -135,10 +139,10 @@ PATH=$USER_HOME/.local/bin:$USER_HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/b
 20 9  * * *  $BASE/run.sh m6-critic
 40 10 * * *  $BASE/run.sh m6-endorser
 
-# Evening slot (+12h)
-0  12 * * *  $BASE/run.sh m1-claimer
-20 13 * * *  $BASE/run.sh m1-auditor
-40 14 * * *  $BASE/run.sh m1-juror
+# Evening slot (+12h) — m1 paused, see above
+# 0  12 * * *  $BASE/run.sh m1-claimer
+# 20 13 * * *  $BASE/run.sh m1-auditor
+# 40 14 * * *  $BASE/run.sh m1-juror
 0  16 * * *  $BASE/run.sh m3-staker
 20 17 * * *  $BASE/run.sh m3-endorser
 40 18 * * *  $BASE/run.sh m3-challenger
