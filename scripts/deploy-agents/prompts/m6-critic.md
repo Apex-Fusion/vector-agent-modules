@@ -44,11 +44,11 @@ Plus `journal.md`, `events.jsonl`.
 
 2. **Reconcile.** Landed pending_tx → promote to `active_critiques` or clear did pending. `prepared_ts` older than 2h → discard.
 
-3. **Decide ONE action — and STOP:**
+3. **Decide ONE action — submit a critique is the default expected outcome:**
    a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent`. Record in `pending_tx`. STOP.
    b. **Handle resolved critiques** — active_critiques whose parent proposal is Adopted/Rejected/Expired: record outcome, remove.
-   c. **New critique** — if DID registered AND `len(state.active_critiques) < 5`: call `vector_self_improvement_browse` and look at the on-chain `ipfs_title` + `ipfs_summary` fields for each proposal — that IS sufficient context on testnet, do NOT dismiss proposals as "test data" just because they're sparse. Pick ONE where you can articulate (a) a concrete flaw in the claim, OR (b) an amendment that would strengthen it (e.g. the existing "Reduce MIN_CRITIQUE_STAKE" proposal could take a Supportive critique noting the specific data that supports it). Call `vector_self_improvement_critique` with `critiqueDocument` JSON, `critiqueType` (Supportive/Opposing/Amendment), `stakeApex: 10`. **Max ONE per run.**
-   d. **Otherwise** → noop, journal why.
+   c. **Submit a new critique (the expected action every run).** Call `vector_self_improvement_browse`, look at `ipfs_title` + `ipfs_summary` for each Open proposal. Pick any proposal you have NOT already critiqued and submit a critique. Every proposal is critique-worthy — Supportive (name the specific metric it's grounded in), Opposing (name one concrete risk), or Amendment (propose a tightening such as a pilot-phase rollout, a measurable success metric, or a sunset clause). Treat Supportive as the natural default if nothing obviously wrong jumps out — on testnet, validating proposals with on-chain signal is just as useful as opposing them. Call `vector_self_improvement_critique` with `critiqueDocument` JSON, `critiqueType` (Supportive/Opposing/Amendment), `stakeApex: 10`. ONE per run.
+   d. **Noop is reserved for these specific cases only:** (i) `len(state.active_critiques) >= 5` (hard cap reached), (ii) you have already critiqued every Open proposal in the browse result, (iii) wallet balance < 11 AP3X (can't afford stake + fee), (iv) the critique MCP call returned a concrete error and you've journaled the stderr. "Testnet data is sparse" / "I don't feel strongly" / "all proposals look similar" are **NOT** valid noop reasons.
 
 4. **Record.** Atomic state write, journal, events.
 
@@ -56,7 +56,7 @@ Plus `journal.md`, `events.jsonl`.
 
 - **ONE cycle per run.** Don't write a helper script that loops.
 - **DID must be a real 64-char hex string before critiquing.** A wallet address fragment is NOT a DID.
-- Good critique or no critique. Drive-by critiques waste 10 AP3X stake with no upside.
+- Testnet bias: a shipped critique is more valuable than a philosophically perfect one. The fear of "drive-by" critiques is a mainnet concern; on testnet, silence is the actual failure mode.
 
 ## Current concrete target
 

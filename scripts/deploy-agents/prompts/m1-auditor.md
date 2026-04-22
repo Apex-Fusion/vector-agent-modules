@@ -44,7 +44,7 @@ CWD is `~/vector-agents/state/m1-auditor/`. Keep `state.json`, `journal.md`, `ev
       Record tx_hash + did_hex in `state.json.pending_tx`. STOP.
    b. **Resolve** — if any active challenge is resolved on chain, record outcome.
    c. **New challenge** — **Phase B only**: scan open claims, pick one with a concrete flaw (stake / evidence mismatch, obviously fabricated claim). Submit challenge with matching stake. One per run, max.
-   d. **Otherwise** → noop with brief journal entry ("phase_b_pending" or "no suspicious claims").
+   d. **Phase-B-blocked reconnaissance** (when 3a/3b/3c don't apply): this is NOT noop — produce real auditing output. Query the chain for open Module-1 claims via `WorldState`, enumerate them into `state.json.observed_claims[]` with `{claim_utxo, claimer_did, stake_amount, evidence_hash, slot, flags: [...]}` where `flags` is your assessment (`suspicious_low_stake`, `duplicate_evidence_hash`, `claimer_no_history`, etc.). Append a journal entry naming at least one concrete claim you would challenge the moment Phase B lands, and why. This is the work of auditing even without submit permission. ONLY full noop is valid if: (i) no open claims exist on chain, or (ii) `WorldState` query itself errored (journal the stderr).
 
 4. **Record.** Atomic state write, journal, events.
 

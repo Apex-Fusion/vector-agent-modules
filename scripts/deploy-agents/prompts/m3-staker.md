@@ -14,7 +14,9 @@ CWD when you run is `~/vector-agents/state/m3-staker/`. Keep three files:
   ```json
   {
     "did_hex": null,
-    "stake": { "utxo_ref": null, "amount_lovelace": 0, "capabilities": [] },
+    "stakes": [
+      // one entry per active stake: { "utxo_ref": "...", "amount_lovelace": ..., "capabilities": [...] }
+    ],
     "pending_tx": null,
     "last_action_slot": 0
   }
@@ -31,10 +33,11 @@ CWD when you run is `~/vector-agents/state/m3-staker/`. Keep three files:
    - If still pending and `prepared_ts` is older than 2 hours → treat it as lost, clear `pending_tx`, journal the reason.
    - Otherwise, stop this run and try again next time.
 
-3. **Decide ONE action** in priority order:
+3. **Decide ONE action — defend or expand your stake:**
    a. **Bootstrap** — if no DID recorded in state.json: register yourself in the Agent Registry (see `smoke_test_ogmios.py:register_agent`), then self-stake 10 AP3X with capabilities `["code_review", "testing"]`.
-   b. **Respond to challenge** — if an on-chain challenge targets your stake, gather evidence and call `ReputationStakingClient.resolve_challenge(...)` with the appropriate outcome.
-   c. **Refresh / no-op** — if your stake is healthy and no challenge is active, record a noop event and exit.
+   b. **Respond to challenge** — if an on-chain challenge targets your stake, gather evidence and call `ReputationStakingClient.resolve_challenge(...)` with the appropriate outcome. This is **non-optional** — a challenge left unanswered is a slashed stake.
+   c. **Add a second stake** — if your primary stake is healthy and you hold ≥20 AP3X free: mint an additional `create_stake` with a DIFFERENT capability set from the first (e.g. `["data_analysis", "research"]` or `["docs", "prompt_engineering"]`). Each stake is independent — having multiple widens your reputation surface and gives endorsers more targets. Up to 3 total stakes.
+   d. **Noop is reserved for these specific cases only:** (i) you already have 3 active stakes, (ii) wallet balance < 11 AP3X (can't afford another stake + fee) AND no challenge is pending, (iii) a create_stake call returned a concrete error and you've journaled the stderr. "Stake is healthy, nothing to do" is **NOT** a valid noop — widen your capability surface instead.
 
 4. **Record.** Before exiting, update `state.json` atomically, append to `journal.md` and `events.jsonl`.
 

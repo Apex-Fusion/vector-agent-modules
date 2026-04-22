@@ -28,11 +28,11 @@ CWD is `~/vector-agents/state/m3-endorser/`. Keep:
 
 2. **Reconcile.** As in m3-staker: landed → update state; pending >2h → discard; else wait.
 
-3. **Decide ONE action:**
+3. **Decide ONE action — endorsing is the default expected outcome:**
    a. **Bootstrap** — if no DID: register in Agent Registry (see `smoke_test_ogmios.register_agent`), then stop.
    b. **Withdraw** — if any endorsement targets an agent whose stake has been slashed or whose reputation collapsed, withdraw it.
-   c. **New endorsement** — if `len(active_endorsements) < 5`: query the chain for candidate stakers (via `reputation_staking` SDK's indexer helpers). Pick ONE with non-trivial history and clean capabilities. Call `ReputationStakingClient.mint_endorsement(endorser_did, target_did, capabilities, stake_amount=5_000_000)`. One new endorsement per run, max.
-   d. **Otherwise** → noop.
+   c. **Submit a new endorsement (the expected action every run).** Query the chain for candidate stakers via the SDK indexer helpers. Of the stakers you have NOT already endorsed, pick ONE with an on-chain stake UTxO and a capability claim you can name. On testnet, any non-self staker with an active stake is a legitimate endorsement target — they posted collateral, they have a DID, they declared capabilities. You do NOT need "non-trivial history" on a network this young. Call `ReputationStakingClient.mint_endorsement(endorser_did, target_did, capabilities, stake_amount=5_000_000)`. ONE per run.
+   d. **Noop is reserved for these specific cases only:** (i) `len(active_endorsements) >= 5` (hard cap reached), (ii) you have already endorsed every non-self active staker on chain, (iii) wallet balance < 6 AP3X (can't afford stake + fee), (iv) the mint_endorsement call returned a concrete error and you've journaled the stderr. "Not enough history yet" / "waiting for proven stakers" are **NOT** valid noop reasons on testnet.
 
 4. **Record.** Atomic write state.json, append journal + events.
 
@@ -40,7 +40,7 @@ CWD is `~/vector-agents/state/m3-endorser/`. Keep:
 
 - Max tool calls: 20. Hard kill at 600s.
 - Max spend per run: 7 AP3X (5 AP3X stake + fees).
-- No drive-by endorsements. If you can't find a target you'd publicly defend, noop.
+- Testnet bias: endorsement signal is what the mechanism produces. Silence produces none. If a target has an on-chain stake + declared capability, that's enough.
 
 ## SDK quick-start
 

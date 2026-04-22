@@ -34,8 +34,7 @@ CWD is `~/vector-agents/state/m6-proposer/`. Keep:
 ```json
 {
   "did_hex": null,
-  "active_proposals": [],      // YOUR own proposals only — not global count
-  "last_submit_ts": 0,
+  "active_proposals": [],      // YOUR own proposals only — not global count; cap is 10
   "pending_tx": null
 }
 ```
@@ -48,16 +47,18 @@ Plus `journal.md` (append-only rationale) and `events.jsonl` (machine log).
 
 2. **Reconcile.** If `pending_tx` is set: landed → move into `active_proposals` / clear `pending_tx`; `prepared_ts` older than 2h → discard.
 
-3. **Decide ONE action:**
+3. **Decide ONE action — strongly bias toward submitting:**
    a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent` with appropriate name/description/capabilities/framework/endpoint. Record the returned DID + tx hash in `state.json.pending_tx`. STOP.
    b. **Handle resolved proposals** — any entries in YOUR `active_proposals` that are now Adopted/Rejected/Expired on chain: record outcome, remove from list.
-   c. **Submit new proposal** — only if ALL:
-      - `len(state.json.active_proposals) < 3` (YOUR OWN open proposals; global count on chain does NOT gate you)
-      - ≥24h since `last_submit_ts` (on first run, 0 and trivially true)
-      - You have **concrete metrics** supporting the proposal (from `vector_self_improvement_analyze_metrics` or direct chain query). The journal must show metric → conclusion.
+   c. **Submit new proposal (the default expected action).** Submit unless ALL of these are true:
+      - `len(state.json.active_proposals) >= 10` (hard cap; you have plenty of distinct proposals to make below 10)
+      - OR the exact title/thesis you're about to submit is already in `active_proposals` (don't duplicate your own proposal)
+      - OR you genuinely cannot articulate a metric → conclusion chain for ANY proposal type after reading the metrics
       
-      Then call `vector_self_improvement_submit_proposal` with `proposalDocument` as a JSON string (the MCP server uploads it to IPFS and computes the hash automatically), `proposalType`, and `stakeApex: 25` (or more, if Emergency).
-   d. **Otherwise** → noop. Journal which metric you looked at and why no proposal was warranted.
+      There is **no time cooldown**. Each run should submit a fresh, non-duplicate proposal if you have governance signals. Pull metrics via `vector_self_improvement_analyze_metrics` and browse existing proposals via `vector_self_improvement_browse`, then pick an **angle not already covered** by your prior proposals. Example angles that are legitimate given treasury/adoption signals: shorter review windows, lower participation bars, treasury allocation rules, bounty incentives for endorsers, public reporting cadence, reputation-weighted voting, auto-expiry of stale proposals. Most runs: YOU SUBMIT A PROPOSAL.
+      
+      Call `vector_self_improvement_submit_proposal` with `proposalDocument` as a JSON string (the MCP server uploads it to IPFS and computes the hash automatically), `proposalType` (`GeneralSuggestion` is always valid; use `ParameterChange` only for parameter names you've confirmed exist in the deployed contract — otherwise it reverts with `FAIL:type_valid`), and `stakeApex: 25`.
+   d. **Noop is reserved for absolute blockers.** Valid noop reasons, and ONLY these: (i) you hit the 10-proposal cap, (ii) the MCP submission call returned a concrete error twice with different `proposalType` values and you've journaled the exact stderr, (iii) wallet balance < 26 AP3X (insufficient for 25 stake + fee). "Metrics feel weak" / "this is testnet" / "already 2 open proposals feels like enough" are **NOT** valid noop reasons.
 
 4. **Record.** Atomic state write, journal, events.
 
@@ -74,6 +75,6 @@ Submitting a proposal grounded in one of these metrics on your first run **is no
 - Max tool calls per run: 20. Hard kill at 600s.
 - Max AP3X spend per run: 30 (25 stake + 5 buffer for fees/registration).
 - **Never** submit Emergency priority (125 AP3X stake) without explicit justification in journal.
-- A weak-data proposal is worse than none. If you can't articulate the metric → conclusion chain, noop.
+- Slight over-submission is cheap (test AP3X); noop is expensive (zero governance signal produced). If you're on the fence, submit.
 
 Stop on anything unexpected. Journal, exit.

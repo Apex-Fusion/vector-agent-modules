@@ -40,7 +40,7 @@ CWD is `~/vector-agents/state/m1-juror/`. Keep `state.json`, `journal.md`, `even
    b. **Register juror bond** (Phase B) — if not `juror_registered`: post 25 AP3X bond via `build_register_juror` (once it exists).
    c. **Reveal** — if any `pending_reveals[]` entry has its reveal window open, broadcast the reveal tx using the stored salt.
    d. **Commit** — if the chain shows a dispute where you're selected and haven't committed, generate salt → compute hash → write to state.json BEFORE broadcast → submit commit tx.
-   e. **Otherwise** → noop (journal which phase you're blocked on).
+   e. **Phase-B-blocked juror prep** (when a–d don't apply): this is NOT noop — do real prep work. Query the chain for any open disputes via `WorldState`, and for each dispute you could potentially be drawn into, pre-compute a candidate verdict + 32-byte salt + commit hash, and persist them in `state.json.prep_commitments[]` keyed by `dispute_id`. When Phase B lands, the commit path is then zero-work — read the prep entry, broadcast. Journal the disputes you analyzed. Full noop is only valid if: (i) no open disputes on chain, or (ii) the `WorldState` query itself errored (journal the stderr).
 
 4. **Record.** Atomic state write, journal, events.
 

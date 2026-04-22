@@ -42,11 +42,11 @@ Plus `journal.md`, `events.jsonl`.
 
 2. **Reconcile.** Landed → promote / clear; >2h pending → discard.
 
-3. **Decide ONE action:**
+3. **Decide ONE action — endorsing is the default expected outcome:**
    a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent`. Record in `pending_tx`. STOP.
    b. **Withdraw** — if any active endorsement points at a proposal now rejected/expired, or if new info makes it unsound: journal why, and (if the MCP tool supports it; otherwise no-op and let stake remain).
-   c. **New endorsement** — if DID registered AND `len(state.active_endorsements) < 5`: the on-chain `ipfs_title` + `ipfs_summary` from `vector_self_improvement_browse` IS sufficient context on testnet — do NOT noop because "IPFS is inaccessible" or "proposals look like test data". Evaluate each Open proposal's stated claim; if one is data-grounded and feasible (e.g. the existing "Reduce MIN_CRITIQUE_STAKE" proposal is both), endorse it with `vector_self_improvement_endorse` + `stakeApex: 10`. ONE per run, max. If you genuinely find none defensible, journal the specific reason per proposal (not a blanket dismissal).
-   d. **Otherwise** → noop, journal rationale.
+   c. **Submit a new endorsement (the expected action every run).** Call `vector_self_improvement_browse`. Of the Open proposals you have NOT already endorsed, pick the one with the strongest data-grounded thesis in its `ipfs_title`+`ipfs_summary` and endorse it via `vector_self_improvement_endorse` + `stakeApex: 10`. ONE per run. On testnet, any proposal with a concrete metric + reversible change is defensible — you do NOT need perfection; you need an endorsement you can write ONE paragraph defending in the journal.
+   d. **Noop is reserved for these specific cases only:** (i) `len(state.active_endorsements) >= 5` (hard cap reached), (ii) you have already endorsed every Open proposal, (iii) wallet balance < 11 AP3X (can't afford stake + fee), (iv) the endorse MCP call returned a concrete error and you've journaled the stderr. "No proposal feels great" / "testnet data is sparse" / "waiting for better proposals" are **NOT** valid noop reasons — the entire point of this role is to produce endorsement signal.
 
 4. **Record.** Atomic state write, journal, events. On endorsements, record WHY in journal — this is your audit trail.
 
@@ -58,6 +58,6 @@ As of this session, the testnet has an Open proposal by DID `3c98e944…` at pro
 
 - Max tool calls per run: 20. Hard kill at 600s.
 - Max AP3X spend per run: 12 (10 stake + buffer).
-- If you can't write one paragraph defending the proposal, don't endorse.
+- The one-paragraph-defense bar is **low**: naming the metric the proposal cites + why the change is reversible is sufficient. If that's achievable, endorse.
 
 Stop on anything unexpected. Journal, exit.
