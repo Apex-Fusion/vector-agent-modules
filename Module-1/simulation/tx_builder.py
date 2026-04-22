@@ -3400,9 +3400,9 @@ def build_register_did(
     agent_datum = cbor2.CBORTag(121, [
         cbor2.CBORTag(121, [agent_vkh_bytes]),
         f"{scenario_name}_{role}".encode("utf-8"),
-        f"sim agent {role}".encode("utf-8"),
+        f"vector agent {role}".encode("utf-8"),
         [],
-        b"Apex-Sim",
+        b"Vector-Agent",
         b"",
         (system_start_unix + current_slot) * 1000,
     ])

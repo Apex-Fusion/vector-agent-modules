@@ -128,7 +128,7 @@ class TestWalletDerivationIndexCorruption:
         """Truncated/unparseable JSON in the index file must be quarantined
         and surface as a clear ``RuntimeError("malformed index file...")``.
 
-        Unified contract (Chuck, 2026-04-16): wrong-shape AND parse-failure
+        Unified contract (2026-04-16): wrong-shape AND parse-failure
         paths both quarantine + raise. No silent recovery for any malformed
         file — auditability over resilience for the index file.
         """
@@ -1033,4 +1033,108 @@ class TestBuildJurorBondReservedKwargs:
         )
         assert "juror_vkh" not in body_after_marker, (
             "juror_vkh is referenced AFTER the reserved-for-future marker."
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 14. Regression: build_register_did AgentDatum hardcoded strings
+#     framework must be b"Vector-Agent"; description must start with
+#     b"vector agent " — guards against reverting the sim-code hygiene rename.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestBuildRegisterDidDatumStrings:
+    """build_register_did must produce an AgentDatum with the renamed
+    on-chain strings: framework=b"Vector-Agent" and description starting
+    with b"vector agent ".  Any revert of the hygiene rename (back to
+    b"Apex-Sim" / "sim agent") will fail this test immediately.
+    """
+
+    def test_agent_datum_framework_and_description(self):
+        """Arrange: stub all I/O so the datum construction runs offline.
+        Act: call build_register_did with a minimal PlutusV3Script.
+        Assert: the cbor2.CBORTag(121, [...]) built as agent_datum has
+                field[2] == b"vector agent <role>" and
+                field[4] == b"Vector-Agent".
+        """
+        import cbor2
+        from pycardano import (
+            PaymentSigningKey,
+            PaymentVerificationKey,
+            PlutusV3Script,
+        )
+        from unittest.mock import MagicMock, patch
+        from simulation import tx_builder as _txb
+
+        skey = PaymentSigningKey.generate()
+        vkey = PaymentVerificationKey.from_signing_key(skey)
+        agent_skey = PaymentSigningKey.generate()
+        agent_vkh = PaymentVerificationKey.from_signing_key(agent_skey).hash()
+
+        # Minimal 28-byte PlutusV3Script placeholder (no real validator needed
+        # because we never submit the TX — we only inspect the datum object).
+        dummy_script = PlutusV3Script(b"\xd8\x79\x81\x40" * 7)
+
+        # Fake UTxO seed so sorted_utxos[0] exists.
+        fake_txid = MagicMock()
+        fake_txid.__bytes__ = lambda self: b"\x00" * 32
+        fake_txid.hex.return_value = "00" * 32
+        fake_utxo = MagicMock()
+        fake_utxo.input.transaction_id = fake_txid
+        fake_utxo.input.index = 0
+
+        ctx = MagicMock()
+        ctx.last_block_slot = 1000
+
+        captured: list = []
+
+        real_cbor_tag = cbor2.CBORTag
+
+        def _spy_cbor_tag(tag, value):
+            obj = real_cbor_tag(tag, value)
+            if (
+                tag == 121
+                and isinstance(value, list)
+                and len(value) == 7
+                and isinstance(value[4], bytes)
+            ):
+                captured.append(obj)
+            return obj
+
+        with (
+            patch.object(_txb, "ensure_collateral", return_value=None),
+            patch.object(_txb, "get_wallet_utxos_no_collateral", return_value=[fake_utxo]),
+            patch("simulation.tx_builder.cbor2.CBORTag", side_effect=_spy_cbor_tag),
+        ):
+            try:
+                _txb.build_register_did(
+                    skey, vkey, "addr1_dummy",
+                    agent_skey, agent_vkh,
+                    dummy_script,
+                    ctx,
+                    scenario_name="hygiene_test",
+                    role="worker",
+                )
+            except Exception:
+                # TX build will fail offline — we only care the datum was built.
+                pass
+
+        assert captured, (
+            "No 7-field cbor2.CBORTag(121, ...) was constructed — "
+            "build_register_did did not reach the agent_datum construction. "
+            "Check stub setup."
+        )
+        datum_fields = captured[0].value
+
+        assert datum_fields[4] == b"Vector-Agent", (
+            f"AgentDatum.framework is {datum_fields[4]!r} — expected b'Vector-Agent'. "
+            "Likely a revert of the hygiene rename."
+        )
+        assert datum_fields[2].startswith(b"vector agent "), (
+            f"AgentDatum.description is {datum_fields[2]!r} — expected to start "
+            "with b'vector agent '. Likely a revert of the hygiene rename."
+        )
+        assert datum_fields[2] == b"vector agent worker", (
+            f"AgentDatum.description is {datum_fields[2]!r} — expected "
+            "b'vector agent worker' for role='worker'."
         )
