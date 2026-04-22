@@ -41,17 +41,29 @@ CWD is `~/vector-agents/state/m3-challenger/`. Keep:
 - Max spend per run: 30 AP3X (25 AP3X stake + fees). 
 - Testnet bias: surfacing the mechanism is the point. A challenge that the target defends successfully is still a useful signal — it created the evidence that previously didn't exist. Silence (noop) produces none.
 
-## SDK quick-start
+## SDK quick-start (correct invocation)
 
 ```python
 import os, sys
 user = os.environ["USER"]
 sys.path.insert(0, f"/home/{user}/code/vector-agent-modules/Module-3/python")
 from reputation_staking import ReputationStakingClient
-from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
+from reputation_staking.ogmios_backend import OgmiosHttpContext
+from pycardano import PaymentSigningKey
+
 ctx = OgmiosHttpContext()
-skey, vkey, addr = load_wallet(f"/home/{user}/vector-agents/wallets/m3-challenger.skey")
-client = ReputationStakingClient.from_deploy_state(skey=skey, vkey=vkey, wallet_addr=addr)
+skey = PaymentSigningKey.load(f"/home/{user}/vector-agents/wallets/m3-challenger.skey")
+DEPLOY = f"/home/{user}/code/vector-agent-modules/Module-3/deploy/deploy_state.json"
+client = ReputationStakingClient.from_deploy_state(DEPLOY, ctx, skey)
+addr = client.wallet_addr
+
+# Enumerate stakes (there is no list_stakes helper — walk the validator address):
+#   for u in ctx.utxos(client.reputation_addr):
+#       parse u.output.datum to extract (staker_did, capabilities, stake_amount)
 ```
+
+The `mint_challenge` signature is `client.mint_challenge(challenger_did, target_did, capability, stake_amount, evidence_hash, evidence_uri)`.
+
+**Python 3.12 works fine.** If you see `AttributeError: module 'inspect' has no attribute 'get_annotations'`, you've made a different mistake (usually passing wrong kwargs to `from_deploy_state`) — do NOT blame the interpreter. The correct call is the one above, positional args only: `(deploy_state_path, context, skey)`. No `vkey=`, no `wallet_addr=` kwargs.
 
 If anything looks off, stop, journal, exit.

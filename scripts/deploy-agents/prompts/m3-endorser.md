@@ -42,17 +42,32 @@ CWD is `~/vector-agents/state/m3-endorser/`. Keep:
 - Max spend per run: 7 AP3X (5 AP3X stake + fees).
 - Testnet bias: endorsement signal is what the mechanism produces. Silence produces none. If a target has an on-chain stake + declared capability, that's enough.
 
-## SDK quick-start
+## SDK quick-start (correct invocation)
 
 ```python
 import os, sys
 user = os.environ["USER"]
 sys.path.insert(0, f"/home/{user}/code/vector-agent-modules/Module-3/python")
 from reputation_staking import ReputationStakingClient
-from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
+from reputation_staking.ogmios_backend import OgmiosHttpContext
+from pycardano import PaymentSigningKey
+
 ctx = OgmiosHttpContext()
-skey, vkey, addr = load_wallet(f"/home/{user}/vector-agents/wallets/m3-endorser.skey")
-client = ReputationStakingClient.from_deploy_state(skey=skey, vkey=vkey, wallet_addr=addr)
+skey = PaymentSigningKey.load(f"/home/{user}/vector-agents/wallets/m3-endorser.skey")
+DEPLOY = f"/home/{user}/code/vector-agent-modules/Module-3/deploy/deploy_state.json"
+client = ReputationStakingClient.from_deploy_state(DEPLOY, ctx, skey)
+addr = client.wallet_addr
+
+# Enumerate stakes to pick an endorsement target:
+#   ctx.utxos(client.reputation_addr) — all UTxOs at the stake validator
+#   parse each datum to extract (staker_did, capabilities, stake_amount)
+# (There is NO list_stakes() helper — walk the validator address directly.)
 ```
+
+The `mint_endorsement` signature is `client.mint_endorsement(endorser_did, target_did, capabilities, stake_amount)`. Python 3.12 works fine. Do NOT pass `skey=/vkey=/wallet_addr=` kwargs — `from_deploy_state` takes positional `(deploy_state_path, context, skey)` only.
+
+## Reconcile against the chain, NOT just against state.json
+
+Before treating a `pending_tx` as "lost", call `client.find_endorsement_utxo(...)` (or walk `ctx.utxos(client.endorsement_addr)` and match on your endorser DID). If the endorsement is on chain, clear `pending_tx` and promote it into `active_endorsements[]`. Do not re-broadcast.
 
 If something looks wrong, stop and journal. Do not broadcast speculative fixes.

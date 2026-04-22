@@ -47,16 +47,29 @@ CWD when you run is `~/vector-agents/state/m3-staker/`. Keep three files:
 - Max on-chain spend per run: 12 AP3X (covers initial stake + fees). Never spend more without a concrete reason written to the journal first.
 - Don't retry transient errors — log and exit. Next run is in 12h.
 
-## SDK quick-start
+## SDK quick-start (correct invocation — previous versions were wrong)
 
 ```python
-import sys
-sys.path.insert(0, "/home/" + __import__("os").environ["USER"] + "/code/vector-agent-modules/Module-3/python")
+import sys, os
+user = os.environ["USER"]
+sys.path.insert(0, f"/home/{user}/code/vector-agent-modules/Module-3/python")
 from reputation_staking import ReputationStakingClient
-from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
+from reputation_staking.ogmios_backend import OgmiosHttpContext
+from pycardano import PaymentSigningKey
+
 ctx = OgmiosHttpContext()
-skey, vkey, addr = load_wallet("/home/" + __import__("os").environ["USER"] + "/vector-agents/wallets/m3-staker.skey")
-client = ReputationStakingClient.from_deploy_state(skey=skey, vkey=vkey, wallet_addr=addr)
+skey = PaymentSigningKey.load(f"/home/{user}/vector-agents/wallets/m3-staker.skey")
+DEPLOY = f"/home/{user}/code/vector-agent-modules/Module-3/deploy/deploy_state.json"
+client = ReputationStakingClient.from_deploy_state(DEPLOY, ctx, skey)
+
+# Your wallet address (derived by the client from skey):
+addr = client.wallet_addr
 ```
+
+The client exposes: `create_stake`, `mint_endorsement`, `mint_challenge`, `resolve_challenge`, `distribute_outcome`, `distribute_falsified_outcome`, `slash_endorsement`, `find_stake_utxo(did)`, `find_endorsement_utxo`, `find_challenge_utxo`. Python 3.12 works fine — if you see an `inspect.get_annotations` or similar error, you've got a different bug, don't blame the interpreter.
+
+## Reconcile against the chain, NOT just against state.json
+
+Before declaring a pending_tx "lost" because it's >2h old: **call `client.find_stake_utxo(did_hex)` first.** If the chain returns a UTxO whose `transaction_id` matches your `pending_tx.tx_hash`, the tx LANDED — clear `pending_tx`, populate/update `stakes[]`, done. Only if the chain shows no stake for your DID AND `pending_tx` is >2h should you treat it as lost. The previous version of this prompt discarded a successful stake this way and wasted 14 AP3X on a redundant seed utxo — don't repeat that.
 
 If anything looks wrong (unexpected balance, conflicting pending state, unknown chain error), **stop, journal why, exit**. Do not try to "fix" by broadcasting more transactions.
