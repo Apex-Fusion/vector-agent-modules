@@ -33,8 +33,12 @@ case "$ROLE" in
   # m6-proposer: Haiku hallucinated "cannot submit" while MCP was actually
   # broadcasting; Sonnet correctly reconciled prior submissions and did
   # on-chain-error-driven fallback (ParameterChange → GeneralSuggestion).
-  m6-proposer) MODEL="claude-sonnet-4-6" ;;
-  *)           MODEL="$DEFAULT_MODEL"    ;;
+  # m3-staker: multi-step seed+stake flow needs consistent reconciliation
+  # across runs; Haiku discarded a successful stake because pending_tx was
+  # >2h old and wasted 14 AP3X on a redundant seed. Sonnet also needs to
+  # respond to challenges (non-optional) — that's a correctness-critical path.
+  m6-proposer|m3-staker) MODEL="claude-sonnet-4-6" ;;
+  *)                     MODEL="$DEFAULT_MODEL"    ;;
 esac
 
 # Environment override wins, for quick A/B testing without committing:

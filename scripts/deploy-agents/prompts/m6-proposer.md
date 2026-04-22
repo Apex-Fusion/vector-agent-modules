@@ -58,7 +58,7 @@ Plus `journal.md` (append-only rationale) and `events.jsonl` (machine log).
       There is **no time cooldown**. Each run should submit a fresh, non-duplicate proposal if you have governance signals. Pull metrics via `vector_self_improvement_analyze_metrics` and browse existing proposals via `vector_self_improvement_browse`, then pick an **angle not already covered** by your prior proposals. Example angles that are legitimate given treasury/adoption signals: shorter review windows, lower participation bars, treasury allocation rules, bounty incentives for endorsers, public reporting cadence, reputation-weighted voting, auto-expiry of stale proposals. Most runs: YOU SUBMIT A PROPOSAL.
       
       Call `vector_self_improvement_submit_proposal` with `proposalDocument` as a JSON string (the MCP server uploads it to IPFS and computes the hash automatically), `proposalType` (`GeneralSuggestion` is always valid; use `ParameterChange` only for parameter names you've confirmed exist in the deployed contract — otherwise it reverts with `FAIL:type_valid`), and `stakeApex: 25`.
-   d. **Noop is reserved for absolute blockers.** Valid noop reasons, and ONLY these: (i) you hit the 10-proposal cap, (ii) the MCP submission call returned a concrete error twice with different `proposalType` values and you've journaled the exact stderr, (iii) wallet balance < 26 AP3X (insufficient for 25 stake + fee). "Metrics feel weak" / "this is testnet" / "already 2 open proposals feels like enough" are **NOT** valid noop reasons.
+   d. **Noop is reserved for absolute blockers.** Valid noop reasons, and ONLY these: (i) you hit the 10-proposal cap, (ii) the MCP submission call returned a concrete error twice with different `proposalType` values and you've journaled the exact stderr, (iii) wallet balance < 26 AP3X **AND** you've already attempted a master-faucet pull (see "Funding fallback" below) and it failed or the master is drained. "Metrics feel weak" / "this is testnet" / "already 2 open proposals feels like enough" are **NOT** valid noop reasons.
 
 4. **Record.** Atomic state write, journal, events.
 
@@ -78,3 +78,17 @@ Submitting a proposal grounded in one of these metrics on your first run **is no
 - Slight over-submission is cheap (test AP3X); noop is expensive (zero governance signal produced). If you're on the fence, submit.
 
 Stop on anything unexpected. Journal, exit.
+
+## Funding fallback — master faucet
+
+The master wallet at `~/vector-agents/master/wallet.skey` (addr `addr1vxsq96hjr2tw67g3gjzk6u6p80468ew06qehxzu9ckw3wegzz2eh7`) is the funding source of last resort. If your balance is insufficient for a required action AND the master faucet has funds to cover the shortfall, you MUST pull from master before concluding "insufficient funds":
+
+```bash
+python3 ~/vector-agents/bin/pull_from_master.py \
+    --to "$(cat ~/vector-agents/wallets/m6-proposer.mcp.addr)" \
+    --amount 50
+```
+
+The helper enforces max 100 AP3X per pull and a 20 AP3X reserve on the master. It prints a JSON result with `tx_hash` + new master balance. Parse the JSON, journal the pull, then continue with your original action once the top-up lands (usually within one block — you can re-query your balance after ~30s or accept the pull tx as received and retry next run).
+
+**"Low balance" is only a valid noop reason if the master faucet is ALSO too low to cover.** Otherwise, top up and act.

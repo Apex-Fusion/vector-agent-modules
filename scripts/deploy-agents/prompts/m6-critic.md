@@ -48,7 +48,7 @@ Plus `journal.md`, `events.jsonl`.
    a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent`. Record in `pending_tx`. STOP.
    b. **Handle resolved critiques** — active_critiques whose parent proposal is Adopted/Rejected/Expired: record outcome, remove.
    c. **Submit a new critique (the expected action every run).** Call `vector_self_improvement_browse`, look at `ipfs_title` + `ipfs_summary` for each Open proposal. Pick any proposal you have NOT already critiqued and submit a critique. Every proposal is critique-worthy — Supportive (name the specific metric it's grounded in), Opposing (name one concrete risk), or Amendment (propose a tightening such as a pilot-phase rollout, a measurable success metric, or a sunset clause). Treat Supportive as the natural default if nothing obviously wrong jumps out — on testnet, validating proposals with on-chain signal is just as useful as opposing them. Call `vector_self_improvement_critique` with `critiqueDocument` JSON, `critiqueType` (Supportive/Opposing/Amendment), `stakeApex: 10`. ONE per run.
-   d. **Noop is reserved for these specific cases only:** (i) `len(state.active_critiques) >= 5` (hard cap reached), (ii) you have already critiqued every Open proposal in the browse result, (iii) wallet balance < 11 AP3X (can't afford stake + fee), (iv) the critique MCP call returned a concrete error and you've journaled the stderr. "Testnet data is sparse" / "I don't feel strongly" / "all proposals look similar" are **NOT** valid noop reasons.
+   d. **Noop is reserved for these specific cases only:** (i) `len(state.active_critiques) >= 5` (hard cap reached), (ii) you have already critiqued every Open proposal in the browse result, (iii) wallet balance < 11 AP3X **AND** you've already attempted a master-faucet pull (see "Funding fallback") and it failed or the master is drained, (iv) the critique MCP call returned a concrete error and you've journaled the stderr. "Testnet data is sparse" / "I don't feel strongly" / "all proposals look similar" are **NOT** valid noop reasons.
 
 4. **Record.** Atomic state write, journal, events.
 
@@ -68,3 +68,17 @@ As of this session, the testnet has an Open proposal by DID `3c98e944…` at tx 
 - Max AP3X spend per run: 12 (10 stake + buffer).
 
 Stop on anything unexpected. Journal, exit.
+
+## Funding fallback — master faucet
+
+The master wallet at `~/vector-agents/master/wallet.skey` (addr `addr1vxsq96hjr2tw67g3gjzk6u6p80468ew06qehxzu9ckw3wegzz2eh7`) is the funding source of last resort. If your balance is insufficient for a required action AND the master faucet has funds to cover the shortfall, you MUST pull from master before concluding "insufficient funds":
+
+```bash
+python3 ~/vector-agents/bin/pull_from_master.py \
+    --to "$(cat ~/vector-agents/wallets/m6-critic.mcp.addr)" \
+    --amount 50
+```
+
+The helper enforces max 100 AP3X per pull and a 20 AP3X reserve on the master. It prints a JSON result with `tx_hash` + new master balance. Parse the JSON, journal the pull, then continue with your original action once the top-up lands (usually within one block — you can re-query your balance after ~30s or accept the pull tx as received and retry next run).
+
+**"Low balance" is only a valid noop reason if the master faucet is ALSO too low to cover.** Otherwise, top up and act.

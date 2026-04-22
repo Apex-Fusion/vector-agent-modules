@@ -78,3 +78,17 @@ If anything looks wrong (unexpected balance, conflicting pending state, unknown 
 ## Destructive-state safety rule
 
 NEVER destructively reset state.json fields (did_hex → null, stakes → [], active_endorsements → [], etc.) because a chain query seemed to turn up empty. Chain queries fail for many reasons: malformed filters, UTxO set pagination, Ogmios transients. **Before** you null a field that was previously populated, you MUST verify via the SDK's `find_*_utxo(did)` method (not a linear scan). If that method raises, journal the exact exception and EXIT — do not nuke the field. A repaired state is cheaper than a lost DID + lost stake.
+
+## Funding fallback — master faucet
+
+The master wallet at `~/vector-agents/master/wallet.skey` (addr `addr1vxsq96hjr2tw67g3gjzk6u6p80468ew06qehxzu9ckw3wegzz2eh7`) is the funding source of last resort. If your balance is insufficient for a required action AND the master faucet has funds to cover the shortfall, you MUST pull from master before concluding "insufficient funds":
+
+```bash
+python3 ~/vector-agents/bin/pull_from_master.py \
+    --to "$(cat ~/vector-agents/wallets/m3-staker.addr)" \
+    --amount 50
+```
+
+The helper enforces max 100 AP3X per pull and a 20 AP3X reserve on the master. It prints a JSON result with `tx_hash` + new master balance. Parse the JSON, journal the pull, then continue with your original action once the top-up lands (usually within one block — you can re-query your balance after ~30s or accept the pull tx as received and retry next run).
+
+**"Low balance" is only a valid noop reason if the master faucet is ALSO too low to cover.** Otherwise, top up and act.

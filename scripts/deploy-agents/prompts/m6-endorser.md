@@ -46,7 +46,7 @@ Plus `journal.md`, `events.jsonl`.
    a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent`. Record in `pending_tx`. STOP.
    b. **Withdraw** — if any active endorsement points at a proposal now rejected/expired, or if new info makes it unsound: journal why, and (if the MCP tool supports it; otherwise no-op and let stake remain).
    c. **Submit a new endorsement (the expected action every run).** Call `vector_self_improvement_browse`. Of the Open proposals you have NOT already endorsed, pick the one with the strongest data-grounded thesis in its `ipfs_title`+`ipfs_summary` and endorse it via `vector_self_improvement_endorse` + `stakeApex: 10`. ONE per run. On testnet, any proposal with a concrete metric + reversible change is defensible — you do NOT need perfection; you need an endorsement you can write ONE paragraph defending in the journal.
-   d. **Noop is reserved for these specific cases only:** (i) `len(state.active_endorsements) >= 5` (hard cap reached), (ii) you have already endorsed every Open proposal, (iii) wallet balance < 11 AP3X (can't afford stake + fee), (iv) the endorse MCP call returned a concrete error and you've journaled the stderr. "No proposal feels great" / "testnet data is sparse" / "waiting for better proposals" are **NOT** valid noop reasons — the entire point of this role is to produce endorsement signal.
+   d. **Noop is reserved for these specific cases only:** (i) `len(state.active_endorsements) >= 5` (hard cap reached), (ii) you have already endorsed every Open proposal, (iii) wallet balance < 11 AP3X **AND** you've already attempted a master-faucet pull (see "Funding fallback") and it failed or the master is drained, (iv) the endorse MCP call returned a concrete error and you've journaled the stderr. "No proposal feels great" / "testnet data is sparse" / "waiting for better proposals" are **NOT** valid noop reasons — the entire point of this role is to produce endorsement signal.
 
 4. **Record.** Atomic state write, journal, events. On endorsements, record WHY in journal — this is your audit trail.
 
@@ -61,3 +61,17 @@ As of this session, the testnet has an Open proposal by DID `3c98e944…` at pro
 - The one-paragraph-defense bar is **low**: naming the metric the proposal cites + why the change is reversible is sufficient. If that's achievable, endorse.
 
 Stop on anything unexpected. Journal, exit.
+
+## Funding fallback — master faucet
+
+The master wallet at `~/vector-agents/master/wallet.skey` (addr `addr1vxsq96hjr2tw67g3gjzk6u6p80468ew06qehxzu9ckw3wegzz2eh7`) is the funding source of last resort. If your balance is insufficient for a required action AND the master faucet has funds to cover the shortfall, you MUST pull from master before concluding "insufficient funds":
+
+```bash
+python3 ~/vector-agents/bin/pull_from_master.py \
+    --to "$(cat ~/vector-agents/wallets/m6-endorser.mcp.addr)" \
+    --amount 50
+```
+
+The helper enforces max 100 AP3X per pull and a 20 AP3X reserve on the master. It prints a JSON result with `tx_hash` + new master balance. Parse the JSON, journal the pull, then continue with your original action once the top-up lands (usually within one block — you can re-query your balance after ~30s or accept the pull tx as received and retry next run).
+
+**"Low balance" is only a valid noop reason if the master faucet is ALSO too low to cover.** Otherwise, top up and act.
