@@ -130,12 +130,20 @@ class SimController:
         wallet = self.wallets[agent.wallet_id]
 
         try:
+            # Phase 1 migration: build_submit_claim now requires the v13
+            # 9-field ClaimDatum inputs. decision.evidence_hash carries the
+            # blake2b_256 digest of the claim payload, which maps 1:1 to
+            # ClaimDatum.claim_hash. claim_type / storage_uri are synthesised
+            # here until ClaimDecision grows richer fields — tracked as a
+            # follow-up (Claire to widen ClaimDecision before full sim run).
             result = build_submit_claim(
                 self.context, self.deployment,
                 wallet["skey"], wallet["vkey"], wallet["address"],
                 agent.did_hex, decision.stake_amount,
                 challenge_window_ms=self.config.challenge_window_ms,
-                evidence_hash=decision.evidence_hash,
+                claim_hash=decision.evidence_hash,
+                claim_type=b"data_indexing",
+                storage_uri=f"ipfs://sim-claim-{agent.id}".encode(),
             )
 
             # Update agent state

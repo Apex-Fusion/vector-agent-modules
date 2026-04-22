@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+markers = [
+    "testnet: tests that hit live Vector testnet (require ADA + AP3X funding)",
+    "slow: tests that take more than ~30s",
+]

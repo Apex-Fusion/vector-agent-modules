@@ -13,3 +13,13 @@ deploy/deployment.json
 deploy/plutus.json
 deploy/plutus-debug.json
 deploy/smoke_state.json
+
+# Live chain state — wallet derivation indices persist across runs and
+# must NOT be committed.
+**/.wallet_index*.json
+**/.wallet_index*.json.lock
+**/.wallet_index*.json.corrupt-*
+
+# Simulation metrics output — transient JSONL dumps
+/tmp/apex-sim-metrics-*
+**/simulation-results/
