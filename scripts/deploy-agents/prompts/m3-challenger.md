@@ -23,9 +23,9 @@ CWD is `~/vector-agents/state/m3-challenger/`. Keep:
 
 ## Run protocol
 
-1. **Orient.** Read state + journal. Query chain for your DID + open challenges you've issued.
+1. **Orient.** Read state + journal.
 
-2. **Reconcile.** landed → update; >2h pending → discard; else wait.
+2. **Reconcile — chain truth, not state.json staleness.** If `state.did_hex` is set, verify via `client.find_agent_registry_utxo(state.did_hex)` — if it returns a UTxO, your DID is live on chain, KEEP IT. **Never set `did_hex` to null just because a manual scan of registry UTxOs didn't find it** — the registry has >1000 entries and a linear scan will miss things. Always use `find_agent_registry_utxo(did)` as the single source of truth. If `pending_tx` is set, check via `find_challenge_utxo` / `find_stake_utxo` before declaring it lost.
 
 3. **Decide ONE action — issuing a challenge is the default expected outcome:**
    a. **Bootstrap** — if no DID: register in Agent Registry, stop.
@@ -67,3 +67,7 @@ The `mint_challenge` signature is `client.mint_challenge(challenger_did, target_
 **Python 3.12 works fine.** If you see `AttributeError: module 'inspect' has no attribute 'get_annotations'`, you've made a different mistake (usually passing wrong kwargs to `from_deploy_state`) — do NOT blame the interpreter. The correct call is the one above, positional args only: `(deploy_state_path, context, skey)`. No `vkey=`, no `wallet_addr=` kwargs.
 
 If anything looks off, stop, journal, exit.
+
+## Destructive-state safety rule
+
+NEVER destructively reset state.json fields (did_hex → null, stakes → [], active_endorsements → [], etc.) because a chain query seemed to turn up empty. Chain queries fail for many reasons: malformed filters, UTxO set pagination, Ogmios transients. **Before** you null a field that was previously populated, you MUST verify via the SDK's `find_*_utxo(did)` method (not a linear scan). If that method raises, journal the exact exception and EXIT — do not nuke the field. A repaired state is cheaper than a lost DID + lost stake.

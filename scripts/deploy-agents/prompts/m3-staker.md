@@ -28,10 +28,11 @@ CWD when you run is `~/vector-agents/state/m3-staker/`. Keep three files:
 
 1. **Orient.** Read `state.json`, last ~10 lines of `journal.md`, and `~/code/vector-agent-modules/Module-3/docs/single-agent-instructions.md`. Query chain state for your wallet balance and any existing stake.
 
-2. **Reconcile.** If `state.json.pending_tx` exists:
-   - If the tx has landed on chain → update state to reflect the on-chain result, clear `pending_tx`.
-   - If still pending and `prepared_ts` is older than 2 hours → treat it as lost, clear `pending_tx`, journal the reason.
-   - Otherwise, stop this run and try again next time.
+2. **Reconcile — chain truth beats state.json staleness.** Before any other decision:
+   - If `state.did_hex` is set: call `client.find_agent_registry_utxo(did_hex)`. If it returns a UTxO, your DID is alive, KEEP IT. **Never null-out did_hex based on a linear scan of registry UTxOs** — there are >1000 entries.
+   - If `state.stakes[]` is non-empty OR there's a `pending_tx` with action `stake_create`: call `client.find_stake_utxo(did_hex)`. If it returns a UTxO, the stake is alive — ensure it's in `stakes[]` and clear any matching `pending_tx`. Do NOT discard stakes because `pending_tx.prepared_ts` is >2h old.
+   - Only if the chain says the stake is NOT there AND `pending_tx.prepared_ts` is >2h should you treat it as lost.
+   - A previous version of this prompt mis-reconciled a successful stake (1a67a005...) because of the >2h staleness rule and wasted 14 AP3X on a redundant seed utxo. Don't repeat that.
 
 3. **Decide ONE action — defend or expand your stake:**
    a. **Bootstrap** — if no DID recorded in state.json: register yourself in the Agent Registry (see `smoke_test_ogmios.py:register_agent`), then self-stake 10 AP3X with capabilities `["code_review", "testing"]`.
@@ -73,3 +74,7 @@ The client exposes: `create_stake`, `mint_endorsement`, `mint_challenge`, `resol
 Before declaring a pending_tx "lost" because it's >2h old: **call `client.find_stake_utxo(did_hex)` first.** If the chain returns a UTxO whose `transaction_id` matches your `pending_tx.tx_hash`, the tx LANDED — clear `pending_tx`, populate/update `stakes[]`, done. Only if the chain shows no stake for your DID AND `pending_tx` is >2h should you treat it as lost. The previous version of this prompt discarded a successful stake this way and wasted 14 AP3X on a redundant seed utxo — don't repeat that.
 
 If anything looks wrong (unexpected balance, conflicting pending state, unknown chain error), **stop, journal why, exit**. Do not try to "fix" by broadcasting more transactions.
+
+## Destructive-state safety rule
+
+NEVER destructively reset state.json fields (did_hex → null, stakes → [], active_endorsements → [], etc.) because a chain query seemed to turn up empty. Chain queries fail for many reasons: malformed filters, UTxO set pagination, Ogmios transients. **Before** you null a field that was previously populated, you MUST verify via the SDK's `find_*_utxo(did)` method (not a linear scan). If that method raises, journal the exact exception and EXIT — do not nuke the field. A repaired state is cheaper than a lost DID + lost stake.

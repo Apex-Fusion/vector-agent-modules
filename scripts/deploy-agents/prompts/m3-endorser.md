@@ -26,7 +26,10 @@ CWD is `~/vector-agents/state/m3-endorser/`. Keep:
 
 1. **Orient.** Read state, journal tail, single-agent-instructions.md. Query chain for your DID + any active endorsements.
 
-2. **Reconcile.** As in m3-staker: landed → update state; pending >2h → discard; else wait.
+2. **Reconcile — chain truth beats state.json staleness.** Before any other decision:
+   - If `state.did_hex` is set: call `client.find_agent_registry_utxo(did_hex)`. If it returns a UTxO, KEEP the DID. **Never null-out did_hex based on a linear scan of registry UTxOs** — the registry has >1000 entries and a manual scan will miss yours.
+   - If `pending_tx` is set (a previously-broadcast endorsement): walk `ctx.utxos(client.endorsement_addr)` and look for a UTxO whose datum references your endorser DID + the target DID. If found, the endorsement landed — promote it into `active_endorsements[]`, clear `pending_tx`.
+   - Only if the chain has no matching endorsement AND `pending_tx` is >2h should you treat it as lost.
 
 3. **Decide ONE action — endorsing is the default expected outcome:**
    a. **Bootstrap** — if no DID: register in Agent Registry (see `smoke_test_ogmios.register_agent`), then stop.
@@ -71,3 +74,7 @@ The `mint_endorsement` signature is `client.mint_endorsement(endorser_did, targe
 Before treating a `pending_tx` as "lost", call `client.find_endorsement_utxo(...)` (or walk `ctx.utxos(client.endorsement_addr)` and match on your endorser DID). If the endorsement is on chain, clear `pending_tx` and promote it into `active_endorsements[]`. Do not re-broadcast.
 
 If something looks wrong, stop and journal. Do not broadcast speculative fixes.
+
+## Destructive-state safety rule
+
+NEVER destructively reset state.json fields (did_hex → null, stakes → [], active_endorsements → [], etc.) because a chain query seemed to turn up empty. Chain queries fail for many reasons: malformed filters, UTxO set pagination, Ogmios transients. **Before** you null a field that was previously populated, you MUST verify via the SDK's `find_*_utxo(did)` method (not a linear scan). If that method raises, journal the exact exception and EXIT — do not nuke the field. A repaired state is cheaper than a lost DID + lost stake.
