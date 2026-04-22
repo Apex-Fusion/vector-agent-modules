@@ -62,7 +62,6 @@ def main() -> None:
             OgmiosHttpContext,
             load_wallet,
             submit_tx,
-            tx_to_bytes,
         )
         from pycardano import (  # noqa: E402
             Address,
@@ -104,7 +103,7 @@ def main() -> None:
         fail(f"build_and_sign failed: {e}")
 
     try:
-        tx_hash = submit_tx(tx_to_bytes(tx))
+        tx_hash = submit_tx(tx)
     except Exception as e:
         fail(f"submit_tx failed: {e}")
 
