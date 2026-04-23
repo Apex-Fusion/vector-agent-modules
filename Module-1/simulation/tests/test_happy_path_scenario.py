@@ -1342,3 +1342,324 @@ class TestResolvedParamsThreading:
             "_step_submit_claim still passes the hardcoded 240_000 ms "
             "default — the Option A refactor has not landed at this site."
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Resolve-jury submit-retry regression (Sim Phase 2 hot-fix, 2026-04-23)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestResolveJurySubmitRetry:
+    """Regression coverage for the `_step_resolve_jury` submit-retry loop.
+
+    Mainnet AuditorWins runs (1 PASS / 6 FAIL = 14 % success on
+    2026-04-23) repeatedly hit an evaluate/submit divergence inside
+    build_resolve_jury — preflight evaluateTransaction returns OK, then
+    submitTransaction immediately rejects with PlutusFailure under
+    IsValid True (chain-state drift between the two Ogmios calls).
+    Chuck-approved fix: rebuild the TX from fresh inputs and retry,
+    bounded by attempts and the on-chain resolution_deadline window.
+
+    These unit tests pin the contract:
+      1. On a divergence-shaped RuntimeError, the step retries.
+      2. Each retry rebuilds the TX (build_resolve_jury called again).
+      3. An 8 s sleep separates attempts.
+      4. A `resolve_jury_retry` event is emitted per retry so the
+         metrics JSONL stream surfaces the fact a retry happened.
+      5. Non-divergence RuntimeErrors bubble unchanged (no retry).
+    """
+
+    def _stub_resolved_params(self, monkeypatch, resolution_deadline=600_000):
+        from simulation.params import ResolvedParams
+        import simulation.params as params_mod
+
+        stub = ResolvedParams(
+            min_claim_stake=50_000_000,
+            min_challenge_window=60_000,
+            max_challenge_window=240_000,
+            jury_size=5,
+            min_juror_bond=25_000_000,
+            jury_fee_rate=1_000,
+            selection_delay=30_000,
+            resolution_deadline=resolution_deadline,
+            juror_slash_rate=1_000,
+            min_agent_age=21_600_000,
+            max_concurrent_cases=5,
+            min_jury_pool_size=15,
+            min_jury_pool_total=375_000_000,
+            oracle_active=False,
+            commit_window=180_000,
+            reveal_window=180_000,
+            cleanup_buffer=60_000,
+        )
+        monkeypatch.setattr(
+            params_mod, "resolve_protocol_params", lambda dep: stub,
+        )
+        return stub
+
+    def _make_scenario(self, base_kwargs):
+        """Build a scenario with a real master skey and primed lifecycle
+        state so _step_resolve_jury bypasses pre-checks and runs the
+        retry loop body."""
+        import hashlib
+        from pycardano import (
+            Address, Network, PaymentSigningKey, PaymentVerificationKey,
+        )
+
+        seed = hashlib.blake2b(
+            b"resolve-jury-retry-test", digest_size=32,
+        ).digest()
+        skey = PaymentSigningKey(seed)
+        vkey = PaymentVerificationKey.from_signing_key(skey)
+        addr = Address(payment_part=vkey.hash(), network=Network.MAINNET)
+
+        kwargs = dict(base_kwargs)
+        kwargs["master_skey"] = skey
+        kwargs["master_vkey"] = vkey
+        kwargs["master_wallet_addr"] = addr
+
+        s = HappyPathScenario(**kwargs, jury_size=5)
+
+        # Lifecycle state required by _step_resolve_jury.
+        s._challenge_ref = "ab" * 32 + "#0"
+        s._claim_ref = "cd" * 32 + "#0"
+        s._selected_pool_indices = [0, 1, 2, 3, 4]
+        s._juror_utxo_refs = [
+            (bytes([i]).hex().rjust(2, "0") * 32) + f"#{i}"
+            for i in range(15)
+        ]
+        return s
+
+    def _patch_chain_and_params(
+        self, monkeypatch, sleep_calls, challenged_at_ms=1_500_000,
+    ):
+        """Replace OgmiosContext, resolve_utxo, wait_confirm, and time.sleep
+        with stubs that mimic a healthy chain view (enough to compute the
+        deadline guard and let the retry loop exercise its branches)."""
+        import simulation.chain as _chain
+        import simulation.scenarios.happy_path as _hp
+
+        # SYSTEM_START_UNIX is read inside the step. The scenario computes
+        # now_ms from (SYSTEM_START_UNIX + ctx.last_block_slot) * 1000 and
+        # compares against challenged_at_ms + resolution_deadline. We pin
+        # both to anchor "plenty of window remaining" for the retry path.
+        monkeypatch.setattr(_chain, "SYSTEM_START_UNIX", 0, raising=False)
+
+        class _FakeCtx:
+            last_block_slot = 1_000   # now_ms = 1_000_000
+
+        monkeypatch.setattr(_chain, "OgmiosContext", lambda *a, **kw: _FakeCtx())
+        monkeypatch.setattr(_chain, "wait_confirm", lambda *a, **kw: None)
+
+        # Default: challenged_at = 1_500_000 ms ⇒ deadline_abs =
+        # 1_500_000 + resolution_deadline. Combined with last_block_slot
+        # = 1_000 (now_ms = 1_000_000), the default 600_000 deadline
+        # leaves 1_100_000 ms remaining — well above the 30 s floor —
+        # so the retry loop is free to retry. Tests that exercise the
+        # deadline-floor abort path override challenged_at_ms.
+
+        class _FakeDatumValue:
+            value = [None] * 10  # field[6] populated below
+            tag = 121
+
+        class _FakeDatum:
+            cbor = None  # the fake datum has no cbor attribute path
+
+        class _FakeOutput:
+            datum = _FakeDatum()
+
+        class _FakeUtxo:
+            output = _FakeOutput()
+
+        # We bypass the cbor2.loads path by patching cbor2 inside the step.
+        # Easier: patch resolve_utxo to return a sentinel and patch cbor2.loads
+        # at the module level used inside the step.
+        fake_utxo = _FakeUtxo()
+        # Datum.cbor must exist — give it raw bytes so the `hasattr(..., "cbor")`
+        # branch picks it up. The actual contents are irrelevant because we
+        # also stub cbor2.loads below.
+        fake_utxo.output.datum.cbor = b"\x80"
+
+        monkeypatch.setattr(
+            _chain, "resolve_utxo", lambda *a, **kw: fake_utxo,
+        )
+
+        # Inside the step the datum CBOR is parsed via `cbor2.loads(...)`.
+        # Stub it to return an object exposing .value[6] = challenged_at_ms.
+        import cbor2 as _cbor2
+
+        class _FakeLoaded:
+            value = [0, 0, 0, 0, 0, 0, challenged_at_ms, 0, 0, 0]
+
+        monkeypatch.setattr(_cbor2, "loads", lambda *a, **kw: _FakeLoaded())
+
+        # Capture every sleep call — assertions check the 8 s gap between
+        # retries.
+        import time as _time
+        monkeypatch.setattr(_time, "sleep", lambda secs: sleep_calls.append(secs))
+
+        # Speed: avoid real waits anywhere else.
+        monkeypatch.setattr(_hp, "WAIT_CONFIRM_SECS", 0)
+
+        return _FakeCtx
+
+    def test_retries_once_on_evaluate_submit_divergence(
+        self, base_kwargs, monkeypatch,
+    ):
+        """First build_resolve_jury raises PlutusFailure; second succeeds.
+        Step must complete with one retry, one 8 s sleep, and a
+        resolve_jury_retry event in the returned event list."""
+        self._stub_resolved_params(monkeypatch)
+        sleep_calls: list = []
+        self._patch_chain_and_params(monkeypatch, sleep_calls)
+
+        s = self._make_scenario(base_kwargs)
+        monkeypatch.setattr(s, "_deployment_state", lambda: object())
+        monkeypatch.setattr(s, "checkpoint", lambda: None)
+
+        call_count = {"n": 0}
+        success_payload = {
+            "tx_hash": "ee" * 32,
+            "verdict": "AuditorWins",
+            "resolved_challenge_ref": "ee" * 32 + "#0",
+            "jury_fee": 1_000_000,
+            "claimer_payout": None,
+            "auditor_payout": 89_000_000,
+        }
+
+        def fake_build_resolve_jury(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # Mimic the exact mainnet failure shape — RuntimeError whose
+                # message contains both substrings the classifier matches.
+                raise RuntimeError(
+                    "Submit failed (400): "
+                    "ConwayUtxowFailure (UtxoFailure (UtxosFailure "
+                    "(ValidationTagMismatch (IsValid True) "
+                    "(FailedUnexpectedly (PlutusFailure ...))))"
+                )
+            return dict(success_payload)
+
+        import simulation.tx_builder as _txb
+        monkeypatch.setattr(
+            _txb, "build_resolve_jury", fake_build_resolve_jury,
+        )
+
+        events = s._step_resolve_jury(epoch=0)
+
+        assert call_count["n"] == 2, (
+            f"build_resolve_jury must be called twice (one fail + one "
+            f"retry), got {call_count['n']} calls."
+        )
+        assert sleep_calls == [8], (
+            f"Exactly one 8 s sleep must separate the two attempts. "
+            f"Got sleep calls: {sleep_calls!r}."
+        )
+
+        retry_events = [
+            e for e in events if e.get("event_type") == "resolve_jury_retry"
+        ]
+        assert len(retry_events) == 1, (
+            f"Step must emit exactly one resolve_jury_retry event after "
+            f"a single retry. Got events: "
+            f"{[e.get('event_type') for e in events]!r}."
+        )
+        assert retry_events[0]["attempt"] == 1
+        assert retry_events[0]["reason"] == "evaluate_submit_divergence"
+
+        success_events = [
+            e for e in events if e.get("event_type") == "resolve_jury_success"
+        ]
+        assert len(success_events) == 1
+        assert success_events[0]["verdict"] == "AuditorWins"
+        assert success_events[0]["tx_hash"] == "ee" * 32
+
+        # Scenario state must reflect the successful attempt.
+        assert s._verdict == "AuditorWins"
+        assert s._step == "distribute_rewards"
+        assert s._tx_hashes["resolve_jury"] == "ee" * 32
+
+    def test_no_retry_on_unrelated_runtime_error(
+        self, base_kwargs, monkeypatch,
+    ):
+        """A RuntimeError that is NOT the divergence pattern must bubble
+        immediately — no sleep, no retry, no resolve_jury_retry event."""
+        self._stub_resolved_params(monkeypatch)
+        sleep_calls: list = []
+        self._patch_chain_and_params(monkeypatch, sleep_calls)
+
+        s = self._make_scenario(base_kwargs)
+        monkeypatch.setattr(s, "_deployment_state", lambda: object())
+        monkeypatch.setattr(s, "checkpoint", lambda: None)
+
+        call_count = {"n": 0}
+
+        def fake_build_resolve_jury(*args, **kwargs):
+            call_count["n"] += 1
+            raise RuntimeError(
+                "Submit failed (400): OutsideValidityIntervalUTxO ..."
+            )
+
+        import simulation.tx_builder as _txb
+        monkeypatch.setattr(
+            _txb, "build_resolve_jury", fake_build_resolve_jury,
+        )
+
+        with pytest.raises(RuntimeError, match="OutsideValidityIntervalUTxO"):
+            s._step_resolve_jury(epoch=0)
+
+        assert call_count["n"] == 1, (
+            "Non-divergence errors must NOT trigger a retry — "
+            "build_resolve_jury called more than once."
+        )
+        assert sleep_calls == [], (
+            f"No sleep should occur when the error is not a "
+            f"divergence-pattern PlutusFailure. Got: {sleep_calls!r}."
+        )
+
+    def test_aborts_when_deadline_floor_breached(
+        self, base_kwargs, monkeypatch,
+    ):
+        """If the on-chain resolution_deadline window has less than the
+        floor (30 s) of remaining budget, the retry loop must NOT sleep
+        — it must re-raise the divergence error immediately."""
+        # Anchor challenged_at so deadline_abs lands JUST below now_ms +
+        # floor: with default resolution_deadline=600_000 ms, last_block_slot
+        # = 1_000 ⇒ now_ms = 1_000_000. We want
+        #   remaining = challenged_at + 600_000 - 1_000_000 < 30_000
+        # ⇒ challenged_at < 430_000. Pick challenged_at = 400_000:
+        #   deadline_abs = 1_000_000  ⇒ remaining = 0 ms (< 30_000 floor).
+        self._stub_resolved_params(monkeypatch, resolution_deadline=600_000)
+        sleep_calls: list = []
+        self._patch_chain_and_params(
+            monkeypatch, sleep_calls, challenged_at_ms=400_000,
+        )
+
+        s = self._make_scenario(base_kwargs)
+        monkeypatch.setattr(s, "_deployment_state", lambda: object())
+        monkeypatch.setattr(s, "checkpoint", lambda: None)
+
+        call_count = {"n": 0}
+
+        def fake_build_resolve_jury(*args, **kwargs):
+            call_count["n"] += 1
+            raise RuntimeError(
+                "Submit failed (400): FailedUnexpectedly (PlutusFailure ...)"
+            )
+
+        import simulation.tx_builder as _txb
+        monkeypatch.setattr(
+            _txb, "build_resolve_jury", fake_build_resolve_jury,
+        )
+
+        with pytest.raises(RuntimeError, match="FailedUnexpectedly"):
+            s._step_resolve_jury(epoch=0)
+
+        assert call_count["n"] == 1, (
+            "When the deadline floor is breached, the retry loop must "
+            "abort BEFORE re-attempting."
+        )
+        assert sleep_calls == [], (
+            f"No retry sleep when out of deadline budget. Got: "
+            f"{sleep_calls!r}."
+        )

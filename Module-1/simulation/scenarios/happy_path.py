@@ -2154,10 +2154,50 @@ class HappyPathScenario(ScenarioRunner):
 
         return events
 
+    # Submit-retry knobs for _step_resolve_jury. Kept as class-level
+    # attributes so tests can monkeypatch them to speed up / assert
+    # behaviour without touching private instance state.
+    #
+    # Context for the retry (Chuck-approved, 2026-04-23): on mainnet the
+    # AuditorWins path shows a recurring evaluate/submit divergence —
+    # --plutus-trace preflight returns evaluateTransaction=OK, but the
+    # very next submitTransaction rejects with ConwayUtxowFailure →
+    # ValidationTagMismatch → FailedUnexpectedly → PlutusFailure (no
+    # useful trace, just ~80 KB of base64 script bytes). Root cause is
+    # chain-state drift between the two Ogmios calls (UTxO-set shift,
+    # mid-window protocol-params update, or Aiken budget delta between
+    # evaluate and submit). Rebuilding the TX from fresh Ogmios queries
+    # and re-submitting inside the resolution_deadline window recovers
+    # without invalidating anything.
+    _RESOLVE_JURY_MAX_ATTEMPTS = 3
+    _RESOLVE_JURY_RETRY_SLEEP_SECS = 8
+    # Guard floor — abort retries when less than this many ms of the
+    # on-chain resolution_deadline window remain. Cleanup buffer on top
+    # of that keeps the whole TX landing comfortably before timeout.
+    _RESOLVE_JURY_DEADLINE_FLOOR_MS = 30_000
+
+    @staticmethod
+    def _is_evaluate_submit_divergence(err: BaseException) -> bool:
+        """Classify a submit_tx exception as the evaluate/submit
+        divergence pattern (PlutusFailure under IsValid True).
+
+        Only exceptions that carry BOTH substrings are eligible for
+        retry. Anything else (BadInputsUTxO, OutsideValidityInterval,
+        network errors, etc.) bubbles immediately — those are real
+        failures that retrying cannot fix.
+        """
+        msg = str(err)
+        return "FailedUnexpectedly" in msg and "PlutusFailure" in msg
+
     def _step_resolve_jury(self, epoch: int) -> list[dict]:
         self._require_real_master_skey()
-        from simulation.chain import OgmiosContext, wait_confirm
+        from simulation.chain import (
+            OgmiosContext, SYSTEM_START_UNIX as _SYS_START, resolve_utxo,
+            wait_confirm,
+        )
         from simulation import tx_builder as _txb
+        import cbor2 as _cbor2
+        import time as _time
 
         ctx = OgmiosContext()
         deployment = self._deployment_state()
@@ -2166,23 +2206,105 @@ class HappyPathScenario(ScenarioRunner):
         if not self._claim_ref or not self._challenge_ref:
             raise RuntimeError("resolve_jury: missing claim/challenge ref.")
 
+        # ── Compute absolute resolution deadline (ms, CHAIN time) ────────
+        # Used by the submit-retry guard to abort if there isn't enough
+        # window left to absorb another ~8 s sleep + retry. Anchors on
+        # challenged_at (datum field[6]) + resolved_params.resolution_deadline,
+        # mirroring the on-chain timeout formula (challenge.ak:658).
+        try:
+            chal_txid_hex, chal_idx_str = self._challenge_ref.split("#")
+            chal_utxo = resolve_utxo(chal_txid_hex, int(chal_idx_str))
+            chal_datum_raw = chal_utxo.output.datum
+            chal_datum_cbor = (
+                chal_datum_raw.cbor if hasattr(chal_datum_raw, "cbor")
+                else bytes(chal_datum_raw)
+            )
+            challenged_at_ms = int(_cbor2.loads(chal_datum_cbor).value[6])
+            resolution_deadline_abs_ms = (
+                challenged_at_ms + self._resolved_params.resolution_deadline
+            )
+        except Exception:
+            # If we cannot read the deadline, the retry guard conservatively
+            # disables retries (treats the window as zero remaining). The
+            # initial attempt still runs; a failure just bubbles as today.
+            resolution_deadline_abs_ms = None
+
         revealed_refs = [
             self._juror_utxo_refs[self._selected_pool_indices[i]]
             for i in range(self.jury_size)
         ]
 
+        retry_events: list[dict] = []
+        last_exc: BaseException | None = None
+        result = None
+
         # Permissionless, but the tx needs ~30+ ADA of change beyond the
         # stakes+fees math — auditor sub-wallet (80 ADA funded, most spent
         # on open_challenge stake) doesn't cover. Use master as fee payer.
-        result = _txb.build_resolve_jury(
-            ctx, deployment,
-            self.master_skey, self.master_vkey, self.master_wallet_addr,
-            self._challenge_ref,
-            self._claim_ref,
-            revealed_refs,
-            jury_size=self.jury_size,
-        )
-        # build_resolve_jury internally calls wait_confirm(secs=25).
+        #
+        # build_resolve_jury resolves every input UTxO via Ogmios inside
+        # its own body (resolve_utxo for the challenge / claim / jurors),
+        # so each retry naturally rebuilds the TX against fresh on-chain
+        # state — no stale UTxO refs, no stale datum snapshots.
+        max_attempts = self._RESOLVE_JURY_MAX_ATTEMPTS
+        for attempt in range(max_attempts):
+            try:
+                # Fresh OgmiosContext per attempt so chain tip / slot /
+                # protocol-params snapshot all advance. Stale params would
+                # re-trigger the same budget-drift divergence.
+                if attempt > 0:
+                    ctx = OgmiosContext()
+
+                result = _txb.build_resolve_jury(
+                    ctx, deployment,
+                    self.master_skey, self.master_vkey, self.master_wallet_addr,
+                    self._challenge_ref,
+                    self._claim_ref,
+                    revealed_refs,
+                    jury_size=self.jury_size,
+                )
+                # build_resolve_jury internally calls wait_confirm(secs=25).
+                break
+            except RuntimeError as e:
+                last_exc = e
+                if not self._is_evaluate_submit_divergence(e):
+                    # Not the PlutusFailure divergence — bubble immediately.
+                    raise
+                if attempt >= max_attempts - 1:
+                    # Out of attempts.
+                    raise
+
+                # Deadline guard. If the on-chain window is gone we must
+                # abort before retrying — submitting past resolution_deadline
+                # flips the ResolveJury path into TimeoutResolve territory.
+                if resolution_deadline_abs_ms is not None:
+                    now_ms = (_SYS_START + ctx.last_block_slot) * 1000
+                    remaining_ms = resolution_deadline_abs_ms - now_ms
+                    if remaining_ms < self._RESOLVE_JURY_DEADLINE_FLOOR_MS:
+                        raise
+                else:
+                    # Couldn't read deadline above — treat as no-retry.
+                    raise
+
+                retry_events.append({
+                    "event_type": "resolve_jury_retry",
+                    "step_index": 7,
+                    "epoch": epoch,
+                    "scenario": self.name,
+                    "attempt": attempt + 1,           # 1-indexed: "1st retry"
+                    "max_attempts": max_attempts,
+                    "reason": "evaluate_submit_divergence",
+                    "error_fragment": "FailedUnexpectedly PlutusFailure",
+                })
+                _time.sleep(self._RESOLVE_JURY_RETRY_SLEEP_SECS)
+                continue
+
+        if result is None:
+            # Defensive — loop only exits via break (result set) or raise.
+            # Re-raise the last exception if somehow still here.
+            if last_exc is not None:
+                raise last_exc
+            raise RuntimeError("resolve_jury: retry loop exited without result.")
 
         self._verdict = result["verdict"]
         self._resolved_challenge_ref = result["resolved_challenge_ref"]
@@ -2200,6 +2322,7 @@ class HappyPathScenario(ScenarioRunner):
             else "inconclusive"
         )
         return [
+            *retry_events,
             {
                 "event_type": "resolve_jury_success",
                 "tx_hash": result["tx_hash"],

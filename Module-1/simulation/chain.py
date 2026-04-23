@@ -635,9 +635,13 @@ def evaluate_and_rebuild(builder, skey, vkey, wallet_addr, context):
 
     # Ogmios eval's per-validator budgets diverge from real on-chain
     # execution on Vector testnet — by up to ~5% on mem AND cpu per run.
-    # Pin to 2x to absorb that variance. Higher fees are acceptable in
-    # sim-testnet; correctness over minimality.
-    _BUDGET_SAFETY = 2.0
+    # On mainnet the divergence is larger: AuditorWins resolve_jury
+    # TXs overran a 2.0x buffer several times (e.g. cpu -755,793 in
+    # submit_err_1776953510065.txt), caused by extra jury_pool UTxOs
+    # appearing in reference_inputs between evaluate and submit. Pin
+    # to 2.5x to absorb that drift. Higher fees are acceptable in
+    # sim-testnet and sim-mainnet; correctness over minimality.
+    _BUDGET_SAFETY = 2.5
     budgets = {}
     eval_errors = []
     if isinstance(eval_result, list):
