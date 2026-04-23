@@ -16,6 +16,19 @@ Asserts:
 Run from the main session (not a sandboxed subagent — needs network):
     cd <module-root>
     python3 _verify_lifecycle_live.py
+
+Flags:
+    --auditor-wins / --inconclusive
+        Override the target verdict (default: ClaimerWins).
+    --plutus-trace
+        Call Ogmios evaluateTransaction BEFORE every submitTransaction.
+        If eval returns script errors, dump the full error response to
+        ``/tmp/sim-submit-errors/plutus_trace_<ts>.txt`` and raise a
+        RuntimeError whose message carries the first 500 chars of the
+        response — the scenario runner captures that message into the
+        scenario_error event so post-mortem has the failing validator
+        trace WITHOUT burning the live-submit cost. Default off (no
+        overhead on normal runs).
 """
 import json
 import sys
@@ -47,6 +60,97 @@ def _read_jsonl(path: Path) -> list[dict]:
         except json.JSONDecodeError:
             continue
     return out
+
+
+PLUTUS_TRACE_DIR = Path("/tmp/sim-submit-errors")
+
+
+def _install_plutus_trace_preflight() -> None:
+    """Wrap ``submit_tx`` in both ``simulation.chain`` and
+    ``simulation.tx_builder`` with an Ogmios ``evaluateTransaction``
+    preflight.
+
+    Behaviour per wrapped submit call:
+      1. Call the real ``ogmios_rpc('evaluateTransaction', ...)`` with the
+         TX's CBOR hex.
+      2. If the eval RPC returns script errors, dump the FULL JSON
+         response to ``/tmp/sim-submit-errors/plutus_trace_<ts>.txt``
+         and raise ``RuntimeError`` whose message is
+         ``plutus_trace preflight failed: dump=<path>; preview=<first500>``.
+         The scenario's ``scenario_error`` event metadata then carries
+         that preview (via its ``message`` field) and the dump path.
+      3. On eval success (empty or all-ok result), fall through to the
+         real ``submit_tx``.
+
+    tx_builder does ``from simulation.chain import submit_tx`` at module
+    load time, so patching ``simulation.chain.submit_tx`` alone would NOT
+    intercept calls from ``tx_builder.build_*`` helpers — we patch both
+    module attributes to guarantee coverage.
+    """
+    import simulation.chain as _chain
+    import simulation.tx_builder as _txb
+
+    real_submit_chain = _chain.submit_tx
+    real_rpc = _chain.ogmios_rpc
+    PLUTUS_TRACE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _wrapped_submit(tx_bytes):
+        tx_hex = (
+            tx_bytes.hex()
+            if isinstance(tx_bytes, (bytes, bytearray))
+            else bytes.fromhex(tx_bytes).hex()
+        )
+        try:
+            eval_result = real_rpc(
+                "evaluateTransaction",
+                {"transaction": {"cbor": tx_hex}},
+            )
+        except Exception as rpc_exc:
+            # Don't let the preflight hide a live submit path — log and
+            # fall through to real submit. An Ogmios RPC hiccup here
+            # shouldn't cost us the TX.
+            print(
+                f"  [plutus-trace] evaluateTransaction RPC raised "
+                f"{type(rpc_exc).__name__}: {rpc_exc!s} — falling through "
+                f"to live submit."
+            )
+            return real_submit_chain(tx_bytes)
+
+        eval_errors: list = []
+        if isinstance(eval_result, list):
+            eval_errors = [it for it in eval_result if "error" in it]
+
+        if eval_errors:
+            ts_ms = int(time.time() * 1000)
+            dump_path = PLUTUS_TRACE_DIR / f"plutus_trace_{ts_ms}.txt"
+            payload = {
+                "tx_cbor_hex": tx_hex,
+                "eval_result": eval_result,
+                "eval_errors": eval_errors,
+            }
+            dump_text = json.dumps(payload, indent=2, default=str)
+            try:
+                dump_path.write_text(dump_text)
+            except Exception:
+                # Dump failure is non-fatal — the preview in the raise
+                # still carries the error summary.
+                pass
+
+            # Preview: a compact single-line rendering of eval_errors so
+            # the scenario_error message field is useful without having
+            # to open the dump. Truncate at 500 chars.
+            preview_src = json.dumps(eval_errors, default=str)
+            preview = preview_src[:500]
+            raise RuntimeError(
+                f"plutus_trace preflight failed: dump={dump_path}; "
+                f"preview={preview}"
+            )
+
+        # Eval OK — fall through to real submit.
+        return real_submit_chain(tx_bytes)
+
+    _chain.submit_tx = _wrapped_submit
+    _txb.submit_tx = _wrapped_submit
 
 
 def main() -> int:
@@ -104,12 +208,14 @@ def main() -> int:
         #   python3 _verify_lifecycle_live.py                  # ClaimerWins
         #   python3 _verify_lifecycle_live.py --auditor-wins   # AuditorWins
         #   python3 _verify_lifecycle_live.py --inconclusive   # Inconclusive
+        #   python3 _verify_lifecycle_live.py --plutus-trace   # eval-before-submit
         import sys as _sys
         tv = "ClaimerWins"
         if "--auditor-wins" in _sys.argv:
             tv = "AuditorWins"
         elif "--inconclusive" in _sys.argv:
             tv = "Inconclusive"
+        plutus_trace = "--plutus-trace" in _sys.argv
         s = HappyPathScenario(
             **kwargs, jury_size=5, pool_size=15, target_verdict=tv,
         )
@@ -118,6 +224,20 @@ def main() -> int:
         print(f"  jury_size:       {s.jury_size}")
         print(f"  target_verdict:  {s.target_verdict}")
         print(f"  vote_pattern:    {s._vote_pattern}")
+        print(f"  plutus_trace:    {plutus_trace}")
+
+        if plutus_trace:
+            # Wrap submit_tx in both simulation.chain AND simulation.tx_builder
+            # so every lifecycle TX (scenario-driven and builder-driven) gets
+            # the evaluateTransaction preflight. Errors dump to
+            # /tmp/sim-submit-errors/plutus_trace_<ts>.txt and the exception
+            # message carries a 500-char preview that flows through to the
+            # scenario_error event.
+            _install_plutus_trace_preflight()
+            print(
+                f"  plutus_trace: preflight installed — "
+                f"dumps under {PLUTUS_TRACE_DIR}/plutus_trace_<ts>.txt"
+            )
 
         # Drive enough epochs to walk: setup (1) + 4 lifecycle steps +
         # 5 commit + 5 reveal + resolve (1) + 5 distribute + cleanup (1)
