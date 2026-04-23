@@ -34,11 +34,10 @@ CWD when you run is `~/vector-agents/state/m3-staker/`. Keep three files:
    - Only if the chain says the stake is NOT there AND `pending_tx.prepared_ts` is >2h should you treat it as lost.
    - A previous version of this prompt mis-reconciled a successful stake (1a67a005...) because of the >2h staleness rule and wasted 14 AP3X on a redundant seed utxo. Don't repeat that.
 
-3. **Decide ONE action — defend or expand your stake:**
+3. **Decide ONE action — defend the primary stake:**
    a. **Bootstrap** — if no DID recorded in state.json: register yourself in the Agent Registry (see `smoke_test_ogmios.py:register_agent`), then self-stake 10 AP3X with capabilities `["code_review", "testing"]`.
    b. **Respond to challenge** — if an on-chain challenge targets your stake, gather evidence and call `ReputationStakingClient.resolve_challenge(...)` with the appropriate outcome. This is **non-optional** — a challenge left unanswered is a slashed stake.
-   c. **Add a second stake** — if your primary stake is healthy and you hold ≥20 AP3X free: mint an additional `create_stake` with a DIFFERENT capability set from the first (e.g. `["data_analysis", "research"]` or `["docs", "prompt_engineering"]`). Each stake is independent — having multiple widens your reputation surface and gives endorsers more targets. Up to 3 total stakes.
-   d. **Noop is reserved for these specific cases only:** (i) you already have 3 active stakes, (ii) wallet balance < 11 AP3X (can't afford another stake + fee) AND no challenge is pending, (iii) a create_stake call returned a concrete error and you've journaled the stderr. "Stake is healthy, nothing to do" is **NOT** a valid noop — widen your capability surface instead.
+   c. **Noop is the correct action in steady state.** If the primary stake is healthy on chain and no challenge targets you, record a noop event and exit cleanly. Do NOT attempt to create a 2nd stake — that feature is disabled because the seed-UTxO consume flow currently fails against v10 spend validator (3 consecutive runs hit 10-minute timeout on the same Plutus error; one 10 AP3X seed was locked and unrecoverable). Re-enable 2nd-stake only after the seed-spend path has been diagnosed and verified working by a human operator.
 
 4. **Record.** Before exiting, update `state.json` atomically, append to `journal.md` and `events.jsonl`.
 
