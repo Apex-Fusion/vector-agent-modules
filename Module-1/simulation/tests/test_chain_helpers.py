@@ -337,6 +337,137 @@ class TestPrepareFeePayerUtxos:
             )
 
 
+# ─── resolve_utxo retry-on-not-found ────────────────────────────────
+
+class TestResolveUtxoRetry:
+    """Bounded back-off retry added to resolve_utxo for the Ogmios
+    re-indexing race on mainnet.
+
+    Two contracts under test:
+      1. Happy-path-with-retry: empty result twice → valid UTxO on 3rd
+         call; sleeps must observe the exact [5, 10] sequence.
+      2. Negative: non-"not-found" exception (e.g. HTTP 500 wrapper)
+         must bubble immediately — zero retries, zero sleeps.
+    """
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    # A valid bech32 testnet address — resolve_utxo calls
+    # Address.from_primitive() on the "address" field, so a placeholder
+    # string would fail with DecodingException.  We pin a known-good
+    # constant so the test has no randomness.
+    # Derived from PaymentSigningKey.from_primitive(bytes(range(32))) on
+    # Network.TESTNET — verified to round-trip through Address.from_primitive.
+    _TESTNET_ADDR: str = (
+        "addr_test1vqn78rgwr835xn3nl0gqr5l7qj6mwemrlz9v6cj7p4mskscud5urh"
+    )
+
+    @staticmethod
+    def _ogmios_utxo_result(txid_str: str, idx: int, lovelace: int) -> list:
+        """Minimal Ogmios queryLedgerState/utxo response for one output."""
+        return [
+            {
+                "transaction": {"id": txid_str},
+                "index": idx,
+                "address": TestResolveUtxoRetry._TESTNET_ADDR,
+                "value": {"ada": {"lovelace": lovelace}},
+            }
+        ]
+
+    # ------------------------------------------------------------------
+    # Test 1 — retries twice, sleeps [5, 10], returns UTxO on 3rd call
+    # ------------------------------------------------------------------
+
+    def test_retries_twice_then_returns_utxo(self, monkeypatch):
+        """Arrange: ogmios_rpc returns [] twice, then a valid result.
+        Act:       call resolve_utxo.
+        Assert:    returns the UTxO and slept exactly [5, 10] seconds.
+        """
+        import simulation.chain as _chain
+
+        txid = "ab" * 32   # 64-char hex tx hash
+        idx = 0
+        expected_lovelace = 3_000_000
+
+        call_count = 0
+
+        def _fake_rpc(method, params=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                return []   # empty → "not found" on calls 1 and 2
+            return self._ogmios_utxo_result(txid, idx, expected_lovelace)
+
+        sleep_calls: list[int] = []
+
+        monkeypatch.setattr(_chain, "ogmios_rpc", _fake_rpc)
+        monkeypatch.setattr(_chain.time, "sleep",
+                            lambda s: sleep_calls.append(s))
+
+        utxo = _chain.resolve_utxo(txid, idx)
+
+        # Correct value returned
+        coin = utxo.output.amount
+        if not isinstance(coin, int):
+            coin = coin.coin
+        assert coin == expected_lovelace, (
+            f"expected {expected_lovelace} lovelace, got {coin}"
+        )
+
+        # Back-off sequence must be exactly [5, 10]
+        assert sleep_calls == [5, 10], (
+            f"expected back-off sequence [5, 10], got {sleep_calls}"
+        )
+
+        # ogmios_rpc must have been called exactly 3 times
+        assert call_count == 3, (
+            f"expected 3 ogmios_rpc calls, got {call_count}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2 — non-not-found error bubbles immediately; no retry/sleep
+    # ------------------------------------------------------------------
+
+    def test_non_not_found_error_bubbles_immediately(self, monkeypatch):
+        """Arrange: ogmios_rpc raises a generic RuntimeError (HTTP 500
+        analogue) on the very first call.
+        Act:       call resolve_utxo.
+        Assert:    the exception propagates, sleep is never called,
+                   ogmios_rpc is called exactly once.
+        """
+        import simulation.chain as _chain
+
+        txid = "cd" * 32
+        idx = 1
+
+        call_count = 0
+
+        def _failing_rpc(method, params=None):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("HTTP 500: Internal Server Error")
+
+        sleep_calls: list[int] = []
+
+        monkeypatch.setattr(_chain, "ogmios_rpc", _failing_rpc)
+        monkeypatch.setattr(_chain.time, "sleep",
+                            lambda s: sleep_calls.append(s))
+
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            _chain.resolve_utxo(txid, idx)
+
+        # No retries — single call only
+        assert call_count == 1, (
+            f"expected 1 ogmios_rpc call (no retry), got {call_count}"
+        )
+        # No sleeps — error must bubble without any back-off
+        assert sleep_calls == [], (
+            f"expected no sleep calls, got {sleep_calls}"
+        )
+
+
 # ─── ensure_collateral backward compatibility ────────────────────────
 
 class TestEnsureCollateralBackcompat:

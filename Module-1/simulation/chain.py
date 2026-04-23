@@ -177,11 +177,34 @@ class OgmiosContext:
         return utxos
 
 
-def resolve_utxo(txid_str, idx):
-    """Resolve a specific UTxO by TX hash + index."""
+# Retry schedule (seconds) for the Ogmios "UTxO not found" race. On
+# mainnet, a just-consumed/produced output reference can return an empty
+# result for a brief window before Ogmios re-indexes. These back-offs
+# (5s / 10s / 15s = ~30s total budget) activate ONLY on the synthesized
+# "not found" error path — all other errors bubble up immediately per
+# existing behaviour, so PASS-path performance is unaffected.
+_UTXO_NOT_FOUND_BACKOFF_S = (5, 10, 15)
+
+
+def resolve_utxo(txid_str, idx, _retry=len(_UTXO_NOT_FOUND_BACKOFF_S)):
+    """Resolve a specific UTxO by TX hash + index.
+
+    On the "UTxO not found" race (Ogmios re-indexing lag after a TX
+    submit), automatically retries with a bounded back-off schedule
+    before raising. Retries are ONLY triggered by the "not found" path
+    — HTTP errors, Ogmios JSON-RPC errors, network timeouts, and any
+    other exception propagate immediately.
+    """
     result = ogmios_rpc("queryLedgerState/utxo",
                         {"outputReferences": [{"transaction": {"id": txid_str}, "index": idx}]})
     if not result:
+        if _retry > 0:
+            # Retry count remaining N means we've already used
+            # (total - N) slots, so the next wait is schedule[total - N].
+            total = len(_UTXO_NOT_FOUND_BACKOFF_S)
+            wait_s = _UTXO_NOT_FOUND_BACKOFF_S[total - _retry]
+            time.sleep(wait_s)
+            return resolve_utxo(txid_str, idx, _retry=_retry - 1)
         raise RuntimeError(f"UTxO {txid_str}#{idx} not found")
     item = result[0]
 
