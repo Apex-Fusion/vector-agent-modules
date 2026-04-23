@@ -185,16 +185,7 @@ def _juror_token_from_seed(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
 FUNDING_PER_AGENT_LOVELACE = 80_000_000     # 80 ADA per derived sub-wallet
 DID_REG_OUTPUT_LOVELACE = 15_000_000        # locked at registry per-DID
 JUROR_BOND_LOVELACE = 25_000_000            # base-coin juror bond (Path B)
-WAIT_CONFIRM_SECS = 40                      # post-submit confirmation pause
-                                            # Bumped 20→40 on 2026-04-21 after
-                                            # 3 observed mainnet transient
-                                            # failures (OutsideValidityIntervalUTxO
-                                            # + UTxO-not-found at select_jury).
-                                            # Mainnet block/slot propagation is
-                                            # slower than testnet; 40s gives the
-                                            # Ogmios indexer margin to see the
-                                            # new outputs before the next step
-                                            # fetches them.
+WAIT_CONFIRM_SECS = 20                      # post-submit confirmation pause
 
 
 class HappyPathScenario(ScenarioRunner):

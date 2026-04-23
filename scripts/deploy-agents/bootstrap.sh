@@ -128,14 +128,17 @@ SHELL=/bin/bash
 HOME=$USER_HOME
 PATH=$USER_HOME/.local/bin:$USER_HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 
-# Morning slot
-# m1 re-enabled 2026-04-22: Module-1 v15 commit (95440c4) added all 9
-# lifecycle builders + register_did + juror_bond in simulation/tx_builder.py
-# plus scenario drivers, and the full testnet lifecycle is proven green
-# (ClaimerWins, AuditorWins, WithdrawClaim, SlashNonReveal, HappyPathRestart).
-0  0  * * *  $BASE/run.sh m1-claimer
-20 1  * * *  $BASE/run.sh m1-auditor
-40 2  * * *  $BASE/run.sh m1-juror
+# m1 paused 2026-04-23: direct diagnostic confirmed v15 build_submit_claim
+# (and other v15 builders) fail against the v10 testnet deployment with
+# Plutus minting error "machine terminated". Not an agent bug — the v15
+# deployment manifest for testnet was never committed to the repo.
+# Re-enable when EITHER v15 is deployed to testnet (deploy/deployment-
+# testnet.json shows version: v15-...) OR a v10-compatible tx_builder is
+# restored. Prompts already include the inspect-import workaround for
+# when that day comes.
+# 0  0  * * *  $BASE/run.sh m1-claimer
+# 20 1  * * *  $BASE/run.sh m1-auditor
+# 40 2  * * *  $BASE/run.sh m1-juror
 0  4  * * *  $BASE/run.sh m3-staker
 20 5  * * *  $BASE/run.sh m3-endorser
 40 6  * * *  $BASE/run.sh m3-challenger
@@ -143,10 +146,10 @@ PATH=$USER_HOME/.local/bin:$USER_HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/b
 20 9  * * *  $BASE/run.sh m6-critic
 40 10 * * *  $BASE/run.sh m6-endorser
 
-# Evening slot (+12h)
-0  12 * * *  $BASE/run.sh m1-claimer
-20 13 * * *  $BASE/run.sh m1-auditor
-40 14 * * *  $BASE/run.sh m1-juror
+# Evening slot (+12h) — m1 paused, see above
+# 0  12 * * *  $BASE/run.sh m1-claimer
+# 20 13 * * *  $BASE/run.sh m1-auditor
+# 40 14 * * *  $BASE/run.sh m1-juror
 0  16 * * *  $BASE/run.sh m3-staker
 20 17 * * *  $BASE/run.sh m3-endorser
 40 18 * * *  $BASE/run.sh m3-challenger

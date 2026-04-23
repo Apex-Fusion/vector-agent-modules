@@ -262,7 +262,7 @@ def register_agents(wallets: list, context: OgmiosContext = None) -> list:
             f"SimAgent{w['id']}".encode(),
             b"Simulation agent",
             [],
-            b"Vector-Agent",
+            b"Apex-Sim",
             b"",
             (SYSTEM_START_UNIX + current_slot) * 1000,
         ])

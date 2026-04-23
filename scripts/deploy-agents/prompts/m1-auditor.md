@@ -67,3 +67,31 @@ NEVER null a previously-populated field based on a chain query that returned emp
 
 - Max tool calls per run: 25. Hard kill at 600s.
 - Max AP3X spend per run: 55 AP3X (excluding master-pull).
+
+## Python 3.12 inspect circular-import workaround (REAL bug, not interpreter myth)
+
+On this host, importing pycardano cold triggers a real `AttributeError: module 'inspect' has no attribute 'signature'` from typing_extensions. This is NOT a hallucination — diagnosed 2026-04-23 by running scripts directly. Earlier prompts dismissed this as "Python myth"; that was wrong.
+
+The fix: pre-load `inspect.signature` at the very top of any Python script you write, BEFORE importing pycardano or any module that imports it. Example:
+
+```python
+# MUST be the first two lines
+import inspect
+_ = inspect.signature  # materialize the attribute now
+
+# Now safe to import the heavy stack
+import sys, os, json, hashlib
+sys.path.insert(0, "/home/user/code/vector-agent-modules/Module-3/python")
+from reputation_staking.ogmios_backend import OgmiosHttpContext as _o  # warms up the import chain
+sys.path.insert(0, "/home/user/code/vector-agent-modules/Module-1")
+from simulation.tx_builder import build_register_did, build_submit_claim, DeploymentState
+from simulation.config import DEPLOYMENT_PATH, NETWORK
+from simulation.chain import OgmiosContext
+from pycardano import Address, PaymentSigningKey, PaymentVerificationKey
+```
+
+If you skip the `import inspect; _ = inspect.signature` prelude, every script-file invocation will fail before doing anything. Heredoc invocations via `python3 <<EOF ... EOF` are also affected. The `python3 -c "..."` form is sometimes immune; do not rely on it being immune always — use the prelude.
+
+## Known on-chain blocker as of 2026-04-23
+
+Direct diagnostic confirmed: v15 builders (`build_submit_claim`, `build_open_challenge`, `build_juror_bond`) construct CBOR that the v10 testnet contracts reject with `Ogmios evaluateTransaction HTTP 400 — minting script terminated with error`. Cron is paused for this role. If you are reading this and cron has been re-enabled, that means either v15 was deployed to testnet (check `deploy/deployment-testnet.json` for `version: v15-...`) or a v10-compatible tx_builder was restored — proceed normally. If `version` still says `v10-testnet`, exit immediately with a journal note that cron re-enable was premature.

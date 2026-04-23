@@ -171,8 +171,7 @@ class SimController:
                 success=True,
             ))
 
-            # Bumped 15→30 on 2026-04-21 for mainnet propagation margin.
-            wait_confirm(secs=30)
+            wait_confirm(secs=15)
 
         except Exception as e:
             self.metrics.record_event(SimulationEvent(

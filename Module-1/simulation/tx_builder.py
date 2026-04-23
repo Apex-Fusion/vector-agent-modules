@@ -2035,13 +2035,11 @@ def build_select_jury(
     builder2 = build_tx(tuned_redeemers)
     tx = builder2.build_and_sign([skey], change_address=wallet_addr)
     tx_hash = submit_tx(tx_to_bytes(tx))
-    # 30s — Ogmios indexing lag after select_jury can cause commit_vote
+    # 15s — Ogmios indexing lag after select_jury can cause commit_vote
     # builds to race a not-yet-visible juror continuing UTxO. With the
     # batched commit_vote pattern we have ~150s of commit budget left;
-    # 30s here buys reliability against indexing variance. Bumped 15→30
-    # on 2026-04-21 after mainnet showed UTxO-not-found at select_jury
-    # in 3 transient failures — mainnet propagation is slower than testnet.
-    wait_confirm(secs=30)
+    # 15s here buys reliability against indexing variance.
+    wait_confirm(secs=15)
 
     return {
         "tx_hash": tx_hash,
@@ -3402,9 +3400,9 @@ def build_register_did(
     agent_datum = cbor2.CBORTag(121, [
         cbor2.CBORTag(121, [agent_vkh_bytes]),
         f"{scenario_name}_{role}".encode("utf-8"),
-        f"vector agent {role}".encode("utf-8"),
+        f"sim agent {role}".encode("utf-8"),
         [],
-        b"Vector-Agent",
+        b"Apex-Sim",
         b"",
         (system_start_unix + current_slot) * 1000,
     ])
