@@ -535,6 +535,17 @@ class SlashNonRevealScenario(HappyPathScenario):
         deployment = self._deployment_state()
 
         # Wait until challenge.resolution_deadline has passed.
+        #
+        # The on-chain validator (challenge.ak:658) asserts
+        # ``tx_started_after(deadline_ms)``, which in slot terms requires
+        # ``current_slot > deadline_slot``. Note the STRICT inequality:
+        # ``current_slot == deadline_slot`` is NOT sufficient and causes
+        # ``build_timeout_resolve`` to raise (tx_builder.py:4542) before
+        # we even submit. To avoid an off-by-one stall at the slot
+        # boundary — where a single upfront ``time.sleep`` can land us
+        # exactly on ``deadline_slot`` when the local clock and the
+        # tip-slot diverge — we poll the slot clock in short bursts and
+        # only proceed once ``current_slot > deadline_slot``.
         chal_txid_hex, chal_idx_str = self._challenge_ref.split("#")
         chal_utxo = resolve_utxo(chal_txid_hex, int(chal_idx_str))
         chal_cbor = (
@@ -546,10 +557,37 @@ class SlashNonRevealScenario(HappyPathScenario):
         challenged_at_ms = int(chal_datum.value[6])
         resolution_deadline_ms = int(chal_datum.value[7])
         deadline_ms = challenged_at_ms + resolution_deadline_ms
+        # Mirror tx_builder.build_timeout_resolve's slot math so scenario
+        # and builder agree on ``deadline_slot`` to the slot.
+        deadline_slot = (deadline_ms // 1000) - _SYS_START
+
+        # Coarse up-front sleep covers the bulk of the wait when we are
+        # still well before the deadline. Floor at 0 for already-past.
         current_slot_ms = (_SYS_START + ctx.last_block_slot) * 1000
         remaining_ms = deadline_ms - current_slot_ms
-        if remaining_ms > -10_000:
-            time.sleep(max(0, remaining_ms / 1000) + 10)
+        if remaining_ms > 0:
+            time.sleep(remaining_ms / 1000)
+
+        # Fine-grained poll: tip-slot can lag or advance non-monotonically
+        # relative to wall time. Re-query OgmiosContext (wait_confirm
+        # sleeps, and re-constructing ctx refreshes ``last_block_slot``)
+        # until we are STRICTLY past the deadline. Cap the extra wait so
+        # a dead chain fails loudly instead of hanging the lifecycle.
+        max_extra_wait_s = 120
+        waited_s = 0
+        while ctx.last_block_slot <= deadline_slot:
+            if waited_s >= max_extra_wait_s:
+                raise TimeoutError(
+                    f"timeout_resolve: waited {waited_s}s past initial "
+                    f"deadline sleep but current_slot="
+                    f"{ctx.last_block_slot} is still <= "
+                    f"deadline_slot={deadline_slot}. Chain tip may be "
+                    f"stalled (challenged_at_ms={challenged_at_ms}, "
+                    f"resolution_deadline_ms={resolution_deadline_ms})."
+                )
+            wait_confirm(secs=5)
+            waited_s += 5
+            ctx = OgmiosContext()
 
         # Use master as fee payer (permissionless but TX is large —
         # claim + challenge script spends, two burn mints, and two
