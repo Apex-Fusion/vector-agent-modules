@@ -316,6 +316,9 @@ class TestStepTimeoutResolvePollingLoop:
         )
         wait_confirm_calls = []
 
+        fake_ref_utxo = MagicMock()
+        fake_ref_utxo.output.script = b"fake_script"
+
         with patch(
             "simulation.chain.OgmiosContext",
             side_effect=slot_counter,
@@ -325,6 +328,12 @@ class TestStepTimeoutResolvePollingLoop:
         ), patch(
             "simulation.chain.resolve_utxo",
             return_value=resolve_utxo_stub,
+        ), patch(
+            "simulation.tx_builder.resolve_utxo",
+            return_value=resolve_utxo_stub,
+        ), patch(
+            "simulation.tx_builder.resolve_ref_utxo",
+            return_value=fake_ref_utxo,
         ), patch(
             "simulation.chain.SYSTEM_START_UNIX",
             new=sys_start,
@@ -381,6 +390,9 @@ class TestStepTimeoutResolvePollingLoop:
 
         # We track wait_confirm calls that happen INSIDE the polling loop
         # by counting all calls after the pre-sleep resolves.
+        fake_ref_utxo = MagicMock()
+        fake_ref_utxo.output.script = b"fake_script"
+
         with patch(
             "simulation.chain.OgmiosContext",
             side_effect=slot_counter,
@@ -390,6 +402,12 @@ class TestStepTimeoutResolvePollingLoop:
         ), patch(
             "simulation.chain.resolve_utxo",
             return_value=resolve_utxo_stub,
+        ), patch(
+            "simulation.tx_builder.resolve_utxo",
+            return_value=resolve_utxo_stub,
+        ), patch(
+            "simulation.tx_builder.resolve_ref_utxo",
+            return_value=fake_ref_utxo,
         ), patch(
             "simulation.chain.SYSTEM_START_UNIX",
             new=sys_start,
@@ -439,6 +457,9 @@ class TestStepTimeoutResolvePollingLoop:
             challenged_at_ms, resolution_deadline_ms
         )
 
+        fake_ref_utxo = MagicMock()
+        fake_ref_utxo.output.script = b"fake_script"
+
         with patch(
             "simulation.chain.OgmiosContext",
             side_effect=slot_counter,
@@ -447,6 +468,12 @@ class TestStepTimeoutResolvePollingLoop:
         ), patch(
             "simulation.chain.resolve_utxo",
             return_value=resolve_utxo_stub,
+        ), patch(
+            "simulation.tx_builder.resolve_utxo",
+            return_value=resolve_utxo_stub,
+        ), patch(
+            "simulation.tx_builder.resolve_ref_utxo",
+            return_value=fake_ref_utxo,
         ), patch(
             "simulation.chain.SYSTEM_START_UNIX",
             new=sys_start,

@@ -185,13 +185,20 @@ def _juror_token_from_seed(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
 FUNDING_PER_AGENT_LOVELACE = 80_000_000     # 80 ADA per derived sub-wallet
 DID_REG_OUTPUT_LOVELACE = 15_000_000        # locked at registry per-DID
 JUROR_BOND_LOVELACE = 25_000_000            # base-coin juror bond (Path B)
-WAIT_CONFIRM_SECS = 40                      # post-submit confirmation pause
+WAIT_CONFIRM_SECS = 60                      # post-submit confirmation pause
                                             # Bumped 20→40 on 2026-04-21 after
                                             # 3 observed mainnet transient
                                             # failures (OutsideValidityIntervalUTxO
                                             # + UTxO-not-found at select_jury).
+                                            # Bumped 40→60 on 2026-04-23 after
+                                            # AuditorWins flakiness returned
+                                            # (1 PASS / 4 FAIL at resolve_jury
+                                            # on mainnet); preflight was VALID
+                                            # but submit failed — strong signal
+                                            # that reveal TXs had not fully
+                                            # propagated before tally_revealed.
                                             # Mainnet block/slot propagation is
-                                            # slower than testnet; 40s gives the
+                                            # slower than testnet; 60s gives the
                                             # Ogmios indexer margin to see the
                                             # new outputs before the next step
                                             # fetches them.
@@ -2134,6 +2141,14 @@ class HappyPathScenario(ScenarioRunner):
         wait_confirm(secs=WAIT_CONFIRM_SECS)
 
         if self._reveal_index >= self.jury_size:
+            # Extra pre-resolve_jury propagation margin. Added 2026-04-23
+            # after AuditorWins flakiness (1 PASS / 4 FAIL at resolve_jury
+            # on mainnet) where preflight eval was VALID but submit failed —
+            # strong signal that reveal TXs had not fully propagated to the
+            # node view before tally_revealed_votes ran. This 30s is ON TOP
+            # of the WAIT_CONFIRM_SECS above, ensuring ALL 5 reveal outputs
+            # are visible to the validator when resolve_jury fetches them.
+            wait_confirm(secs=30)
             self._step = "resolve_jury"
         self.checkpoint()
 

@@ -172,7 +172,8 @@ class SimController:
             ))
 
             # Bumped 15→30 on 2026-04-21 for mainnet propagation margin.
-            wait_confirm(secs=30)
+            # Bumped 30→45 on 2026-04-23 (1.5× scale with happy_path 40→60).
+            wait_confirm(secs=45)
 
         except Exception as e:
             self.metrics.record_event(SimulationEvent(

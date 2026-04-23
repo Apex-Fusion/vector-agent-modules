@@ -572,7 +572,8 @@ def prepare_fee_payer_utxos(
 
     # Fallback: could not synthesize (weird tx_hash) — re-query.
     # Bumped 15→30 on 2026-04-21 for mainnet propagation margin.
-    wait_confirm(secs=30)
+    # Bumped 30→45 on 2026-04-23 (1.5× scale with happy_path 40→60 bump).
+    wait_confirm(secs=45)
     _, eligible = _scan()
     if len(eligible) < count:
         raise RuntimeError(

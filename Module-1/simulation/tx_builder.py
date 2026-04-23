@@ -2041,7 +2041,9 @@ def build_select_jury(
     # 30s here buys reliability against indexing variance. Bumped 15→30
     # on 2026-04-21 after mainnet showed UTxO-not-found at select_jury
     # in 3 transient failures — mainnet propagation is slower than testnet.
-    wait_confirm(secs=30)
+    # Bumped 30→45 on 2026-04-23 (1.5× scale with the happy_path 40→60
+    # bump) after resolve_jury flakiness returned on mainnet.
+    wait_confirm(secs=45)
 
     return {
         "tx_hash": tx_hash,
