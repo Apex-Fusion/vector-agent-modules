@@ -2158,7 +2158,7 @@ class HappyPathScenario(ScenarioRunner):
     # attributes so tests can monkeypatch them to speed up / assert
     # behaviour without touching private instance state.
     #
-    # Context for the retry (Chuck-approved, 2026-04-23): on mainnet the
+    # Context for the retry (approved 2026-04-23): on mainnet the
     # AuditorWins path shows a recurring evaluate/submit divergence —
     # --plutus-trace preflight returns evaluateTransaction=OK, but the
     # very next submitTransaction rejects with ConwayUtxowFailure →
@@ -2175,6 +2175,32 @@ class HappyPathScenario(ScenarioRunner):
     # on-chain resolution_deadline window remain. Cleanup buffer on top
     # of that keeps the whole TX landing comfortably before timeout.
     _RESOLVE_JURY_DEADLINE_FLOOR_MS = 30_000
+
+    # Per-attempt budget-safety multipliers passed through to
+    # evaluate_and_rebuild on each retry. Index = attempt number
+    # (0-indexed). The first attempt (index 0) uses the chain.py
+    # default 2.5x. Each subsequent retry escalates headroom because
+    # mainnet AuditorWins runs that fail at 2.5x have shown that fresh
+    # evaluate budgets re-fetched from a moved chain tip can still land
+    # too tight when the block-level budget pressure is unusually
+    # severe (e.g. several large reference_inputs in flight).
+    #
+    # Capped at 5.0 — chain.py also enforces this hard ceiling. Higher
+    # fees are acceptable when the alternative is a stuck lifecycle
+    # past resolution_deadline.
+    _RETRY_BUDGET_MULTIPLIERS = (2.5, 3.0, 4.0, 5.0)
+
+    @classmethod
+    def _retry_budget_multiplier(cls, attempt: int) -> float:
+        """Multiplier for the ``attempt``-th retry of ``_step_resolve_jury``.
+
+        ``attempt`` is 0-indexed (first attempt = 0, first retry = 1).
+        Falls back to the table's last entry for any attempt beyond
+        the table length so the retry loop never explodes if
+        ``_RESOLVE_JURY_MAX_ATTEMPTS`` is bumped past the table size.
+        """
+        idx = min(max(attempt, 0), len(cls._RETRY_BUDGET_MULTIPLIERS) - 1)
+        return cls._RETRY_BUDGET_MULTIPLIERS[idx]
 
     @staticmethod
     def _is_evaluate_submit_divergence(err: BaseException) -> bool:
@@ -2255,13 +2281,23 @@ class HappyPathScenario(ScenarioRunner):
                 if attempt > 0:
                     ctx = OgmiosContext()
 
+                # First attempt: don't pass safety_multiplier — preserves
+                # the chain.py default 2.5x and keeps the call shape
+                # identical to the pre-retry-escalation code path. Each
+                # subsequent retry escalates headroom via the table.
+                build_kwargs = {"jury_size": self.jury_size}
+                if attempt > 0:
+                    build_kwargs["safety_multiplier"] = (
+                        self._retry_budget_multiplier(attempt)
+                    )
+
                 result = _txb.build_resolve_jury(
                     ctx, deployment,
                     self.master_skey, self.master_vkey, self.master_wallet_addr,
                     self._challenge_ref,
                     self._claim_ref,
                     revealed_refs,
-                    jury_size=self.jury_size,
+                    **build_kwargs,
                 )
                 # build_resolve_jury internally calls wait_confirm(secs=25).
                 break
@@ -2286,6 +2322,11 @@ class HappyPathScenario(ScenarioRunner):
                     # Couldn't read deadline above — treat as no-retry.
                     raise
 
+                # Multiplier the NEXT attempt will use — emitted on the
+                # retry event so the metrics JSONL stream surfaces the
+                # escalation. attempt is 0-indexed; the next attempt is
+                # attempt+1 (which is also the 1-indexed "Nth retry").
+                next_multiplier = self._retry_budget_multiplier(attempt + 1)
                 retry_events.append({
                     "event_type": "resolve_jury_retry",
                     "step_index": 7,
@@ -2295,6 +2336,7 @@ class HappyPathScenario(ScenarioRunner):
                     "max_attempts": max_attempts,
                     "reason": "evaluate_submit_divergence",
                     "error_fragment": "FailedUnexpectedly PlutusFailure",
+                    "budget_multiplier": next_multiplier,
                 })
                 _time.sleep(self._RESOLVE_JURY_RETRY_SLEEP_SECS)
                 continue

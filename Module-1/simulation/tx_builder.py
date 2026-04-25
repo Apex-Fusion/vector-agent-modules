@@ -2114,6 +2114,7 @@ def build_resolve_jury(
     jury_size: int = 5,
     jury_fee_rate: int | None = None,  # basis points (10% = 1000)
     resolved_params=None,
+    safety_multiplier: float | None = None,
 ) -> dict:
     """Build and submit a ResolveJury transaction (v13 / Path B).
 
@@ -2570,9 +2571,18 @@ def build_resolve_jury(
     claim_mint_redeemer = Redeemer(forfeit_red_cbor, default_units)
 
     builder = build_tx(resolve_redeemer, forfeit_redeemer, claim_mint_redeemer)
-    _, budgets = evaluate_and_rebuild(
-        builder, skey, vkey, wallet_addr, context,
-    )
+    # Only forward safety_multiplier when explicitly set, so existing test
+    # fixtures that monkeypatch evaluate_and_rebuild with the legacy
+    # positional-only signature continue to work untouched.
+    if safety_multiplier is None:
+        _, budgets = evaluate_and_rebuild(
+            builder, skey, vkey, wallet_addr, context,
+        )
+    else:
+        _, budgets = evaluate_and_rebuild(
+            builder, skey, vkey, wallet_addr, context,
+            safety_multiplier=safety_multiplier,
+        )
 
     # Match budgets back per-index. Keys expected:
     #   spend:0 (challenge), spend:1 (claim), mint:0 (claim burn)

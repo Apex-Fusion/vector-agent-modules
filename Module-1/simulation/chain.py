@@ -625,8 +625,22 @@ def get_wallet_utxos_no_collateral(context, wallet_addr):
     return pure_ada[1:] + with_tokens
 
 
-def evaluate_and_rebuild(builder, skey, vkey, wallet_addr, context):
-    """Evaluate TX to get execution budgets, return (tx_bytes, budgets)."""
+def evaluate_and_rebuild(
+    builder, skey, vkey, wallet_addr, context, *, safety_multiplier=None,
+):
+    """Evaluate TX to get execution budgets, return (tx_bytes, budgets).
+
+    Parameters
+    ----------
+    safety_multiplier : float | None
+        Override the default 2.5x budget headroom multiplier. ``None``
+        (default) keeps the historical behaviour. Used by retry paths
+        (e.g. ``_step_resolve_jury``) to escalate per-attempt headroom
+        on chains where the first-attempt 2.5x buffer keeps overrunning
+        — see ``_RETRY_BUDGET_MULTIPLIERS`` in
+        ``simulation.scenarios.happy_path.HappyPathScenario``.
+        Capped at 5.0 to keep fees bounded.
+    """
     tx = builder.build_and_sign([skey], change_address=wallet_addr)
     tx_bytes = tx_to_bytes(tx)
     tx_hex = tx_bytes.hex()
@@ -642,6 +656,10 @@ def evaluate_and_rebuild(builder, skey, vkey, wallet_addr, context):
     # to 2.5x to absorb that drift. Higher fees are acceptable in
     # sim-testnet and sim-mainnet; correctness over minimality.
     _BUDGET_SAFETY = 2.5
+    if safety_multiplier is not None:
+        # Hard cap at 5.0 — protect against unbounded growth if a buggy
+        # caller passes a large multiplier in a tight retry loop.
+        _BUDGET_SAFETY = min(float(safety_multiplier), 5.0)
     budgets = {}
     eval_errors = []
     if isinstance(eval_result, list):

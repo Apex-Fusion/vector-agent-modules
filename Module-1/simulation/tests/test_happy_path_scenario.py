@@ -965,7 +965,7 @@ class TestHappyPathBalances:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Setup-phase contract tests (added per Chuck's amend — RED until 3b)
+# Setup-phase contract tests (added per amend — RED until 3b)
 #
 # These pin the setup_complete event contract that decouples setup time from
 # the lifecycle timeout, and the idempotency requirement on restart.
@@ -1357,7 +1357,7 @@ class TestResolveJurySubmitRetry:
     build_resolve_jury — preflight evaluateTransaction returns OK, then
     submitTransaction immediately rejects with PlutusFailure under
     IsValid True (chain-state drift between the two Ogmios calls).
-    Chuck-approved fix: rebuild the TX from fresh inputs and retry,
+    Approved fix: rebuild the TX from fresh inputs and retry,
     bounded by attempts and the on-chain resolution_deadline window.
 
     These unit tests pin the contract:
@@ -1662,4 +1662,257 @@ class TestResolveJurySubmitRetry:
         assert sleep_calls == [], (
             f"No retry sleep when out of deadline budget. Got: "
             f"{sleep_calls!r}."
+        )
+
+    def test_first_attempt_receives_no_safety_multiplier(
+        self, base_kwargs, monkeypatch,
+    ):
+        """First attempt must NOT pass safety_multiplier to build_resolve_jury.
+
+        The no-retry path must preserve the chain.py default 2.5x exactly —
+        passing safety_multiplier=None or omitting the kwarg entirely are
+        both acceptable.  The test captures **kwargs and asserts the key
+        is absent (or explicitly None) on call 1.
+        """
+        self._stub_resolved_params(monkeypatch)
+        sleep_calls: list = []
+        self._patch_chain_and_params(monkeypatch, sleep_calls)
+
+        s = self._make_scenario(base_kwargs)
+        monkeypatch.setattr(s, "_deployment_state", lambda: object())
+        monkeypatch.setattr(s, "checkpoint", lambda: None)
+
+        captured_kwargs: list[dict] = []
+        success_payload = {
+            "tx_hash": "aa" * 32,
+            "verdict": "AuditorWins",
+            "resolved_challenge_ref": "aa" * 32 + "#0",
+            "jury_fee": 1_000_000,
+            "claimer_payout": None,
+            "auditor_payout": 89_000_000,
+        }
+
+        def fake_build_resolve_jury(*args, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            return dict(success_payload)
+
+        import simulation.tx_builder as _txb
+        monkeypatch.setattr(
+            _txb, "build_resolve_jury", fake_build_resolve_jury,
+        )
+
+        s._step_resolve_jury(epoch=0)
+
+        assert len(captured_kwargs) == 1, (
+            "Expected exactly one build_resolve_jury call on the happy path."
+        )
+        first_call_sm = captured_kwargs[0].get("safety_multiplier")
+        assert first_call_sm is None, (
+            f"First attempt must NOT pass safety_multiplier (or pass None). "
+            f"Got safety_multiplier={first_call_sm!r}."
+        )
+
+    def test_second_attempt_receives_safety_multiplier_3_0(
+        self, base_kwargs, monkeypatch,
+    ):
+        """After one PlutusFailure divergence the second build_resolve_jury call
+        must receive safety_multiplier=3.0 and the retry event must carry
+        budget_multiplier=3.0 (the multiplier the NEXT attempt will use)."""
+        self._stub_resolved_params(monkeypatch)
+        sleep_calls: list = []
+        self._patch_chain_and_params(monkeypatch, sleep_calls)
+
+        s = self._make_scenario(base_kwargs)
+        monkeypatch.setattr(s, "_deployment_state", lambda: object())
+        monkeypatch.setattr(s, "checkpoint", lambda: None)
+
+        captured_kwargs: list[dict] = []
+        call_count = {"n": 0}
+        success_payload = {
+            "tx_hash": "bb" * 32,
+            "verdict": "AuditorWins",
+            "resolved_challenge_ref": "bb" * 32 + "#0",
+            "jury_fee": 1_000_000,
+            "claimer_payout": None,
+            "auditor_payout": 89_000_000,
+        }
+
+        def fake_build_resolve_jury(*args, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError(
+                    "Submit failed (400): "
+                    "ConwayUtxowFailure (UtxoFailure (UtxosFailure "
+                    "(ValidationTagMismatch (IsValid True) "
+                    "(FailedUnexpectedly (PlutusFailure ...))))"
+                )
+            return dict(success_payload)
+
+        import simulation.tx_builder as _txb
+        monkeypatch.setattr(
+            _txb, "build_resolve_jury", fake_build_resolve_jury,
+        )
+
+        events = s._step_resolve_jury(epoch=0)
+
+        assert len(captured_kwargs) == 2, (
+            f"Expected 2 build_resolve_jury calls. Got {len(captured_kwargs)}."
+        )
+        # First attempt: no safety_multiplier override.
+        assert captured_kwargs[0].get("safety_multiplier") is None, (
+            f"First attempt must not pass safety_multiplier. "
+            f"Got: {captured_kwargs[0].get('safety_multiplier')!r}."
+        )
+        # Second attempt (first retry): must escalate to 3.0.
+        assert captured_kwargs[1].get("safety_multiplier") == 3.0, (
+            f"Second attempt must pass safety_multiplier=3.0. "
+            f"Got: {captured_kwargs[1].get('safety_multiplier')!r}."
+        )
+        # The retry event emitted BEFORE the second attempt must carry
+        # budget_multiplier=3.0 (the next attempt's multiplier).
+        retry_events = [
+            e for e in events if e.get("event_type") == "resolve_jury_retry"
+        ]
+        assert len(retry_events) == 1, (
+            f"Expected exactly one resolve_jury_retry event. Got: "
+            f"{[e.get('event_type') for e in events]!r}."
+        )
+        assert retry_events[0]["budget_multiplier"] == 3.0, (
+            f"retry event budget_multiplier must be 3.0. "
+            f"Got: {retry_events[0]['budget_multiplier']!r}."
+        )
+
+    def test_third_attempt_receives_safety_multiplier_4_0(
+        self, base_kwargs, monkeypatch,
+    ):
+        """After two PlutusFailure divergences the third build_resolve_jury call
+        must receive safety_multiplier=4.0 and the second retry event must
+        carry budget_multiplier=4.0."""
+        self._stub_resolved_params(monkeypatch)
+        sleep_calls: list = []
+        self._patch_chain_and_params(monkeypatch, sleep_calls)
+
+        s = self._make_scenario(base_kwargs)
+        monkeypatch.setattr(s, "_deployment_state", lambda: object())
+        monkeypatch.setattr(s, "checkpoint", lambda: None)
+
+        captured_kwargs: list[dict] = []
+        call_count = {"n": 0}
+        success_payload = {
+            "tx_hash": "cc" * 32,
+            "verdict": "AuditorWins",
+            "resolved_challenge_ref": "cc" * 32 + "#0",
+            "jury_fee": 1_000_000,
+            "claimer_payout": None,
+            "auditor_payout": 89_000_000,
+        }
+
+        def fake_build_resolve_jury(*args, **kwargs):
+            captured_kwargs.append(dict(kwargs))
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                raise RuntimeError(
+                    "Submit failed (400): "
+                    "ConwayUtxowFailure (UtxoFailure (UtxosFailure "
+                    "(ValidationTagMismatch (IsValid True) "
+                    "(FailedUnexpectedly (PlutusFailure ...))))"
+                )
+            return dict(success_payload)
+
+        import simulation.tx_builder as _txb
+        monkeypatch.setattr(
+            _txb, "build_resolve_jury", fake_build_resolve_jury,
+        )
+
+        events = s._step_resolve_jury(epoch=0)
+
+        assert len(captured_kwargs) == 3, (
+            f"Expected 3 build_resolve_jury calls. Got {len(captured_kwargs)}."
+        )
+        # Third attempt (second retry): must escalate to 4.0.
+        assert captured_kwargs[2].get("safety_multiplier") == 4.0, (
+            f"Third attempt must pass safety_multiplier=4.0. "
+            f"Got: {captured_kwargs[2].get('safety_multiplier')!r}."
+        )
+        retry_events = [
+            e for e in events if e.get("event_type") == "resolve_jury_retry"
+        ]
+        assert len(retry_events) == 2, (
+            f"Expected exactly two resolve_jury_retry events. Got: "
+            f"{[e.get('event_type') for e in events]!r}."
+        )
+        # Second retry event must advertise the 4.0 multiplier used for
+        # the third attempt.
+        assert retry_events[1]["budget_multiplier"] == 4.0, (
+            f"Second retry event budget_multiplier must be 4.0. "
+            f"Got: {retry_events[1]['budget_multiplier']!r}."
+        )
+        assert sleep_calls == [8, 8], (
+            f"Two retries must produce two 8 s sleeps. Got: {sleep_calls!r}."
+        )
+
+    def test_retry_events_budget_multiplier_matches_next_attempt(
+        self, base_kwargs, monkeypatch,
+    ):
+        """Each resolve_jury_retry event must carry budget_multiplier equal to
+        the multiplier that will be passed to the NEXT build_resolve_jury call.
+
+        Two failures -> two retry events:
+          retry event[0].budget_multiplier == 3.0  (attempt-1 will use 3.0)
+          retry event[1].budget_multiplier == 4.0  (attempt-2 will use 4.0)
+        """
+        self._stub_resolved_params(monkeypatch)
+        sleep_calls: list = []
+        self._patch_chain_and_params(monkeypatch, sleep_calls)
+
+        s = self._make_scenario(base_kwargs)
+        monkeypatch.setattr(s, "_deployment_state", lambda: object())
+        monkeypatch.setattr(s, "checkpoint", lambda: None)
+
+        call_count = {"n": 0}
+        success_payload = {
+            "tx_hash": "dd" * 32,
+            "verdict": "AuditorWins",
+            "resolved_challenge_ref": "dd" * 32 + "#0",
+            "jury_fee": 1_000_000,
+            "claimer_payout": None,
+            "auditor_payout": 89_000_000,
+        }
+
+        def fake_build_resolve_jury(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                raise RuntimeError(
+                    "Submit failed (400): "
+                    "ConwayUtxowFailure (UtxoFailure (UtxosFailure "
+                    "(ValidationTagMismatch (IsValid True) "
+                    "(FailedUnexpectedly (PlutusFailure ...))))"
+                )
+            return dict(success_payload)
+
+        import simulation.tx_builder as _txb
+        monkeypatch.setattr(
+            _txb, "build_resolve_jury", fake_build_resolve_jury,
+        )
+
+        events = s._step_resolve_jury(epoch=0)
+
+        retry_events = [
+            e for e in events if e.get("event_type") == "resolve_jury_retry"
+        ]
+        assert len(retry_events) == 2, (
+            f"Expected 2 resolve_jury_retry events for 2 failures. "
+            f"Got: {len(retry_events)}."
+        )
+        # Event emitted before attempt-1 (first retry): next multiplier = 3.0.
+        assert retry_events[0]["budget_multiplier"] == 3.0, (
+            f"First retry event must carry budget_multiplier=3.0 "
+            f"(the multiplier used by the next attempt). "
+            f"Got: {retry_events[0]['budget_multiplier']!r}."
+        )
+        # Event emitted before attempt-2 (second retry): next multiplier = 4.0.
+        assert retry_events[1]["budget_multiplier"] == 4.0, (
+            f"Second retry event must carry budget_multiplier=4.0. "
+            f"Got: {retry_events[1]['budget_multiplier']!r}."
         )
