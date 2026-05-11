@@ -98,6 +98,10 @@ Spec reference: `Module-6/docs/MODULE-6-GOVERNANCE-SUGGESTION-ENGINE-IMPL-SPEC.m
 - [x] Wallet + signing key (`wallets/`)
 - [x] Deploy state JSON (`wallets/deploy_state.json`)
 
+### Mainnet Deployment
+
+**v8 (2026-04-15):** Module 6 went live on Vector mainnet. 14 deployment transactions — 3 holder ref scripts, 5 validator ref scripts, GovernanceParams + GovernanceOracle datums, GovernanceCrossRefs NFT, 3 Treasury batch UTxOs. All reference scripts at unspendable script-hash-derived addresses. Built against agent-registry v2 (`be1a0a29…`). Full hashes/addresses/UTxOs: [`deploy/mainnet/DEPLOY.md`](../deploy/mainnet/DEPLOY.md). Total deploy cost ~225 AP3X.
+
 ### Testnet Deployment
 
 **Latest clean deployment (2026-04-15, v8):** Built with `aiken build --trace-level verbose --trace-filter user-defined` for on-chain diagnostics. Full fresh deploy from wiped deploy_state.

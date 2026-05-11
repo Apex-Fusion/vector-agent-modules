@@ -9,7 +9,7 @@ deploy/
 │   ├── DEPLOY.md            ← Human-readable: hashes, addresses, params, lifecycle
 │   ├── deployment.json      ← Machine-readable deployment state
 │   └── lifecycle-results.json
-└── mainnet/       ← Vector mainnet deployment (TBD)
+└── mainnet/       ← Vector mainnet deployment (v8, 2026-04-15 — live)
 ```
 
 ## Why per-network folders

@@ -1,6 +1,6 @@
 # Module 6: Self-Improvement Module
 
-> **⚠️ WORK IN PROGRESS** — Phase 1.0/1.1 contracts are complete and tested on Vector testnet (9/9 lifecycle tests pass). Phase 1.2 (prediction market, timelocks) not yet implemented. No independent third-party audit.
+> **Status:** Live on Vector mainnet — v8, deployed 2026-04-15 (Phase 1.0/1.1; see [deploy/mainnet/DEPLOY.md](deploy/mainnet/DEPLOY.md)). Phase 1.2 (prediction market, timelocks) not yet implemented. No independent third-party audit.
 
 ## What Is This?
 
@@ -32,6 +32,7 @@ Emergency proposals (5x stake, 12h window) are available for urgent parameter ch
 | [Single-Agent Instructions](docs/single-agent-instructions.md) | Standalone guide for an AI agent to bootstrap and participate |
 | [Implementation Spec](docs/implementation-spec.md) | Full spec — types, validation rules, game theory, reward economics |
 | [Progress Tracker](docs/progress.md) | What's done, what's left, bug history (15 found and fixed) |
+| [Mainnet Deployment](deploy/mainnet/DEPLOY.md) | Contract hashes, mainnet addresses, GovernanceParams, infrastructure UTxOs |
 | [Testnet Deployment](deploy/testnet/DEPLOY.md) | Contract hashes, testnet addresses, GovernanceParams, lifecycle results |
 
 ## Contracts
@@ -51,7 +52,8 @@ Two Aiken (Plutus V3) multi-validators + supporting libraries — 2,676 lines of
 | `types.ak` | 417 | All on-chain types (ProposalDatum, CritiqueDatum, GovernanceParams, etc.) |
 
 **Tests:** 168/168 Aiken tests passing (unit, integration, property-based)
-**Testnet:** 9/9 lifecycle steps confirmed (v6)
+**Mainnet:** Live since 2026-04-15 (v8) — see [deploy/mainnet/DEPLOY.md](deploy/mainnet/DEPLOY.md)
+**Testnet:** 9/9 lifecycle steps confirmed (v8) — see [deploy/testnet/DEPLOY.md](deploy/testnet/DEPLOY.md)
 
 ```bash
 cd contracts/governance-suggestion/
@@ -79,17 +81,17 @@ nix-shell shell.nix --run "python scripts/deploy.py"
 nix-shell shell.nix --run "python scripts/smoke_test.py"
 ```
 
-## Contract Hashes (v8 — agent-registry v2)
+## Contract Hashes — Mainnet (v8, agent-registry v2)
 
-Built against agent-registry **v2** (`be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`). For the previous v7 hashes see `deploy/testnet/DEPLOY.md` version history.
+Built against agent-registry **v2** (`be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`). For testnet hashes see [`deploy/testnet/DEPLOY.md`](deploy/testnet/DEPLOY.md); validators are parameterized per-network so testnet and mainnet have different script hashes.
 
 | Validator | Script Hash |
 |-----------|-------------|
-| proposal_spend | `f815f51a76002d6a973e83fecf60f45473e040acee85c631fcce134d` |
-| proposal_mint | `e8f38052352a3d20c5fe025e2a02d615826a154b26f2239286b8d565` |
-| critique_spend | `ced52074861af95e2082004d6061b0fc4bb30fded61f9605bfc20e55` |
-| critique_mint | `2e252a89894d379ce5c0023a57de4627056e4a96da72bd8fedba04bd` |
-| endorsement_spend | `5fc449848d85f30287e5bc0bd2b3e95d872ef97be27f1480c12f1a9d` |
+| proposal_spend | `98b610c59597e9046dbede8d38d6f9c2c6635167ddcdcb874d39d589` |
+| proposal_mint | `fdcefb68c765c4e4c1483baa01b6e9624c870d9d56380f7c2dfb65cc` |
+| critique_spend | `51d852464933e2b7c83fbed6f2818feec5ebd6e542b4b10404ea30ea` |
+| critique_mint | `b4562214183267db848af597672061a42e149e14f0e989db4d8b6296` |
+| endorsement_spend | `d710216bbb422993aea316db9fcbfe6c2451341b71d629e8bb93e0ee` |
 
 ## Cross-Module Integration
 
@@ -117,7 +119,7 @@ Module-6/
 │   │   ├── DEPLOY.md                  ← Hashes, addresses, params, lifecycle results
 │   │   ├── deployment.json            ← Machine-readable deployment state
 │   │   └── lifecycle-results.json     ← Test results with tx hashes
-│   └── mainnet/                       ← (placeholder — populated when deployed)
+│   └── mainnet/                       ← Vector mainnet deployment artifacts (v8, 2026-04-15)
 ├── docs/                              ← Specification + progress tracker
 │   ├── implementation-spec.md
 │   └── progress.md
