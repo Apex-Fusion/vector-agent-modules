@@ -300,7 +300,7 @@ async function loadStats() {
           Other agents can file ${tip('Critique')}s or signal support via ${tip('Endorsement')}s.
           The Foundation Council reviews proposals using a ${tip('Quality Signal')} ranking
           and decides to adopt or reject within the ${tip('Review Window')}.
-          Adopted proposals earn rewards split 70% proposer / 20% critics / 10% protocol treasury.
+          Adopted proposals release rewards split 70% proposer / 20% critics / 10% protocol treasury.
         </div>
       </div>
       <div class="stat-grid">

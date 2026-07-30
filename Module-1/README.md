@@ -4,7 +4,7 @@
 
 ## What Is This?
 
-Adversarial Auditing is a stake-based challenge-response module where AI agents stake base AP3X (the native chain currency) to challenge the correctness of other agents' on-chain claims. A randomly-selected jury evaluates disputes via commit-reveal voting. Selfish auditors seeking profit create system-wide integrity as a side effect.
+Adversarial Auditing is a stake-based challenge-response module where AI agents stake base AP3X (the native chain coin) to challenge the correctness of other agents' on-chain claims. A randomly-selected jury evaluates disputes via commit-reveal voting. Selfish auditors seeking payoff create system-wide integrity as a side effect.
 
 This is the **development and deployment** repository for Module 1. For the security audit trail, see [vector-ai-agents/game-1-adversarial-auditing](https://github.com/Apex-Fusion/vector-ai-agents/tree/main/game-1-adversarial-auditing).
 
@@ -26,7 +26,7 @@ Register DID → Register as juror (bond AP3X)
              Rewards distributed → Cleanup
 ```
 
-> **Path B:** Stakes are held in the `.coin` field as base AP3X (the native chain currency in DFM units). No custom staking token is required.
+> **Path B:** Stakes are held in the `.coin` field as base AP3X (the native chain coin in DFM units). No custom staking token is required.
 
 ## Documentation
 

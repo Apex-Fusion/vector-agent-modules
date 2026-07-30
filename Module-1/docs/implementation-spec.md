@@ -13,7 +13,7 @@
 
 Adversarial Auditing is a stake-based challenge-response module where agents stake AP3X to challenge the correctness of other agents' on-chain claims. It serves as the **dispute resolution layer** for the entire Vector agent economy (Core Stack: Modules 1 + 3 + 5 + 12).
 
-Selfish auditors seeking profit create system-wide integrity as a side effect — the Bitcoin analogy applied to trust verification.
+Selfish auditors seeking payoff create system-wide integrity as a side effect — the Bitcoin analogy applied to trust verification.
 
 ---
 
@@ -464,7 +464,7 @@ MUST:
 
 ## 5. Parameters
 
-All parameters are governance-adjustable (Module 6 pathway).
+All parameters are adjustable via Module 6 improvement proposals.
 
 | Parameter | Initial Value | Unit | Rationale |
 |-----------|--------------|------|-----------|
@@ -494,7 +494,7 @@ All parameters are governance-adjustable (Module 6 pathway).
 
 1. **On-chain rule**: `auditor_did != claimer_did` (prevents trivial self-audit)
 2. **Randomized jury**: Even if claimer and auditor collude, the jury is randomly selected and cannot be controlled
-3. **Stake symmetry**: Auditor must stake >= claimer's stake. Self-auditing is net-zero minus jury fees and tx costs — it's *unprofitable by design*
+3. **Stake symmetry**: Auditor must stake >= claimer's stake. Self-auditing is net-zero minus jury fees and tx costs — it's *negative-come out ahead by design*
 4. **DID graph analysis** (off-chain monitoring, Phase 1.1):
    - Track auditor-claimer pair frequency
    - Flag DIDs that audit each other with statistical anomaly detection
@@ -578,7 +578,7 @@ pub type AuditingConfig {
 ```
 
 **Deployment order**:
-1. Deploy protocol params UTXO (governance-controlled)
+1. Deploy protocol params UTXO (Foundation-controlled)
 2. Compile all three validators with each other's hashes (circular dependency resolved by Aiken's `else` clause — validators can be compiled independently, then cross-referenced via the config datum in the params UTXO)
 3. Alternative: use a shared config UTXO as reference input containing all script hashes
 
@@ -619,7 +619,7 @@ fn verify_active_did(
 
 ### 7.3 Protocol Parameters as Reference UTXO
 
-Protocol parameters (MIN_CLAIM_STAKE, JURY_SIZE, etc.) stored in a **parameter UTXO** at a governance-controlled address. Validators read parameters via reference input, enabling governance updates without redeploying contracts.
+Protocol parameters (MIN_CLAIM_STAKE, JURY_SIZE, etc.) stored in a **parameter UTXO** at a Foundation-controlled address. Validators read parameters via reference input, enabling parameter updates without redeploying contracts.
 
 ```aiken
 pub type ProtocolParams {
@@ -717,7 +717,7 @@ class AuditingClient:
     },
     {
       "name": "auditing_browse_claims",
-      "description": "Browse open claims that can be audited for profit",
+      "description": "Browse open claims that can be audited at positive expected payoff",
       "input_schema": {
         "claim_type": "string (optional filter)",
         "min_stake": "number (optional minimum stake)"
@@ -821,7 +821,7 @@ The Koios indexer must track:
 
 A dedicated monitoring agent (Module 9) can:
 - Watch for new claims and evaluate them automatically
-- Challenge suspicious claims (profitable if successful)
+- Challenge suspicious claims (positive-payoff if successful)
 - Alert human operators of high-stake challenges
 - Compute audit diversity metrics
 - Feed data to the AFI Security Score component
@@ -845,18 +845,18 @@ Claimer  True      (-fee, -stake)  (0, 0)
 
 | Player Type | Claimer Incentive | Auditor Incentive | Juror Incentive |
 |-------------|-------------------|-------------------|-----------------|
-| Type 1 (Solo) | Build reputation cheaply | Earn AP3X from catching frauds | Earn jury fees |
+| Type 1 (Solo) | Build reputation cheaply | Receive AP3X from catching frauds | Receive jury fees |
 | Type 2 (Swarm) | Validate swarm outputs | Specialize auditor agents | Specialize juror agents |
 | Type 3 (Autonomous) | Automated claim pipeline | Automated audit scanning | Automated jury service |
 
 ### 10.3 Economic Viability
 
-**For auditors to participate, auditing must be profitable**:
+**For auditors to participate, auditing must be positive-payoff**:
 
 ```
 E[auditor_profit] = P(false_claim) × claim_stake × (1 - jury_fee_rate) - P(true_claim) × auditor_stake - tx_costs
 
-Auditing is profitable when:
+Auditing carries positive expected payoff when:
   P(false_claim) > (auditor_stake + tx_costs) / (claim_stake × (1 - jury_fee_rate) + auditor_stake)
 ```
 
@@ -865,14 +865,14 @@ Auditing is profitable when:
 - Expected loss per challenge: 0.95 × 50 = 47.5 AP3X
 - Net: -45.25 AP3X per random challenge
 
-**Implication**: Auditors must be *selective*, not random. They profit by identifying likely-false claims through off-chain analysis. This is the intended behavior — it rewards competent auditors over random challengers.
+**Implication**: Auditors must be *selective*, not random. They come out ahead by identifying likely-false claims through off-chain analysis. This is the intended behavior — it rewards competent auditors over random challengers.
 
 ### 10.4 Sybil Analysis
 
 **Self-auditing (same operator, two DIDs)**:
 - Claimer stakes 50, auditor stakes 50. One wins, one loses.
 - Net: -jury_fee (10% of 50 = 5 AP3X) - tx_costs (~0.5 AP3X)
-- Self-auditing is always unprofitable: **-5.5 AP3X per cycle**
+- Self-auditing is always negative-payoff: **-5.5 AP3X per cycle**
 
 **Fake-claim farming (submit unchallenged claims)**:
 - Works only if no auditors exist
@@ -951,7 +951,7 @@ audit_health = (challenges_resolved × avg_stake) / total_claims
 | No auditors show up (chicken-and-egg) | High | Medium | Foundation oracle in Phase 1.0; bounties for early auditors |
 | Jury pool too small | Medium | High at launch | Phase 1.0 uses Foundation; jury requires 10+ jurors to activate |
 | Collusion between jurors | Medium | Low | Random selection + commit-reveal + minority penalty |
-| Parameter miscalibration | Medium | Medium | Governance-adjustable params; conservative initial values |
+| Parameter miscalibration | Medium | Medium | Proposal-adjustable params; conservative initial values |
 | Smart contract vulnerability | Critical | Low | Aiken type safety; formal testing; phased deployment |
 | Capital lockup discourages participation | Medium | Medium | Short default windows (2h challenge, 6h resolution) |
 
@@ -1010,7 +1010,7 @@ cost_to_challenge = tx_fee(~0.3 AP3X) + stake_amount(50 AP3X)
 potential_reward = claim_stake(50 AP3X) × (1 - jury_fee_rate)
 ```
 
-No gas estimation uncertainty. No "transaction failed, lost gas" scenarios. This is critical for autonomous agents that must make profit/loss calculations without human oversight.
+No gas estimation uncertainty. No "transaction failed, lost gas" scenarios. This is critical for autonomous agents that must make payoff/loss calculations without human oversight.
 
 ### 16.5 UTXO Provenance for Audit Trail
 
@@ -1141,7 +1141,7 @@ STEP 4 — Payout:
   Claim state: Invalidated
 
 RESULT:
-  - AuditBot profit: +100 AP3X (minus ~0.6 AP3X tx fees)
+  - AuditBot payoff: +100 AP3X (minus ~0.6 AP3X tx fees)
   - IndexBot loss: -100 AP3X
   - System benefit: false indexing claim removed, data integrity improved
   - AFI impact: Security Score +1 (false claim caught)

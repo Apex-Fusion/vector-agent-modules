@@ -13,19 +13,19 @@
 
 Adversarial Auditing is a **stake-based challenge-response protocol** where autonomous AI agents challenge each other's on-chain claims through economic incentives. It serves as the dispute resolution layer for the Apex multi-module agent economy.
 
-The core insight: **selfish auditors seeking profit create system-wide integrity as a side effect** — the same mechanism that makes Bitcoin mining work, applied to trust verification.
+The core insight: **selfish auditors seeking payoff create system-wide integrity as a side effect** — the same mechanism that makes Bitcoin mining work, applied to trust verification.
 
 An agent submits a claim (e.g., "I indexed 10,000 blocks correctly") and locks AP3X as stake. Any other agent can challenge that claim by staking an equal amount. A randomly-selected jury of peer agents evaluates both sides and delivers a verdict. The loser forfeits their stake to the winner, minus a jury fee.
 
-> **Path B — Base AP3X Stakes:** Staking uses the native chain currency (AP3X, in DFM units), held in the `.coin` field of UTxOs. No custom fungible staking token is required. v13 and v14 use this model exclusively. Path A (custom token staking) is legacy and not active on mainnet.
+> **Path B — Base AP3X Stakes:** Staking uses the native chain coin (AP3X, in DFM units), held in the `.coin` field of UTxOs. No custom fungible staking token is required. v13 and v14 use this model exclusively. Path A (custom token staking) is legacy and not active on mainnet.
 
 This creates three interlocking economic roles:
 
 | Role | Incentive | Risk |
 |------|-----------|------|
 | **Claimer** | Build reputation, validate work | Lose stake if claim is false |
-| **Auditor** | Earn AP3X by catching false claims | Lose stake if challenge is wrong |
-| **Juror** | Earn jury fees for honest evaluation | Bond slashed for non-participation |
+| **Auditor** | Receive AP3X by catching false claims | Lose stake if challenge is wrong |
+| **Juror** | Receive jury fees for honest evaluation | Bond slashed for non-participation |
 
 ---
 
@@ -76,8 +76,8 @@ The system is implemented as three Aiken multi-validators, each handling both to
 ### 2.2 External Dependencies
 
 - **Agent Registry** — Soulbound NFT identity system (deployed separately). Every participant must have an active DID (Decentralized Identifier) registered as an NFT. Verified via CIP-31 reference inputs — the registry UTxO is read but never consumed.
-- **AP3X** — The native chain currency of the Vector L2 (lovelace-equivalent in DFM units). Stakes are held in the `.coin` field of UTxOs. This is Path B: no custom multi-asset staking token is used. v13+ exclusively uses base AP3X for all staking operations.
-- **Protocol Parameters** — Governance-controlled UTxO containing configurable parameters (stake minimums, time windows, jury size, fee rates). Read as reference input by all three validators.
+- **AP3X** — The native chain coin of the Vector L2 (lovelace-equivalent in DFM units). Stakes are held in the `.coin` field of UTxOs. This is Path B: no custom multi-asset staking token is used. v13+ exclusively uses base AP3X for all staking operations.
+- **Protocol Parameters** — parameter UTxO (managed via Module 6 improvement proposals) containing configurable parameters (stake minimums, time windows, jury size, fee rates). Read as reference input by all three validators.
 - **Cross-Validator References** — A dedicated UTxO holding the script hashes of all three validators plus the registry, secured by a NativeScript policy. Prevents cross-reference poisoning attacks.
 
 ### 2.3 Why Three Validators?
@@ -300,7 +300,7 @@ Two risks were identified during red-team testing that are **inherent to the mod
 
 **Economic analysis:** Requires controlling 3+ of 5 selected jurors. With a pool of 20 jurors, controlling 3 requires bonding 3×25 = 75 AP3X minimum. Combined with seed grinding, an attacker who controls 6 of 20 jurors has ~16% chance of getting 3+ on any panel.
 
-**Mitigation path:** Module 3 (Reputation Staking) introduces reputation-weighted jury selection, making it more expensive to get colluding jurors selected. Larger jury pools (configurable via governance) reduce collision probability. Dynamic jury sizing for high-value claims adds further protection.
+**Mitigation path:** Module 3 (Reputation Staking) introduces reputation-weighted jury selection, making it more expensive to get colluding jurors selected. Larger jury pools (configurable via Module 6 proposals) reduce collision probability. Dynamic jury sizing for high-value claims adds further protection.
 
 ---
 
@@ -315,7 +315,7 @@ Each claim and each challenge is an independent UTxO. 1,000 agents submitting 1,
 When multiple auditors race to challenge the same claim, only the first valid transaction consuming the claim UTxO succeeds. The second fails deterministically at **zero cost** (no fees for failed transactions). No MEV extraction possible. This creates a healthy race to audit.
 
 ### 7.3 Deterministic Fee Calculation
-Agents know exact transaction costs before submission — critical for autonomous agents making profit/loss calculations without human oversight.
+Agents know exact transaction costs before submission — critical for autonomous agents making payoff/loss calculations without human oversight.
 
 ### 7.4 Self-Contained State Machines
 Each challenge UTxO encodes its own resolution parameters in its datum. No global "resolution manager" needed. This means no admin key risk, no global pause function, and simpler formal verification.
@@ -345,7 +345,7 @@ Production parameters are baked on-chain (v14-mainnet):
 | CLEANUP_BUFFER | 10 | min | Grace period before challenge cleanup |
 | ORACLE_ACTIVE | False | — | Jury mode from genesis |
 
-All AP3X values are in base units (DFM). Stakes are held in the `.coin` field — Path B, native chain currency only.
+All AP3X values are in base units (DFM). Stakes are held in the `.coin` field — Path B, native chain coin only.
 
 ---
 
@@ -392,4 +392,4 @@ The audit results feed into the Apex Fusion Index (AFI):
 
 ---
 
-*This document describes the v14-mainnet implementation deployed to Vector mainnet on 2026-04-16. Path B (base AP3X stakes) is the production stake model — stakes are held in the `.coin` field as the native chain currency, not as a custom multi-asset token. Contract semantics were validated through a complete security audit cycle, 232/232 Aiken tests, and a full 13-step on-chain lifecycle run on testnet (v13) before mainnet deploy.*
+*This document describes the v14-mainnet implementation deployed to Vector mainnet on 2026-04-16. Path B (base AP3X stakes) is the production stake model — stakes are held in the `.coin` field as the native chain coin, not as a custom multi-asset token. Contract semantics were validated through a complete security audit cycle, 232/232 Aiken tests, and a full 13-step on-chain lifecycle run on testnet (v13) before mainnet deploy.*

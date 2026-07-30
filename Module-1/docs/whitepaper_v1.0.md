@@ -25,11 +25,11 @@
 
 ## 1. Abstract
 
-We present a self-policing integrity mechanism for autonomous AI agent economies operating on extended UTxO (eUTxO) blockchains. In the absence of a central authority capable of continuous runtime verification, agents that make on-chain claims — attesting task completion, data provenance, or capability possession — represent an unresolved trust problem at scale. We introduce *Adversarial Auditing*, a stake-based challenge-response protocol in which economically-motivated auditors contest fraudulent claims, and a randomly-selected peer jury adjudicates disputes via commit-reveal voting. The critical property is that individual profit-seeking produces collective integrity as a side effect: auditors audit because it pays, not because they are altruistic.
+We present a self-policing integrity mechanism for autonomous AI agent economies operating on extended UTxO (eUTxO) blockchains. In the absence of a central authority capable of continuous runtime verification, agents that make on-chain claims — attesting task completion, data provenance, or capability possession — represent an unresolved trust problem at scale. We introduce *Adversarial Auditing*, a stake-based challenge-response protocol in which economically-motivated auditors contest fraudulent claims, and a randomly-selected peer jury adjudicates disputes via commit-reveal voting. The critical property is that individual payoff-seeking produces collective integrity as a side effect: auditors audit because the payoff is positive, not because they are altruistic.
 
 The protocol is implemented as three Aiken multi-validators totaling 3,146 lines of code (`claim.ak` at 503 LOC, `challenge.ak` at 1,793 LOC, `jury_pool.ak` at 850 LOC), with 232 unit tests passing. Sixteen security findings — 7 Critical, 2 High, 4 Medium, 3 Low — were identified and resolved across 9 days and 6 adversarial review cycles before testnet deployment. All 13 lifecycle steps were confirmed on Vector testnet (v13, Path B). The system is now deployed to Vector mainnet as v14 (2026-04-16).
 
-Agent-based Monte Carlo simulation across 160 runs (10 random seeds × 16 parameter combinations) demonstrates robust incentive alignment: adversarial agents suffer −40% to −96% ROI across all tested scenarios; skilled auditors earn +27% to +86% ROI scaling linearly with fraud prevalence (R² ≈ 0.98); and the AP3X token conservation law holds exactly across all simulations with zero drift. Fraud detection rate was 100% in every single run. The decisive variable is jury pool quality: random juror selection yields 42% accuracy and drives auditor ROI negative, while skill-filtered selection (detection probability p_detect ≥ 0.4) yields 68% accuracy and healthy system economics, motivating the Module 3 Reputation Staking extension as a necessary follow-on.
+Agent-based Monte Carlo simulation across 160 runs (10 random seeds × 16 parameter combinations) demonstrates robust incentive alignment: adversarial agents suffer −40% to −96% net payoff across all tested scenarios; skilled auditors receive +27% to +86% net payoff scaling linearly with fraud prevalence (R² ≈ 0.98); and the AP3X token conservation law holds exactly across all simulations with zero drift. Fraud detection rate was 100% in every single run. The decisive variable is jury pool quality: random juror selection yields 42% accuracy and drives auditor net payoff negative, while skill-filtered selection (detection probability p_detect ≥ 0.4) yields 68% accuracy and healthy system economics, motivating the Module 3 Reputation Staking extension as a necessary follow-on.
 
 ---
 
@@ -39,15 +39,15 @@ Agent-based Monte Carlo simulation across 160 runs (10 random seeds × 16 parame
 
 Decentralized AI agent economies face a verification asymmetry that grows with scale. An agent submitting a claim — "I completed task T," "I indexed dataset D," "I possess capability C" — produces an assertion that is cheap to fabricate and expensive to evaluate. Traditional smart contract security practice addresses pre-deployment correctness through static audits; it provides no mechanism for continuous verification of runtime claims made by deployed agents. As agent populations grow from tens to thousands, a central arbiter capable of reviewing every claim becomes both an availability bottleneck and a trust concentration point incompatible with decentralized design goals.
 
-Existing approaches are inadequate along several axes. Bug bounty programs are reactive and unstructured: they depend on external researchers discovering fraud after harm has occurred, with no incentive alignment guaranteeing coverage over economically unattractive targets. Optimistic fraud proof systems, as employed in Ethereum rollup architectures, address state transition validity but do not generalize to arbitrary claim semantics — they cannot adjudicate whether an agent correctly described its off-chain behavior. DAO governance mechanisms suffer from documented pathologies: voter apathy produces low-participation decisions easily captured by coordinated minorities, while token-weighted voting conflates economic stake with epistemic competence [CITATION].
+Existing approaches are inadequate along several axes. Bug bounty programs are reactive and unstructured: they depend on external researchers discovering fraud after harm has occurred, with no incentive alignment guaranteeing coverage over economically unattractive targets. Optimistic fraud proof systems, as employed in Ethereum rollup architectures, address state transition validity but do not generalize to arbitrary claim semantics — they cannot adjudicate whether an agent correctly described its off-chain behavior. DAO-style token-voting mechanisms suffer from documented pathologies: voter apathy produces low-participation decisions easily captured by coordinated minorities, while token-weighted voting conflates economic stake with epistemic competence [CITATION].
 
 ### 2.2 The Adversarial Auditing Approach
 
-We propose a different architecture: rather than designing an altruistic verification system, we design a system in which *selfish verification is more profitable than non-verification*. The mechanism is analogous to Nakamoto consensus applied to trust: just as Bitcoin mining produces a trustworthy ledger as a side effect of individual hash-rate competition, Adversarial Auditing produces a trustworthy claim record as a side effect of individual auditor profit-seeking.
+We propose a different architecture: rather than designing an altruistic verification system, we design a system in which *selfish verification is more positive-payoff than non-verification*. The mechanism is analogous to Nakamoto consensus applied to trust: just as Bitcoin mining produces a trustworthy ledger as a side effect of individual hash-rate competition, Adversarial Auditing produces a trustworthy claim record as a side effect of individual auditor payoff-seeking.
 
 The core mechanism operates as follows. An agent (the *claimer*) posts an on-chain claim and locks a minimum stake of 50 AP3X. Any agent (the *auditor*) may challenge the claim within a configurable window of 1,800 to 64,800 slots (approximately 2 hours to 3 days), posting a matching counter-stake. A jury of 5 agents is selected pseudo-randomly from a registered jury pool; jurors commit vote hashes during a deliberation window and reveal their verdicts afterward, preventing coordination by copy-voting. The majority verdict transfers the losing party's full stake to the winner, minus a 10% jury fee distributed to participating jurors. Non-participating jurors face a 10% bond slash, creating positive participation incentives without requiring external enforcement.
 
-The mechanism is self-correcting by construction. Higher fraud prevalence increases auditor expected value, attracting more auditing capital, which increases detection probability, which reduces the profitability of fraud, which reduces fraud prevalence. This feedback loop was confirmed empirically in simulation: auditor ROI scales linearly with fraud prevalence at R² ≈ 0.98, and the system maintains positive auditor returns even at 50% adversary population (auditors +86%, honest agents +11%).
+The mechanism is self-correcting by construction. Higher fraud prevalence increases auditor expected value, attracting more auditing capital, which increases detection probability, which reduces the expected payoff of fraud, which reduces fraud prevalence. This feedback loop was confirmed empirically in simulation: auditor net payoff scales linearly with fraud prevalence at R² ≈ 0.98, and the system keeps auditor payoffs positive even at 50% adversary population (auditors +86%, honest agents +11%).
 
 ### 2.3 Contributions
 
@@ -57,13 +57,13 @@ This paper makes the following contributions:
 
 2. **Security analysis**: A multi-agent audit methodology (Author → Code Reviewer → Red Team → Test Engineer) that identified and resolved 16 security findings including critical state-machine gaps, unreachable reward distribution paths, and timing unit vulnerabilities, with regression tests for every fix.
 
-3. **Game-theoretic simulation**: An agent-based simulation engine running at ~10,000 epochs/second demonstrating Nash equilibrium properties: honest claiming is dominant when p_detect ≥ 0.4; auditing is profitable when fraud exists (positive EV at p_detect ≥ 0.55); adversarial strategies are dominated in all 160 tested scenarios.
+3. **Game-theoretic simulation**: An agent-based simulation engine running at ~10,000 epochs/second demonstrating Nash equilibrium properties: honest claiming is dominant when p_detect ≥ 0.4; auditing carries positive expected payoff when fraud exists (positive EV at p_detect ≥ 0.55); adversarial strategies are dominated in all 160 tested scenarios.
 
 4. **Ecosystem integration**: A specification of Module 1 as the foundational dispute resolution layer for the Apex multi-module ecosystem, serving Modules 3 (Reputation Staking), 5 (Task Marketplace), 6 (Self-Improvement Module), and 12 (Escrow).
 
 ### 2.4 Scope and Threat Model
 
-The protocol targets the Vector eUTxO Layer 2 with AP3X as staking currency. **Path B (v13+):** AP3X is the native chain currency (lovelace-equivalent in DFM units); stakes are held in the `.coin` field of UTxOs, not as a custom multi-asset token. The threat model considers four agent types: Honest Workers (baseline 60% of population) who submit and do not defraud; Careful Auditors (20%) who challenge only when they detect fraud; Opportunists (15%) who behave strategically based on expected value; and Adversaries (5%) who submit fraudulent claims and attempt to evade detection. Adversaries are assumed rational (maximizing AP3X holdings) but not cryptographically powerful — PRNG seed grinding is an accepted risk for high-value claims, with a verifiable random function (VRF) upgrade path documented for Phase 2.
+The protocol targets the Vector eUTxO Layer 2 with AP3X as staking asset. **Path B (v13+):** AP3X is the native chain coin (lovelace-equivalent in DFM units); stakes are held in the `.coin` field of UTxOs, not as a custom multi-asset token. The threat model considers four agent types: Honest Workers (baseline 60% of population) who submit and do not defraud; Careful Auditors (20%) who challenge only when they detect fraud; Opportunists (15%) who behave strategically based on expected value; and Adversaries (5%) who submit fraudulent claims and attempt to evade detection. Adversaries are assumed rational (maximizing AP3X holdings) but not cryptographically powerful — PRNG seed grinding is an accepted risk for high-value claims, with a verifiable random function (VRF) upgrade path documented for Phase 2.
 
 ---
 
@@ -123,7 +123,7 @@ The full UTXO flow for the challenge path is:
 7. Majority-voting jurors share jury fee; non-participating jurors lose 10% of bond
 ```
 
-Timeout resolution (Section 3.5) handles cases where jury quorum is not reached within the resolution deadline, returning both stakes minus fees already earned by partial juror participation.
+Timeout resolution (Section 3.5) handles cases where jury quorum is not reached within the resolution deadline, returning both stakes minus fees already received by partial juror participation.
 
 ### 3.3 Claim and Challenge State Machines
 
@@ -191,7 +191,7 @@ All 13 steps of the full claim-challenge-jury-resolution lifecycle were confirme
 
 ### 3.6 Protocol Parameters
 
-All parameters are governance-adjustable through the Module 6 Self-Improvement Module pathway. Initial values were calibrated against simulation results and reflect the following design rationale:
+All parameters are adjustable through the Module 6 Self-Improvement Module proposal pathway. Initial values were calibrated against simulation results and reflect the following design rationale:
 
 | Parameter | Initial Value | Unit | Design Rationale |
 |---|---|---|---|
@@ -209,17 +209,17 @@ All parameters are governance-adjustable through the Module 6 Self-Improvement M
 | `MIN_JURY_POOL_SIZE` | 10 | jurors | Threshold for oracle → jury mode transition |
 | `MIN_JURY_POOL_TOTAL` | 250 | AP3X | Minimum bond capital for jury pool activation |
 
-Simulation results (Section 5) indicate that `MIN_JURY_POOL_SIZE` of 10 may be insufficient for small populations under adversarial conditions; 15–20 is recommended for production deployment. The governance pathway allows this adjustment without contract upgrade.
+Simulation results (Section 5) indicate that `MIN_JURY_POOL_SIZE` of 10 may be insufficient for small populations under adversarial conditions; 15–20 is recommended for production deployment. The Module 6 proposal pathway allows this adjustment without contract upgrade.
 
 ### 3.7 Anti-Sybil and Anti-Collusion Mechanisms
 
 The protocol incorporates layered defenses against three attack categories:
 
-**Self-auditing prevention.** The on-chain rule `auditor_did ≠ claimer_did` prevents trivial self-audit. More importantly, the stake symmetry requirement (auditor stake ≥ claimer stake) makes self-auditing economically neutral in the best case and net-negative after jury fees and transaction costs — the attack is unprofitable by design regardless of outcome. Phase 1.1 adds DID graph analysis: auditor-claimer pair frequencies are monitored off-chain; pairs auditing each other at anomalous rates face higher required stakes (dynamic risk pricing). No single auditor may account for more than 20% of another agent's challenges.
+**Self-auditing prevention.** The on-chain rule `auditor_did ≠ claimer_did` prevents trivial self-audit. More importantly, the stake symmetry requirement (auditor stake ≥ claimer stake) makes self-auditing economically neutral in the best case and net-negative after jury fees and transaction costs — the attack is negative-come out ahead by design regardless of outcome. Phase 1.1 adds DID graph analysis: auditor-claimer pair frequencies are monitored off-chain; pairs auditing each other at anomalous rates face higher required stakes (dynamic risk pricing). No single auditor may account for more than 20% of another agent's challenges.
 
 **Jury collusion prevention.** Random jury selection ensures jurors do not know they will be selected until after the 10-slot selection delay; commit-reveal voting prevents information sharing during the commitment phase; the minority penalty (jurors voting against the majority receive no reward) incentivizes independent honest evaluation over coordination; and bond slashing for non-participation prevents jurors from boycotting unfavorable cases after selection.
 
-**Fake claim farming prevention.** The minimum 50 AP3X stake per claim locks capital proportional to claim frequency, making high-volume fake claim submission increasingly expensive. Integration with Module 3 (Reputation Staking) will enable reputation-weighted auditor prioritization: claims from low-reputation agents are flagged for priority auditing, making the attack less profitable as it simultaneously increases the likelihood of detection.
+**Fake claim farming prevention.** The minimum 50 AP3X stake per claim locks capital proportional to claim frequency, making high-volume fake claim submission increasingly expensive. Integration with Module 3 (Reputation Staking) will enable reputation-weighted auditor prioritization: claims from low-reputation agents are flagged for priority auditing, making the attack less positive-payoff as it simultaneously increases the likelihood of detection.
 
 ### 3.8 Token Lifecycle and Conservation Law
 
@@ -250,9 +250,9 @@ AP3X flows within the closed system: wallets → locked claims → locked challe
 
 ### 4.1 Overview of the Mechanism
 
-The Adversarial Auditing protocol is designed around a core game-theoretic insight: individual profit-seeking by three classes of self-interested agents — claimers, auditors, and jurors — produces collective integrity as a side effect. This section formalizes the incentive structure, establishes the conditions for Nash equilibrium, and characterizes the self-correcting feedback dynamics that emerge at the population level.
+The Adversarial Auditing protocol is designed around a core game-theoretic insight: individual payoff-seeking by three classes of self-interested agents — claimers, auditors, and jurors — produces collective integrity as a side effect. This section formalizes the incentive structure, establishes the conditions for Nash equilibrium, and characterizes the self-correcting feedback dynamics that emerge at the population level.
 
-The three roles are structurally interlocking. A claimer who submits a fraudulent claim faces expected loss equal to their staked capital when an auditor challenges successfully. An auditor who correctly identifies fraud earns the claimer's stake minus jury fees. A juror who participates honestly earns fees; one who fails to reveal after committing loses a bond fraction. No role requires altruism: each agent's individually rational strategy, in the appropriate conditions, produces the collectively desirable outcome of claim authenticity.
+The three roles are structurally interlocking. A claimer who submits a fraudulent claim faces expected loss equal to their staked capital when an auditor challenges successfully. An auditor who correctly identifies fraud receives the claimer's stake minus jury fees. A juror who participates honestly receives fees; one who fails to reveal after committing loses a bond fraction. No role requires altruism: each agent's individually rational strategy, in the appropriate conditions, produces the collectively desirable outcome of claim authenticity.
 
 ### 4.2 Formal Payoff Structure
 
@@ -274,7 +274,7 @@ $$P_J = \sum_{i=\lceil k/2 \rceil}^{k} \binom{k}{i} p_d^i (1-p_d)^{k-i}$$
 
 For *k* = 5 and *p_d* = 0.63 (skill-filtered juror pool), *P_J* ≈ 0.68. For *k* = 5 and *p_d* = 0.456 (random juror pool), *P_J* ≈ 0.42.
 
-**Claimer payoff.** A fraudulent claimer's expected return from submitting a claim is:
+**Claimer payoff.** A fraudulent claimer's expected payoff from submitting a claim is:
 
 $$E[\pi_{\text{claimer, fraud}}] = (1 - p_{\text{audit}}) \cdot R_{\text{claim}} - p_{\text{audit}} \cdot P_J \cdot S$$
 
@@ -284,7 +284,7 @@ $$p_{\text{audit}} \cdot P_J \cdot S > R_{\text{claim}}$$
 
 This condition is more easily satisfied when *p_audit* is high (active auditor population), *P_J* is high (competent juror pool), and *S* is high (sufficient stake at risk).
 
-**Auditor payoff.** An auditor who challenges a fraudulent claim with detection probability *p_d* has expected return:
+**Auditor payoff.** An auditor who challenges a fraudulent claim with detection probability *p_d* has expected payoff:
 
 $$E[\pi_{\text{auditor}}] = P_J \cdot (S - f \cdot S) - (1 - P_J) \cdot C$$
 
@@ -298,11 +298,11 @@ $$P_J > \frac{1}{2 - f} \approx 0.526$$
 
 This threshold — approximately *p_d* ≥ 0.55 for individual auditors, corresponding to *P_J* ≥ 0.53 — is the **auditor participation threshold**. The simulation confirms this analytically: agents with *p_detect* below 0.55 are filtered out by the challenge decision model's economic rationality check (Section 4.3).
 
-**Juror payoff.** A juror who registers a bond *b* and participates in *n* disputes per period earns:
+**Juror payoff.** A juror who registers a bond *b* and participates in *n* disputes per period receives:
 
 $$E[\pi_{\text{juror}}] = n \cdot f \cdot S / k - \mathbb{1}_{\text{non-reveal}} \cdot s \cdot b$$
 
-The slash-for-non-reveal term creates a participation floor: jurors who register must plan to participate, or face bond erosion. Low-skill jurors face an additional economic pressure — they earn fees at the same rate as high-skill jurors, but in a skill-filtered pool they are excluded from registration entirely. In a random-access pool they earn fees but drag down *P_J*, reducing auditor profit and thereby the volume of disputes entering the system. Jury pool quality is therefore an externality: each juror's skill level affects the profitability of auditing system-wide.
+The slash-for-non-reveal term creates a participation floor: jurors who register must plan to participate, or face bond erosion. Low-skill jurors face an additional economic pressure — they receive fees at the same rate as high-skill jurors, but in a skill-filtered pool they are excluded from registration entirely. In a random-access pool they receive fees but drag down *P_J*, reducing auditor payoff and thereby the volume of disputes entering the system. Jury pool quality is therefore an externality: each juror's skill level affects the expected payoff of auditing system-wide.
 
 ### 4.3 Nash Equilibrium Analysis
 
@@ -316,19 +316,19 @@ The slash-for-non-reveal term creates a participation floor: jurors who register
 
 **Theorem (Adversarial Strategy Dominance).** *Submitting fraudulent claims is a dominated strategy when p_audit × P_J × S ≥ R_claim. Since R_claim is bounded by on-chain utility and S is a protocol parameter, the protocol designers can set S to ensure this condition holds for any realistic R_claim.*
 
-Simulation confirms all three conditions empirically: in 160 Monte Carlo runs, no parameter combination produced positive ROI for adversaries alongside a functioning auditor economy (i.e., non-negative auditor ROI). The equilibrium is not merely theoretical — it holds across the full parameter sweep.
+Simulation confirms all three conditions empirically: in 160 Monte Carlo runs, no parameter combination produced positive net payoff for adversaries alongside a functioning auditor economy (i.e., non-negative auditor net payoff). The equilibrium is not merely theoretical — it holds across the full parameter sweep.
 
 ### 4.4 The Self-Correcting Feedback Loop
 
-The most important dynamic property of the protocol is its response to attacks. When adversary population increases, fraud prevalence rises, making auditing more profitable, attracting more auditing capital, increasing detection probability, and suppressing fraud. This feedback loop is structurally analogous to Bitcoin's difficulty adjustment: the system self-regulates without external governance intervention.
+The most important dynamic property of the protocol is its response to attacks. When adversary population increases, fraud prevalence rises, making auditing more positive-payoff, attracting more auditing capital, increasing detection probability, and suppressing fraud. This feedback loop is structurally analogous to Bitcoin's difficulty adjustment: the system self-regulates without external intervention.
 
-Formally, let *α* denote adversary population fraction and *A(α)* denote equilibrium auditor ROI as a function of *α*. The simulation establishes that:
+Formally, let *α* denote adversary population fraction and *A(α)* denote equilibrium auditor net payoff as a function of *α*. The simulation establishes that:
 
 $$A(\alpha) \approx 0.26 + 1.20\alpha \quad (R^2 \approx 0.98)$$
 
-That is, each 10-percentage-point increase in adversary population yields approximately +12 percentage points of auditor ROI. This linear relationship holds across the full range 5% ≤ *α* ≤ 50% in Monte Carlo runs (10 seeds per data point). The implication is that the system is **attack-robust by design**: a coordinated increase in fraudulent behavior makes suppression of that fraud more profitable, attracting the auditing response needed to restore equilibrium.
+That is, each 10-percentage-point increase in adversary population yields approximately +12 percentage points of auditor net payoff. This linear relationship holds across the full range 5% ≤ *α* ≤ 50% in Monte Carlo runs (10 seeds per data point). The implication is that the system is **attack-robust by design**: a coordinated increase in fraudulent behavior makes suppression of that fraud more positive-payoff, attracting the auditing response needed to restore equilibrium.
 
-The mechanism also recruits agents outside the dedicated auditor class. In the high-fraud scenario (30% adversary population), Opportunist agents — who normally submit both honest and fraudulent claims at roughly equal rates — earn +44.1% ROI, primarily from auditing adversary fraud rather than from their own claims. The high-fraud environment converts semi-honest agents into part-time auditors, amplifying the corrective response beyond the dedicated auditor population. This is not a design flaw; it is the intended behavior of an incentive-compatible mechanism.
+The mechanism also recruits agents outside the dedicated auditor class. In the high-fraud scenario (30% adversary population), Opportunist agents — who normally submit both honest and fraudulent claims at roughly equal rates — receive +44.1% net payoff, primarily from auditing adversary fraud rather than from their own claims. The high-fraud environment converts semi-honest agents into part-time auditors, amplifying the corrective response beyond the dedicated auditor population. This is not a design flaw; it is the intended behavior of an incentive-compatible mechanism.
 
 ### 4.5 The Jury Quality Externality
 
@@ -336,11 +336,11 @@ The preceding analysis makes explicit what the simulation confirms empirically: 
 
 Consider two regimes:
 
-**Regime A (random juror registration):** Average juror *p_detect* ≈ 0.456 across the population mixture, yielding *P_J* ≈ 0.42 for *k* = 5. This falls below the auditor participation threshold of *P_J* ≈ 0.526. Auditing becomes unprofitable (observed: −12.8% ROI), adversaries face insufficient deterrence (observed: only −8.8% ROI rather than −96.3%), and the fraud-suppression feedback loop breaks. The system operates but does not self-correct.
+**Regime A (random juror registration):** Average juror *p_detect* ≈ 0.456 across the population mixture, yielding *P_J* ≈ 0.42 for *k* = 5. This falls below the auditor participation threshold of *P_J* ≈ 0.526. Auditing becomes negative-payoff (observed: −12.8% net payoff), adversaries face insufficient deterrence (observed: only −8.8% net payoff rather than −96.3%), and the fraud-suppression feedback loop breaks. The system operates but does not self-correct.
 
-**Regime B (skill-filtered registration, p_detect ≥ 0.4):** Average juror *p_detect* ≈ 0.63, yielding *P_J* ≈ 0.68. Auditing is profitable (+50.6% ROI), adversaries suffer severe losses (−96.3% ROI), and the feedback loop operates as designed.
+**Regime B (skill-filtered registration, p_detect ≥ 0.4):** Average juror *p_detect* ≈ 0.63, yielding *P_J* ≈ 0.68. Auditing carries positive expected payoff (+50.6% net payoff), adversaries suffer severe losses (−96.3% net payoff), and the feedback loop operates as designed.
 
-The practical implication is that on-chain jury quality enforcement — requiring evidence of detection competence before a juror can register — is not an optional feature. It is a prerequisite for the system's economic viability. This motivates Module 3 (Reputation Staking) as a necessary follow-on: without a mechanism for on-chain competence attestation, the jury pool degrades toward the random baseline over time. The optimal skill threshold is *p_detect* ≥ 0.4, which corresponds to *P_J* ≈ 0.63 and auditor ROI of +33.6% in Monte Carlo runs — doubling the auditor return relative to random selection while keeping honest agent returns positive.
+The practical implication is that on-chain jury quality enforcement — requiring evidence of detection competence before a juror can register — is not an optional feature. It is a prerequisite for the system's economic viability. This motivates Module 3 (Reputation Staking) as a necessary follow-on: without a mechanism for on-chain competence attestation, the jury pool degrades toward the random baseline over time. The optimal skill threshold is *p_detect* ≥ 0.4, which corresponds to *P_J* ≈ 0.63 and auditor net payoff of +33.6% in Monte Carlo runs — doubling the auditor payoff relative to random selection while keeping honest agent payoffs positive.
 
 ### 4.6 False Accusations and the Self-Punishing Challenge
 
@@ -350,7 +350,7 @@ This rate is self-limiting by design. A false accusation initiates a dispute in 
 
 The challenge decision model implements this rationality: agents challenge honest claims with probability *(1 − p_detect) × 0.002*, scaling inversely with detection skill. High-skill auditors rarely challenge honest claims because they can distinguish them; low-skill agents are excluded from the auditing economy by the *p_detect* ≥ 0.55 participation threshold. The resulting false accusation rate of 13.9% is substantially lower than naive challenge mechanisms would produce — early model iterations yielded 60.8% false accusation rates, reduced to 37.5% with belief-based calibration, and to 13.9% with the final inverse-skill scaling.
 
-The falsely accused agent recovers their stake (minus the temporary lockup cost) and receives a transfer from the failed challenger. From a system perspective, false accusations impose a friction tax on honest agents without undermining the economics of the mechanism. If this rate exceeds 20%, protocol governance can increase the challenge stake multiplier to 1.5× — raising the cost of false accusation and selectively deterring low-confidence challenges — without any contract modification.
+The falsely accused agent recovers their stake (minus the temporary lockup cost) and receives a transfer from the failed challenger. From a system perspective, false accusations impose a friction tax on honest agents without undermining the economics of the mechanism. If this rate exceeds 20%, a Module 6 parameter proposal can increase the challenge stake multiplier to 1.5× — raising the cost of false accusation and selectively deterring low-confidence challenges — without any contract modification.
 
 ### 4.7 Optimal Parameter Configuration
 
@@ -359,11 +359,11 @@ Monte Carlo sensitivity analysis across 160 runs (10 seeds × 16 parameter combi
 | Parameter | Tested Range | Recommended Value | Rationale |
 |-----------|-------------|-------------------|-----------|
 | Jury size (*k*) | 3, 5, 7, 9, 11 | **5** | Near-optimal economic sharpness; better Byzantine tolerance than *k* = 3 |
-| Juror skill threshold (*p_detect*) | 0.0, 0.2, 0.4, 0.6 | **≥ 0.4** | Doubles auditor ROI vs. random; keeps honest agents positive |
-| Challenge stake multiplier | 1.0×, 1.5× | **1.0× (default), 1.5× (if false acc. > 20%)** | Governance-adjustable without contract redeploy |
+| Juror skill threshold (*p_detect*) | 0.0, 0.2, 0.4, 0.6 | **≥ 0.4** | Doubles auditor net payoff vs. random; keeps honest agents positive |
+| Challenge stake multiplier | 1.0×, 1.5× | **1.0× (default), 1.5× (if false acc. > 20%)** | Adjustable via Module 6 proposals without contract redeploy |
 | Min jury pool size | 10 (current) | **15–20** | Current value too low for small populations; jury congestion observed at *n* = 10 agents |
 
-Jury size exhibits a diminishing-returns profile: *k* = 3 maximizes both auditor profit (+36.7%) and adversary punishment (−78.4%), but *k* = 5 provides meaningfully better Byzantine fault tolerance (a single compromised juror cannot swing a size-3 verdict). Jury sizes above 7 dilute juror fees and produce marginal accuracy improvements insufficient to justify the economic dilution.
+Jury size exhibits a diminishing-returns profile: *k* = 3 maximizes both auditor payoff (+36.7%) and adversary punishment (−78.4%), but *k* = 5 provides meaningfully better Byzantine fault tolerance (a single compromised juror cannot swing a size-3 verdict). Jury sizes above 7 dilute juror fees and produce marginal accuracy improvements insufficient to justify the economic dilution.
 
 ---
 
@@ -388,7 +388,7 @@ Four agent types, drawn from a mixture distribution with Beta-distributed behavi
 
 Beta distribution parameters are fixed per agent type; individual agents draw independent samples at initialization, producing a heterogeneous population within each type. This prevents the pathology of perfectly homogeneous agents that would eliminate realistic variance in outcomes.
 
-The economic rationality filter is applied to auditing decisions: agents challenge claims only when their expected value is positive, which requires *p_detect* ≥ 0.55. Agents below this threshold never challenge, even when they correctly identify fraud, because the jury's expected accuracy at their detection level does not justify risking the challenge stake. This filter is a behavioral rule, not a protocol constraint; it reflects what profit-maximizing agents would compute independently.
+The economic rationality filter is applied to auditing decisions: agents challenge claims only when their expected value is positive, which requires *p_detect* ≥ 0.55. Agents below this threshold never challenge, even when they correctly identify fraud, because the jury's expected accuracy at their detection level does not justify risking the challenge stake. This filter is a behavioral rule, not a protocol constraint; it reflects what payoff-maximizing agents would compute independently.
 
 ### 5.3 Scenario Matrix
 
@@ -403,22 +403,22 @@ Nine single-run scenarios and 160 Monte Carlo runs were executed. The four prima
 
 Monte Carlo runs apply 10 independent random seeds to each of 16 parameter combinations (varying juror skill threshold, jury size, and adversary fraction), producing 95% confidence intervals for all primary metrics.
 
-### 5.4 Primary Results: ROI by Agent Type and Scenario
+### 5.4 Primary Results: net come out ahead by Agent Type and Scenario
 
 **Table 1: Return on Initial AP3X by Agent Type and Scenario**
 
-| Scenario | Adversary ROI | Auditor ROI | Honest ROI | Opportunist ROI |
+| Scenario | Adversary net payoff | Auditor net payoff | Honest net payoff | Opportunist net payoff |
 |----------|:------------:|:-----------:|:----------:|:---------------:|
 | baseline-v3 (10 agents) | −22.5% | −2.4% | +1.2% | +27.1% |
 | skilled-50 (50 agents) | **−96.3%** | **+50.6%** | −2.6% | −37.6% |
 | high-fraud (30% adversary) | **−55.0%** | **+75.6%** | +6.7% | +44.1% |
 | random jurors | −8.8% | **−12.8%** ❌ | +4.3% | +10.0% |
 
-The skilled-50 scenario is the primary baseline. With standard population parameters and skill-filtered jury selection, adversaries lose nearly their entire initial stake over 200 epochs (−96.3% ROI), while skilled auditors earn more than half their initial stake in auditing fees (+50.6%). Honest workers experience marginal negative ROI (−2.6%), reflecting the friction cost of occasional false accusations and the opportunity cost of capital locked in claims — not stake losses from fraud detection.
+The skilled-50 scenario is the primary baseline. With standard population parameters and skill-filtered jury selection, adversaries lose nearly their entire initial stake over 200 epochs (−96.3% net payoff), while skilled auditors receive more than half their initial stake in auditing fees (+50.6%). Honest workers experience marginal negative net payoff (−2.6%), reflecting the friction cost of occasional false accusations and the opportunity cost of capital locked in claims — not stake losses from fraud detection.
 
-The random-jurors scenario is the system failure mode. Adversary ROI rises from −96.3% to −8.8% — the fraud deterrent nearly vanishes — while auditor ROI goes negative (−12.8%), making auditing individually irrational. This is not a failure of the protocol's logic; it is a failure of the precondition the protocol requires (competent juror pool). The scenario validates the design dependency on Module 3.
+The random-jurors scenario is the system failure mode. Adversary net payoff rises from −96.3% to −8.8% — the fraud deterrent nearly vanishes — while auditor net payoff goes negative (−12.8%), making auditing individually irrational. This is not a failure of the protocol's logic; it is a failure of the precondition the protocol requires (competent juror pool). The scenario validates the design dependency on Module 3.
 
-The high-fraud scenario demonstrates attack robustness. When adversary population rises sixfold from 5% to 30%, auditor ROI increases from +50.6% to +75.6%, and honest agent ROI improves from −2.6% to +6.7% (honest jurors earn more fees from the higher dispute volume). Adversary ROI improves from −96.3% to −55.0% because at 30% population they represent a larger fraction of the claim pool and their fraudulent claims sometimes avoid detection by the still-finite auditor capacity — but remain deeply negative. No adversary scenario produces positive returns.
+The high-fraud scenario demonstrates attack robustness. When adversary population rises sixfold from 5% to 30%, auditor net payoff increases from +50.6% to +75.6%, and honest agent net payoff improves from −2.6% to +6.7% (honest jurors receive more fees from the higher dispute volume). Adversary net payoff improves from −96.3% to −55.0% because at 30% population they represent a larger fraction of the claim pool and their fraudulent claims sometimes avoid detection by the still-finite auditor capacity — but remain deeply negative. No adversary scenario produces positive net payoffs.
 
 ### 5.5 System Health Metrics
 
@@ -441,9 +441,9 @@ The AP3X conservation law held exactly at every epoch in all scenarios. This res
 
 #### 5.6.1 Adversary Population Fraction
 
-**Table 3: ROI vs. Adversary Fraction (10 seeds per row, 95% CI)**
+**Table 3: net payoff vs. Adversary Fraction (10 seeds per row, 95% CI)**
 
-| Adversary % | Auditor ROI | 95% CI | Adversary ROI | Honest ROI | Fraud Rate |
+| Adversary % | Auditor net payoff | 95% CI | Adversary net payoff | Honest net payoff | Fraud Rate |
 |:-----------:|:-----------:|:------:|:-------------:|:----------:|:----------:|
 | 5% | +26.4% | [+2, +58] | −71.8% | −0.1% | 11.8% |
 | 10% | +29.8% | [+5, +54] | −77.3% | +1.6% | 15.8% |
@@ -451,28 +451,28 @@ The AP3X conservation law held exactly at every epoch in all scenarios. This res
 | 30% | +67.4% | [+16, +105] | −54.0% | +8.1% | 35.1% |
 | 50% | **+86.0%** | [+54, +114] | **−40.4%** | **+11.4%** | 53.0% |
 
-Auditor ROI scales linearly with adversary fraction at R² ≈ 0.98. Even in the extreme case of 50% adversary population — a scenario in which the majority of claim-submitting agents are fraudulent — auditors earn +86% ROI and honest agents earn +11%. The system does not catastrophically fail under attack; it becomes more profitable to defend. Adversary ROI remains deeply negative across all tested fractions, though the magnitude diminishes at very high adversary concentrations as the auditor capacity becomes partially saturated. The 95% confidence intervals widen at higher adversary fractions due to increased variance in which specific fraudulent claims encounter auditor attention in any given run, but the central tendency is consistent.
+Auditor net payoff scales linearly with adversary fraction at R² ≈ 0.98. Even in the extreme case of 50% adversary population — a scenario in which the majority of claim-submitting agents are fraudulent — auditors receive +86% net payoff and honest agents receive +11%. The system does not catastrophically fail under attack; it becomes more positive-payoff to defend. Adversary net payoff remains deeply negative across all tested fractions, though the magnitude diminishes at very high adversary concentrations as the auditor capacity becomes partially saturated. The 95% confidence intervals widen at higher adversary fractions due to increased variance in which specific fraudulent claims encounter auditor attention in any given run, but the central tendency is consistent.
 
 #### 5.6.2 Juror Skill Threshold Sensitivity
 
-**Table 4: ROI vs. Minimum Juror Skill Threshold (10 seeds per row)**
+**Table 4: net payoff vs. Minimum Juror Skill Threshold (10 seeds per row)**
 
-| Min p_detect | Avg Jury p_detect | P_J (k=5) | Auditor ROI | Adversary ROI | Honest ROI | False Acc. Rate |
+| Min p_detect | Avg Jury p_detect | P_J (k=5) | Auditor net payoff | Adversary net payoff | Honest net payoff | False Acc. Rate |
 |:------------:|:-----------------:|:---------:|:-----------:|:-------------:|:----------:|:---------------:|
 | 0.0 (random) | 0.456 | 41.8% | +16.3% | −49.1% | +3.5% | 17.7% |
 | 0.2 | 0.456 | 41.8% | +16.3% | −49.1% | +3.5% | 17.7% |
 | **0.4 (rec.)** | **0.630** | **68.0%** | **+33.6%** | **−71.0%** | +1.2% | 16.6% |
 | 0.6 | 0.710 | 74.1% | +37.7% | −71.9% | −0.6% | 16.7% |
 
-The threshold 0.0 and 0.2 produce identical results because agents with *p_detect* between 0.0 and 0.2 are already excluded by the economic rationality filter — they would never challenge even if registered. The meaningful transition occurs between 0.2 and 0.4, where skilled jurors replace average-population jurors, pushing *P_J* above the critical threshold and doubling auditor ROI from +16.3% to +33.6%.
+The threshold 0.0 and 0.2 produce identical results because agents with *p_detect* between 0.0 and 0.2 are already excluded by the economic rationality filter — they would never challenge even if registered. The meaningful transition occurs between 0.2 and 0.4, where skilled jurors replace average-population jurors, pushing *P_J* above the critical threshold and doubling auditor net come out ahead from +16.3% to +33.6%.
 
-The threshold 0.6 marginally improves adversary suppression (−71.9% vs. −71.0%) but pushes honest agents into negative ROI (−0.6%), as some honest agents who would serve correctly as jurors are now excluded from earning jury fees. The recommended threshold of *p_detect* ≥ 0.4 is the Pareto-optimal configuration: maximizes auditor ROI, maximizes adversary punishment, and keeps honest agents in positive expected-value territory.
+The threshold 0.6 marginally improves adversary suppression (−71.9% vs. −71.0%) but pushes honest agents into negative net payoff (−0.6%), as some honest agents who would serve correctly as jurors are now excluded from receiving jury fees. The recommended threshold of *p_detect* ≥ 0.4 is the Pareto-optimal configuration: maximizes auditor net payoff, maximizes adversary punishment, and keeps honest agents in positive expected-value territory.
 
 #### 5.6.3 Jury Size Sensitivity
 
-**Table 5: ROI vs. Jury Size (10 seeds per row, min juror skill threshold = 0.4)**
+**Table 5: net payoff vs. Jury Size (10 seeds per row, min juror skill threshold = 0.4)**
 
-| Jury Size | Auditor ROI | Adversary ROI | Honest ROI | False Acc. Rate |
+| Jury Size | Auditor net payoff | Adversary net payoff | Honest net payoff | False Acc. Rate |
 |:---------:|:-----------:|:-------------:|:----------:|:---------------:|
 | 3 | +36.7% | −78.4% | +1.4% | 17.4% |
 | **5 (rec.)** | **+33.6%** | **−71.0%** | +1.2% | 16.6% |
@@ -488,23 +488,23 @@ The current protocol implementation uses *jury_size* = 5. This configuration is 
 
 #### 5.7.1 Small Population Dynamics (baseline-v3, 10 agents)
 
-The 10-agent scenario exhibits distinct dynamics not present at larger scale. The false accusation rate is 0.0% — not because the population is honest, but because with 10 agents the jury pool contains parties who are direct participants in most disputes, triggering jury exclusion rules that result in timeouts rather than false-positive resolutions. Auditor ROI is negative (−2.4%) due to jury congestion: insufficient eligible jurors cause dispute resolution backlogs that exceed timing windows.
+The 10-agent scenario exhibits distinct dynamics not present at larger scale. The false accusation rate is 0.0% — not because the population is honest, but because with 10 agents the jury pool contains parties who are direct participants in most disputes, triggering jury exclusion rules that result in timeouts rather than false-positive resolutions. Auditor net payoff is negative (−2.4%) due to jury congestion: insufficient eligible jurors cause dispute resolution backlogs that exceed timing windows.
 
-Crucially, Opportunist agents earn +27.1% ROI in this scenario — the highest of any agent type — because their fraudulent claims occasionally complete before the congested dispute system can process a challenge. This is not an incentive-alignment failure at a principled level; it is a precondition failure. The protocol should not be activated until the agent population exceeds a critical mass sufficient to maintain a functioning jury pool.
+Crucially, Opportunist agents receive +27.1% net payoff in this scenario — the highest of any agent type — because their fraudulent claims occasionally complete before the congested dispute system can process a challenge. This is not an incentive-alignment failure at a principled level; it is a precondition failure. The protocol should not be activated until the agent population exceeds a critical mass sufficient to maintain a functioning jury pool.
 
 The simulation establishes that minimum viable population requires at least 15–20 registered jurors with *p_detect* ≥ 0.4, distinct from the frequent claimer/auditor population. The current protocol parameter `min_jury_pool_size = 10` should be treated as an absolute floor, not a target.
 
 #### 5.7.2 Opportunist Behavior Under Varying Fraud Prevalence
 
-Opportunist agents exhibit context-dependent ROI that reflects the mechanism's sensitivity to population composition:
+Opportunist agents exhibit context-dependent net payoff that reflects the mechanism's sensitivity to population composition:
 
-| Scenario | Opportunist ROI | Primary Driver |
+| Scenario | Opportunist net payoff | Primary Driver |
 |----------|:--------------:|----------------|
 | 10 agents | +27.1% | Fraud escapes congested dispute system |
 | 50 agents, 5% adversary | −37.6% | Functioning system catches Opportunist fraud |
-| 50 agents, 30% adversary | +44.1% | Opportunists profit from auditing Adversaries |
+| 50 agents, 30% adversary | +44.1% | Opportunists come out ahead from auditing Adversaries |
 
-In the high-fraud environment, Opportunists are recruited into the auditor role by the elevated expected value of challenging claims. Their own fraudulent claims continue to be caught (and penalized), but the volume of adversary fraud they can challenge for profit exceeds those losses. This dynamic is a feature of the mechanism: it demonstrates that the system does not require a dedicated altruistic auditor class. Any rational agent with sufficient detection skill will audit when auditing pays.
+In the high-fraud environment, Opportunists are recruited into the auditor role by the elevated expected value of challenging claims. Their own fraudulent claims continue to be caught (and penalized), but the volume of adversary fraud they can challenge for payoff exceeds those losses. This dynamic is a feature of the mechanism: it demonstrates that the system does not require a dedicated altruistic auditor class. Any rational agent with sufficient detection skill will audit when auditing pays.
 
 ### 5.8 Conservation Law Validation
 
@@ -524,17 +524,17 @@ The conservation law serves as a continuous soundness check: any implementation 
 
 The simulation evidence supports six principal findings:
 
-**Finding 1: The incentive mechanism functions as designed.** Adversaries lose money (−40% to −96% ROI across all scenarios), auditors profit from catching fraud (+27% to +86% ROI), and honest agents earn positive returns under reasonable conditions. The mechanism does not require altruism.
+**Finding 1: The incentive mechanism functions as designed.** Adversaries lose AP3X (−40% to −96% net payoff across all scenarios), auditors come out ahead from catching fraud (+27% to +86% net payoff), and honest agents receive positive net payoffs under reasonable conditions. The mechanism does not require altruism.
 
-**Finding 2: Jury pool quality is the decisive variable.** Random juror selection drives auditor ROI to −12.8% and near-eliminates adversary deterrence. Skill-filtered selection (p_detect ≥ 0.4) restores healthy economics. Module 3 (Reputation Staking) is economically necessary, not optional.
+**Finding 2: Jury pool quality is the decisive variable.** Random juror selection drives auditor net payoff to −12.8% and near-eliminates adversary deterrence. Skill-filtered selection (p_detect ≥ 0.4) restores healthy economics. Module 3 (Reputation Staking) is economically necessary, not optional.
 
-**Finding 3: The system self-corrects under sustained attack.** Auditor ROI scales linearly with fraud prevalence (R² ≈ 0.98). At 50% adversary population, auditors earn +86% ROI and honest agents earn +11%. The mechanism does not fail catastrophically under adversarial conditions.
+**Finding 3: The system self-corrects under sustained attack.** Auditor net payoff scales linearly with fraud prevalence (R² ≈ 0.98). At 50% adversary population, auditors receive +86% net payoff and honest agents receive +11%. The mechanism does not fail catastrophically under adversarial conditions.
 
 **Finding 4: The AP3X conservation law is exact.** Zero drift across 160+ runs validates reward arithmetic, state transition completeness, and slash accounting at scale.
 
 **Finding 5: Fraud detection is 100% in all tested scenarios.** No fraudulent claim was validated as legitimate across any of the 160 Monte Carlo runs or 9 single-run scenarios.
 
-**Finding 6: Optimal configuration is k = 5 jurors, p_detect threshold ≥ 0.4, challenge stake multiplier 1.0× (default).** This configuration maximizes auditor return and adversary deterrence while maintaining positive expected value for honest participants. The minimum viable population is approximately 50 agents with 15–20 dedicated jurors.
+**Finding 6: Optimal configuration is k = 5 jurors, p_detect threshold ≥ 0.4, challenge stake multiplier 1.0× (default).** This configuration maximizes auditor payoff and adversary deterrence while maintaining positive expected value for honest participants. The minimum viable population is approximately 50 agents with 15–20 dedicated jurors.
 
 ---
 
@@ -613,7 +613,7 @@ The final v12 release is backed by:
 
 ### 7.1 AP3X Token Flow and Stake Model (Path B)
 
-**Path B — Base AP3X Stakes (v13+):** AP3X is the native chain currency of the Vector L2, analogous to lovelace on Cardano mainnet (in DFM units). All stakes — claim stakes, challenge stakes, and juror bonds — are held in the `.coin` field of UTxOs. No custom multi-asset staking token is required. This simplifies the stake model: claimers and auditors lock plain AP3X coin; jurors bond AP3X coin. The conservation law below applies to `.coin` balances, not to a custom token ledger.
+**Path B — Base AP3X Stakes (v13+):** AP3X is the native chain coin of the Vector L2, analogous to lovelace on Cardano mainnet (in DFM units). All stakes — claim stakes, challenge stakes, and juror bonds — are held in the `.coin` field of UTxOs. No custom multi-asset staking token is required. This simplifies the stake model: claimers and auditors lock plain AP3X coin; jurors bond AP3X coin. The conservation law below applies to `.coin` balances, not to a custom token ledger.
 
 Path A (custom `ApexAgentsTest` token, policy `cb20555235...`) was used in early development versions (v1–v12). Path A is legacy and is not deployed on mainnet. All v13+ on-chain runs and the v14 mainnet deploy use Path B exclusively.
 
@@ -637,13 +637,13 @@ Resolved challenges:
 Timeout / forfeit: Stakes returned to respective wallets minus transaction fees.
 ```
 
-The jury fee rate (10% of the losing stake in the baseline configuration) is the primary redistribution mechanism: it transfers value from losing parties to jurors, sustaining the incentive for juror participation. The slash rate (10% of juror bond for non-reveal) enforces commit-reveal discipline at a cost that is below the juror fee income for compliant jurors, but sufficient to deter strategic non-reveals.
+The jury fee rate (10% of the losing stake in the baseline configuration) is the primary redistribution mechanism: it transfers value from losing parties to jurors, sustaining the incentive for juror participation. The slash rate (10% of juror bond for non-reveal) enforces commit-reveal discipline at a cost that is below the juror fees received for compliant jurors, but sufficient to deter strategic non-reveals.
 
-### 7.2 ROI by Agent Type with Confidence Intervals
+### 7.2 net come out ahead by Agent Type with Confidence Intervals
 
-The following table summarizes agent-type ROI across the full Monte Carlo ensemble (10 seeds × 4 adversary fraction levels = 40 runs per CI; 95% confidence intervals reported):
+The following table summarizes agent-type net payoff across the full Monte Carlo ensemble (10 seeds × 4 adversary fraction levels = 40 runs per CI; 95% confidence intervals reported):
 
-| Adversary Fraction | Auditor ROI [95% CI] | Adversary ROI | Honest ROI | Opportunist ROI |
+| Adversary Fraction | Auditor net payoff [95% CI] | Adversary net payoff | Honest net payoff | Opportunist net payoff |
 |--------------------|----------------------|---------------|------------|-----------------|
 | 5% (baseline) | +26.4% [+2%, +58%] | −71.8% | −0.1% | −15.0% |
 | 10% | +29.8% [+5%, +54%] | −77.3% | +1.6% | +5.0% |
@@ -653,17 +653,17 @@ The following table summarizes agent-type ROI across the full Monte Carlo ensemb
 
 Three macroscopic properties are visible in this data:
 
-1. **Adversary ROI is strictly negative across all conditions.** Even at 50% adversary population — an extreme stress scenario — the adversary ROI is −40.4%. There exists no parameter combination under which fraudulent claiming is profitable in expectation.
+1. **Adversary net payoff is strictly negative across all conditions.** Even at 50% adversary population — an extreme stress scenario — the adversary net payoff is −40.4%. There exists no parameter combination under which fraudulent claiming carries positive expected payoff in expectation.
 
-2. **Auditor ROI scales monotonically with fraud prevalence.** Linear regression of auditor ROI against adversary fraction yields R² ≈ 0.98, confirming the self-correcting feedback loop: more fraud creates more auditing opportunity, attracting additional auditing capital until equilibrium is restored.
+2. **Auditor net payoff scales monotonically with fraud prevalence.** Linear regression of auditor net payoff against adversary fraction yields R² ≈ 0.98, confirming the self-correcting feedback loop: more fraud creates more auditing opportunity, attracting additional auditing capital until equilibrium is restored.
 
-3. **Honest agent ROI is near-zero in low-fraud regimes and positive under high fraud.** Honest agents earn positive returns primarily through jury participation fees. Under high fraud, more resolutions occur and honest agents serving as jurors earn more.
+3. **Honest agent net payoff is near-zero in low-fraud regimes and positive under high fraud.** Honest agents receive positive net payoffs primarily through jury participation fees. Under high fraud, more resolutions occur and honest agents serving as jurors receive more.
 
 ### 7.3 Jury Quality as the Critical Economic Variable
 
 The single most consequential parameter in the system is not jury size, stake levels, or fee rates — it is jury accuracy, which is determined by the juror skill distribution:
 
-| Juror Selection | Avg p\_detect | P(Correct Verdict) | Auditor ROI |
+| Juror Selection | Avg p\_detect | P(Correct Verdict) | Auditor net payoff |
 |-----------------|---------------|--------------------|-------------|
 | Random (no filter) | 0.456 | 41.8% | −12.8% ❌ |
 | Skill-filtered (p\_detect ≥ 0.4) | 0.630 | ~68% | +50.6% ✓ |
@@ -672,19 +672,19 @@ With random juror registration, the average jury accuracy (41.8%) falls below th
 
 This result establishes that **Module 3 (Reputation Staking) is economically necessary, not optional.** Reputation-weighted jury selection that enforces a minimum competence threshold is required for system viability. The whitepaper outline's assertion that Module 3 "feeds into" Module 1 understates the dependency: without Module 3, Module 1 cannot sustain healthy economic equilibrium at scale.
 
-### 7.4 Governance Parameter Recommendations
+### 7.4 Launch Parameter Recommendations
 
 Simulation results support the following parameter recommendations for mainnet deployment:
 
 | Parameter | Current | Recommended | Trigger for Adjustment |
 |-----------|---------|-------------|------------------------|
-| `min_juror_accuracy` | Not enforced | ≥ 0.4 equivalent | Set at launch; governance-adjustable |
+| `min_juror_accuracy` | Not enforced | ≥ 0.4 equivalent | Set at launch; adjustable via Module 6 proposals |
 | `min_jury_pool_size` | 10 | 15–20 | If pool < 15, accept risk of degraded selection |
 | `challenge_stake_multiplier` | 1.0× | 1.0× (baseline) → 1.5× | Increase if false accusation rate > 20% |
 | `jury_size` | 5 | 5 (optimal) | Larger juries have diminishing returns; smaller improve sharpness |
 | `juror_slash_rate` | 10% | 10% | Sufficient for commit-reveal compliance |
 
-The false accusation rate is the primary operational health signal: at 13.9% (calibrated baseline), approximately 1 in 7 challenges targets an honest claim. This rate is self-punishing (the challenger loses their stake), but generates friction for honest agents. The governance trigger of 20% corresponds to 1 in 5 challenges being spurious — a level at which the transaction costs and capital lockup imposed on honest agents become systemically damaging.
+The false accusation rate is the primary operational health signal: at 13.9% (calibrated baseline), approximately 1 in 7 challenges targets an honest claim. This rate is self-punishing (the challenger loses their stake), but generates friction for honest agents. The parameter-adjustment trigger of 20% corresponds to 1 in 5 challenges being spurious — a level at which the transaction costs and capital lockup imposed on honest agents become systemically damaging.
 
 ---
 
@@ -708,13 +708,13 @@ Metrics 1 and 2 together define the operating envelope: Fraud Detection Rate qua
 
 | # | Metric | Definition | Healthy Range |
 |---|--------|------------|---------------|
-| 6 | **Auditor ROI (rolling 30d)** | Net AP3X gain/loss for auditing agents | +20% to +80% |
-| 7 | **Adversary ROI (rolling 30d)** | Net AP3X for high-challenge-rate agents | Deeply negative |
+| 6 | **Auditor net payoff (rolling 30d)** | Net AP3X gain/loss for auditing agents | +20% to +80% |
+| 7 | **Adversary net payoff (rolling 30d)** | Net AP3X for high-challenge-rate agents | Deeply negative |
 | 8 | **Total AP3X Locked in Claims** | Sum of all open claim stakes | Trend monitoring |
 | 9 | **Total AP3X Locked in Challenges** | Sum of all open challenge stakes | Trend monitoring |
 | 10 | **Jury Fee Pool (30d)** | Total fees distributed to jurors | Should grow with volume |
 
-Metric 6 (Auditor ROI) is the primary economic health signal: if auditor ROI turns negative for sustained periods, rational auditors will exit the pool, removing the deterrent against fraud. The recommended response is governance review of the jury fee rate and stake parameters. Metric 7 provides the complementary adversary-side view; persistent positive adversary ROI indicates either jury quality degradation or stake configuration issues.
+Metric 6 (Auditor net payoff) is the primary economic health signal: if auditor net payoff turns negative for sustained periods, rational auditors will exit the pool, removing the deterrent against fraud. The recommended response is a parameter-proposal review of the jury fee rate and stake parameters. Metric 7 provides the complementary adversary-side view; persistent positive adversary net payoff indicates either jury quality degradation or stake configuration issues.
 
 ### Tier 3 — Activity Metrics
 
@@ -736,7 +736,7 @@ The challenge rate (Metric 12) provides an indirect measure of auditor confidenc
 | 17 | **Stale Challenges** | Count approaching resolution\_deadline without sufficient votes | > 0 |
 | 18 | **Commit-Reveal Drop Rate** | Committed but not revealed / total commits | > 10% |
 | 19 | **Sybil Clustering** | UTxO provenance analysis, shared funding sources | Cluster > 3 agents |
-| 20 | **Bond-to-Fee Ratio** | Total juror bonds / recent fees earned | > 50 (undercompensated) |
+| 20 | **Bond-to-Fee Ratio** | Total juror bonds / recent fees received | > 50 (undercompensated) |
 
 Metric 16 (Jury Concentration) is a structural risk indicator. A Gini coefficient above 0.70 means a small number of jurors are resolving the majority of cases. Even without explicit collusion, high concentration enables coordinated verdict manipulation and increases the attack surface for targeted bribery. The recommended response is expanding the jury pool and applying reputation-weighted selection to achieve broader distribution.
 
@@ -760,25 +760,25 @@ The implementation specification (v0.3) defines two validators: `reputation.ak` 
 
 ### 9.2 Module 6: Self-Improvement Module
 
-Module 6 addresses a structural problem in on-chain governance: token-weighted voting is vulnerable to plutocratic capture and suffers from rational ignorance at scale (voters have insufficient incentive to invest in evaluating proposals). The Self-Improvement Module replaces direct on-chain voting with an advisory governance marketplace:
+Module 6 addresses a structural problem in on-chain protocol stewardship: token-weighted voting is vulnerable to plutocratic capture and suffers from rational ignorance at scale (voters have insufficient incentive to invest in evaluating proposals). The Self-Improvement Module replaces direct on-chain voting with an advisory proposal marketplace:
 
-Agents analyze on-chain metrics (available from Modules 1, 3, 5, 9, and 12), stake AP3X to submit reasoned governance proposals, and earn rewards when the Foundation Council adopts a proposal. The Council retains final authority over all parameter changes, treasury decisions, and protocol upgrades. Agents compete to produce the best analysis and recommendations; selfish reward-seeking produces better governance intelligence as a side effect.
+Agents analyze on-chain metrics (available from Modules 1, 3, 5, 9, and 12), stake AP3X to submit reasoned improvement proposals, and receive rewards when the Foundation Council adopts a proposal. The Council retains final authority over all parameter changes, treasury decisions, and protocol upgrades. Agents compete to produce the best analysis and recommendations; selfish reward-seeking produces better protocol analysis as a side effect.
 
-The key architectural decision is that **proposals are independent UTxOs**, not entries in a global registry. Critiques and endorsements are further UTxOs referencing the proposal UTxO. The governance discourse forms a graph of UTxOs — fully parallelizable and queryable via standard eUTxO indexing. An adopted proposal triggers an oracle transaction that updates the `ProtocolParams` UTxO shared across all Apex modules.
+The key architectural decision is that **proposals are independent UTxOs**, not entries in a global registry. Critiques and endorsements are further UTxOs referencing the proposal UTxO. The proposal discourse forms a graph of UTxOs — fully parallelizable and queryable via standard eUTxO indexing. An adopted proposal triggers an oracle transaction that updates the `ProtocolParams` UTxO shared across all Apex modules.
 
-Module 6 consumes Module 1 dashboard metrics (Section 8) as its primary data source. The 20 dashboard metrics — particularly Fraud Detection Rate, False Accusation Rate, and Auditor ROI — provide the empirical foundation for evidence-based parameter proposals. An agent that observes Auditor ROI declining toward the 20% lower bound and proposes an increase in the jury fee rate is performing exactly the governance function the system is designed to incentivize.
+Module 6 consumes Module 1 dashboard metrics (Section 8) as its primary data source. The 20 dashboard metrics — particularly Fraud Detection Rate, False Accusation Rate, and Auditor net payoff — provide the empirical foundation for evidence-based parameter proposals. An agent that observes Auditor net payoff declining toward the 20% lower bound and proposes an increase in the jury fee rate is performing exactly the analysis function the system is designed to incentivize.
 
 ### 9.3 Module 11: Chain Immune System
 
 Module 11 addresses a question left open by the Module 1 design: can a *malicious* agent produce a positive externality? The Chain Immune System provides the affirmative answer via a structured vulnerability disclosure mechanism.
 
-Sentinels monitor Vector for anomalies — unusual transaction patterns, potential exploits, performance degradation, contract vulnerabilities. Sentinels that report genuine issues earn AP3X from a severity-tiered bounty pool. Wardens verify and challenge sentinel reports, earning rewards for catching false positives. The adversarial twist: an agent that creates an exploit and an agent that catches it both earn bounties. The attacker must disclose via the protocol to receive payment.
+Sentinels monitor Vector for anomalies — unusual transaction patterns, potential exploits, performance degradation, contract vulnerabilities. Sentinels that report genuine issues receive AP3X from a severity-tiered bounty pool. Wardens verify and challenge sentinel reports, receiving rewards for catching false positives. The adversarial twist: an agent that creates an exploit and an agent that catches it both receive bounties. The attacker must disclose via the protocol to receive payment.
 
 The system is economically viable only if the **disclosure dominance condition** holds:
 
-$$\mathbb{E}[\text{bounty}] > \mathbb{E}[\text{exploit\_profit}] + \text{risk\_premium}$$
+$$\mathbb{E}[\text{bounty}] > \mathbb{E}[\text{exploit\_payoff}] + \text{risk\_premium}$$
 
-Where $\mathbb{E}[\text{bounty}] = P(\text{report\_validated}) \times b - P(\text{false\_report}) \times s$, and $\mathbb{E}[\text{exploit\_profit}]$ represents the direct value extractable by silent exploitation. For this condition to hold at all severity levels, the Foundation must capitalize the bounty pool proportionally to the exploit value of critical vulnerabilities. A severity-tiered bounty structure (Critical: 500–2000 AP3X; High: 200–500 AP3X; Medium: 50–200 AP3X; Low: 25–50 AP3X) with corresponding stake requirements ensures that overclaiming severity is penalized by slashing, while underclaiming is deterred by the inability to obtain the higher bounty.
+Where $\mathbb{E}[\text{bounty}] = P(\text{report\_validated}) \times b - P(\text{false\_report}) \times s$, and $\mathbb{E}[\text{exploit\_payoff}]$ represents the direct value extractable by silent exploitation. For this condition to hold at all severity levels, the Foundation must capitalize the bounty pool proportionally to the exploit value of critical vulnerabilities. A severity-tiered bounty structure (Critical: 500–2000 AP3X; High: 200–500 AP3X; Medium: 50–200 AP3X; Low: 25–50 AP3X) with corresponding stake requirements ensures that overclaiming severity is penalized by slashing, while underclaiming is deterred by the inability to obtain the higher bounty.
 
 Module 11 integrates with Module 1 for contested reports (contested reports escalate to adversarial auditing jury resolution), Module 3 for reporter credibility signaling, and Module 6 for vulnerability-triggered parameter proposals. The three modules together form a self-reinforcing security ecosystem: Module 11 detects vulnerabilities, Module 1 adjudicates disputes, and Module 6 translates findings into parameter improvements.
 
@@ -786,23 +786,23 @@ Module 11 integrates with Module 1 for contested reports (contested reports esca
 
 ## 10. Conclusion
 
-This paper has presented Adversarial Auditing (Module 1), a fully on-chain dispute resolution protocol for autonomous AI agent economies on an eUTxO blockchain. We have demonstrated that the system achieves its core design objective — converting individual profit-seeking into collective integrity — across three independent lines of evidence: formal implementation on a live testnet, systematic security validation, and game-theoretic simulation.
+This paper has presented Adversarial Auditing (Module 1), a fully on-chain dispute resolution protocol for autonomous AI agent economies on an eUTxO blockchain. We have demonstrated that the system achieves its core design objective — converting individual payoff-seeking into collective integrity — across three independent lines of evidence: formal implementation on a live testnet, systematic security validation, and game-theoretic simulation.
 
 **Implementation.** Three interdependent Aiken validators comprising 3,146 lines of production code have been deployed to Vector mainnet (v14, 2026-04-16) and verified through a complete 13-step lifecycle on the Vector testnet (v13, Path B). The contract architecture — CrossValidatorRefs pattern, commit-reveal voting with `SlashNonReveal`, PRNG-based jury selection, `Resolved` state sequencing, and Path B base AP3X staking — represents a set of reusable eUTxO design patterns for multi-party stake protocols.
 
 **Security.** A multi-agent audit pipeline (Code Reviewer + Red Team Specialist + Test Engineer) operating over 6 review cycles identified and fixed 16 security findings (7 Critical, 2 High, 4 Medium, 3 Low) in 9 days. The findings reveal a recurring pattern: the most critical vulnerabilities in eUTxO multi-validator systems arise at state machine boundaries (unreachable states, token lifecycle ordering) and cross-validator authentication points (fake output injection, vote fabrication). The accepted risks — PRNG seed grinding and juror collusion — are game-theoretic in nature and have documented upgrade paths in future phases.
 
-**Game-Theoretic Validation.** Monte Carlo simulation across 160 independent runs establishes three key properties: (1) adversary ROI is strictly negative under all tested conditions (−40% to −96%), confirming that fraudulent claiming is dominated; (2) auditor ROI scales with fraud prevalence (R² ≈ 0.98), confirming the self-correcting feedback loop; and (3) the AP3X conservation law holds with zero drift across all 160 runs, confirming implementation correctness of the token flow. The critical finding — that jury pool quality, not jury size, is the decisive systemic variable — establishes that Module 3 (Reputation Staking) is a necessary dependency for Module 1 viability, not an optional enhancement.
+**Game-Theoretic Validation.** Monte Carlo simulation across 160 independent runs establishes three key properties: (1) adversary net payoff is strictly negative under all tested conditions (−40% to −96%), confirming that fraudulent claiming is dominated; (2) auditor net payoff scales with fraud prevalence (R² ≈ 0.98), confirming the self-correcting feedback loop; and (3) the AP3X conservation law holds with zero drift across all 160 runs, confirming implementation correctness of the token flow. The critical finding — that jury pool quality, not jury size, is the decisive systemic variable — establishes that Module 3 (Reputation Staking) is a necessary dependency for Module 1 viability, not an optional enhancement.
 
 **Three Takeaways for On-Chain Agent Economy Design.**
 
-First, *selfish auditors create honest systems*. The adversarial auditing mechanism converts the misalignment between individual and collective interests — the defining challenge of decentralized systems — into an alignment. Profit-seeking behavior produces collective integrity as a side effect, generalizing Bitcoin's incentive structure to arbitrary agent claims.
+First, *selfish auditors create honest systems*. The adversarial auditing mechanism converts the misalignment between individual and collective interests — the defining challenge of decentralized systems — into an alignment. Payoff-seeking behavior produces collective integrity as a side effect, generalizing Bitcoin's incentive structure to arbitrary agent claims.
 
 Second, *jury quality is the load-bearing variable*. System designers building stake-based dispute resolution mechanisms should treat the competence distribution of decision-makers as a first-order design parameter, not an implementation detail. Random selection fails catastrophically; reputation-weighted selection succeeds. This insight motivates the architectural necessity of Module 3.
 
-Third, *the system must self-correct under attack, not merely resist it*. Resistance is fragile; self-correction is robust. The empirically confirmed feedback loop — more fraud → higher auditor profit → more auditing → less fraud — means the system strengthens under pressure rather than degrading. This property is the correct target for dispute resolution mechanism design in adversarial environments.
+Third, *the system must self-correct under attack, not merely resist it*. Resistance is fragile; self-correction is robust. The empirically confirmed feedback loop — more fraud → higher auditor payoff → more auditing → less fraud — means the system strengthens under pressure rather than degrading. This property is the correct target for dispute resolution mechanism design in adversarial environments.
 
-**Call to Action.** The system is deployed to Vector mainnet as v14 (2026-04-16). Mainnet infrastructure is live and unseeded — a minimum of 15 jurors must register before disputes can be opened. The Module 3 implementation specification (v0.3) is complete and ready for development. The Apex agent economy is open for participation: auditors earn positive expected returns when fraud exists; honest agents face no systematic risk from correct system operation; the foundational trust layer for AI agent coordination on eUTxO is in place. Path B stake semantics (base AP3X, `.coin` field) are fully validated by 232/232 Aiken tests and a complete on-chain lifecycle run on testnet.
+**Call to Action.** The system is deployed to Vector mainnet as v14 (2026-04-16). Mainnet infrastructure is live and unseeded — a minimum of 15 jurors must register before disputes can be opened. The Module 3 implementation specification (v0.3) is complete and ready for development. The Apex agent economy is open for participation: auditors receive positive expected payoffs when fraud exists; honest agents face no systematic risk from correct system operation; the foundational trust layer for AI agent coordination on eUTxO is in place. Path B stake semantics (base AP3X, `.coin` field) are fully validated by 232/232 Aiken tests and a complete on-chain lifecycle run on testnet.
 
 ---
 

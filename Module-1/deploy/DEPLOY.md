@@ -54,7 +54,7 @@ All three validators are deployed as reference scripts (CIP-33):
 | oracle_active | False (jury mode) |
 | min_jury_pool_size | 15 |
 
-> Stakes are held in the `.coin` field (base AP3X, the native chain currency in DFM units). This is Path B — no custom staking token is required.
+> Stakes are held in the `.coin` field (base AP3X, the native chain coin in DFM units). This is Path B — no custom staking token is required.
 
 ## Refs NFT Policy
 

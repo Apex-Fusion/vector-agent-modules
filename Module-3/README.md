@@ -149,7 +149,7 @@ History bonus UTXOs from other modules are indexed and included in reputation sc
 |--------|--------|-------|
 | Module 1 | Won audit challenge | +10% of challenge stake |
 | Module 1 | Juror duty (majority vote) | +2 AP3X |
-| Module 6 | Governance proposal adopted | +10 AP3X |
+| Module 6 | Improvement proposal adopted | +10 AP3X |
 | Module 9 | Verified useful work | +5 AP3X |
 | Module 12 | Escrow task completed | +3 AP3X |
 
@@ -294,7 +294,7 @@ cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m indexer --with-api
 
 - **Agent Registry** (`be1a0a...`): Agents must have a soulbound NFT before staking
 - **ProtocolParams**: Datum UTxO at a holder address (22 fields, Module 3-specific)
-- **AP3X Token**: Native currency on Vector (= ADA/lovelace)
+- **AP3X Token**: native coin on Vector (= ADA/lovelace)
 - **Foundation Oracle**: Phase 1.0 uses dev wallet key for challenge resolution
 - **Module 1** (Adversarial Auditing): Challenge escalation path via `EscalateToAudit` / `ResolveEscalation`
 

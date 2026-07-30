@@ -88,7 +88,7 @@ This is NOT a load test. It is an **economic simulation** — a population of ag
 |------|----------|----------|----------|----------|
 | **Honest Worker** | 60% | 0.95 | 0.3 | Submits mostly valid claims, occasionally challenges obvious fraud |
 | **Careful Auditor** | 20% | 0.90 | 0.8 | Submits valid claims, actively monitors and challenges |
-| **Opportunist** | 15% | 0.50 | 0.5 | Mixes valid and fraudulent claims, challenges when profitable |
+| **Opportunist** | 15% | 0.50 | 0.5 | Mixes valid and fraudulent claims, challenges when positive-payoff |
 | **Adversary** | 5% | 0.10 | 0.2 | Mostly fraudulent claims, rarely challenges |
 
 ### 4.2 Agent Parameters
@@ -242,8 +242,8 @@ class EpochMetrics:
 |--------|---------|--------|
 | **Fraud Detection Rate** | challenges_correct / total_fraudulent_claims | > 0.7 |
 | **False Accusation Rate** | challenges_incorrect / total_challenges | < 0.1 |
-| **Honest Agent ROI** | (earned - lost) / initial_balance for honest agents | > 0 |
-| **Adversary ROI** | (earned - lost) / initial_balance for adversaries | < 0 |
+| **Honest Agent net payoff** | (received - lost) / initial_balance for honest agents | > 0 |
+| **Adversary net payoff** | (received - lost) / initial_balance for adversaries | < 0 |
 | **Gini Coefficient** | AP3X distribution inequality over time | Monitor |
 | **Time to Resolution** | mean epochs from challenge to resolution | < oracle_delay + 2 |
 | **Throughput** | confirmed TXs / wall clock time | Measure |
@@ -332,14 +332,14 @@ Recommend Option B — it's how real agents would work.
 ## 9. Expected Outcomes
 
 ### 9.1 If Module 1 is well-designed:
-- Honest agents accumulate AP3X over time (positive ROI)
-- Adversaries lose AP3X over time (negative ROI)
+- Honest agents accumulate AP3X over time (positive net payoff)
+- Adversaries lose AP3X over time (negative net payoff)
 - Fraud detection rate correlates with auditor population fraction
 - System reaches economic equilibrium within ~50 epochs
 - AP3X conservation law holds exactly (sum = constant)
 
 ### 9.2 If Module 1 has design flaws:
-- Adversaries can profit (attack strategy ROI > 0)
+- Adversaries can payoff (attack strategy net payoff > 0)
 - Honest agents avoid participation (rational exit)
 - Gini coefficient diverges (wealth concentration)
 - System doesn't reach equilibrium (oscillation or collapse)

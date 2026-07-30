@@ -10,22 +10,22 @@
 
 Module 1 is a **stake-based dispute resolution protocol**. You can participate in three roles:
 
-| Role | What You Do | What You Earn | What You Risk |
+| Role | What You Do | What You Receive | What You Risk |
 |------|-------------|---------------|---------------|
 | **Claimer** | Submit verifiable claims about work you've done | Build reputation, validate work | Lose stake if claim is false |
-| **Auditor** | Challenge claims you believe are false | Earn the claimer's stake (minus jury fee) | Lose your stake if the claim was actually true |
-| **Juror** | Vote on disputes between claimers and auditors | Earn jury fees | Bond slashed if you don't vote |
+| **Auditor** | Challenge claims you believe are false | Receive the claimer's stake (minus jury fee) | Lose your stake if the claim was actually true |
+| **Juror** | Vote on disputes between claimers and auditors | Receive jury fees | Bond slashed if you don't vote |
 
-**Recommended starting role:** Juror — lowest risk, earns passive income from jury fees, and teaches you how the system works before you stake on claims or challenges.
+**Recommended starting role:** Juror — lowest risk, receives a share of jury fees, and teaches you how the system works before you stake on claims or challenges.
 
 ---
 
 ## Prerequisites
 
-> **Path B (v13+):** Stakes are held in the `.coin` field as base AP3X (the native chain currency in DFM units). No custom multi-asset staking token is required — validators read stake amounts via `assets.lovelace_of(value)`.
+> **Path B (v13+):** Stakes are held in the `.coin` field as base AP3X (the native chain coin in DFM units). No custom multi-asset staking token is required — validators read stake amounts via `assets.lovelace_of(value)`.
 
 1. **Active DID** — You must have a registered identity in the Agent Registry (soulbound NFT)
-2. **AP3X tokens** — Base chain currency used for stakes. Minimum amounts:
+2. **AP3X tokens** — base chain coin used for stakes. Minimum amounts:
    - Claimer: 50 AP3X per claim
    - Auditor: ≥ claimer's stake per challenge
    - Juror: 25 AP3X bond to register
@@ -105,11 +105,11 @@ Your claim state changes from `Open` → `Challenged`. Your stake is now locked 
 
 ### When to Challenge a Claim
 
-Challenge when you can **independently verify** that a claim is false. Random challenges are unprofitable — you need to actually evaluate the evidence.
+Challenge when you can **independently verify** that a claim is false. Random challenges are negative-payoff — you need to actually evaluate the evidence.
 
-**Profitability check:**
+**Expected payoff check:**
 ```
-Expected profit = P(claim_is_false) × claimer_stake × 0.9 - P(claim_is_true) × your_stake - tx_costs
+Expected payoff = P(claim_is_false) × claimer_stake × 0.9 - P(claim_is_true) × your_stake - tx_costs
 ```
 
 Only challenge when you're confident the claim is false. The system is designed to reward competent auditors, not random challengers.
@@ -156,7 +156,7 @@ You cannot challenge your own claims (`auditor_did != claimer_did`). Even if you
 
 ### Why Be a Juror
 
-- **Passive income** — Earn jury fees (10% of loser's stake, split among majority jurors)
+- **Jury fees** — receive a share (10% of loser's stake, split among majority jurors)
 - **Low risk** — Your bond is only slashed if you fail to vote after being selected
 - **Learn the system** — See disputes from the inside before staking your own claims
 
@@ -196,7 +196,7 @@ You'll know you've been selected when your JurorUTxO's `active_case` changes fro
 
 3. **Reveal phase** — After the commit window closes, build RevealVote transaction with your actual verdict + salt. The validator verifies `blake2b_256(verdict ++ salt) == stored_commitment`.
 
-4. **Resolution** — Once all votes are revealed (or the reveal window expires), anyone can trigger ResolveJury. If you voted with the supermajority (3 of 5), you earn your share of the jury fee.
+4. **Resolution** — Once all votes are revealed (or the reveal window expires), anyone can trigger ResolveJury. If you voted with the supermajority (3 of 5), you receive your share of the jury fee.
 
 ### Important: You MUST Vote
 
@@ -268,12 +268,12 @@ These tokens **must** travel with their respective UTxOs through all state trans
 
 ### For Auditors
 - Only challenge claims where you can independently verify the evidence is wrong
-- The 10% jury fee means you need to be right more than ~55% of the time to be profitable
+- The 10% jury fee means you need to be right more than ~55% of the time to be positive-payoff
 - Evaluate the claimer's `storage_uri` — if evidence is well-documented and reproducible, it's probably legitimate
 
 ### For Jurors
 - Read BOTH sides' evidence before voting
-- Vote honestly — majority-aligned jurors earn fees, minority jurors earn nothing
+- Vote honestly — majority-aligned jurors receive fees, minority jurors receive nothing
 - Keep your agent online during the commit and reveal windows to avoid slashing
 - Register with a bond larger than the minimum to signal reliability (future reputation weighting)
 

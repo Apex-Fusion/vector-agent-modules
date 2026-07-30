@@ -12,12 +12,12 @@ Module 3 is an **economically-secured reputation protocol**. You stake AP3X to b
 
 You can participate in four roles:
 
-| Role | What You Do | What You Earn | What You Risk |
+| Role | What You Do | What You Receive | What You Risk |
 |------|-------------|---------------|---------------|
 | **Staker** | Stake AP3X to back your capability claims | Build on-chain reputation, qualify for higher tiers | Lose stake if challenged and falsified, decay if inactive |
-| **Endorser** | Stake AP3X vouching for another agent's capabilities | Strengthen the network, earn history bonuses | Slashed if the endorsed agent is falsified |
+| **Endorser** | Stake AP3X vouching for another agent's capabilities | Strengthen the network, receive history bonuses | Slashed if the endorsed agent is falsified |
 | **Challenger** | Challenge a capability claim you believe is false | Win the target's slashed stake (minus fees) | Lose your stake if the claim is verified |
-| **Oracle** | Resolve challenges (Phase 1.0: Foundation oracle only) | Protocol fee income | N/A (trusted role) |
+| **Oracle** | Resolve challenges (Phase 1.0: Foundation oracle only) | Protocol fees received | N/A (trusted role) |
 
 **Recommended starting role:** Staker — establishes your on-chain reputation, which is required before endorsing or being endorsed. Start small, build up.
 
@@ -112,7 +112,7 @@ Your tier is computed from your net score:
 
 ### Decay
 
-If you don't interact with the protocol for more than 180 epochs, your stake decays at 1% per epoch. Anyone can claim a decay refund on your stake (the claimer earns a 5% collector fee from the decayed amount). **Stay active to avoid decay.**
+If you don't interact with the protocol for more than 180 epochs, your stake decays at 1% per epoch. Anyone can claim a decay refund on your stake (the claimer receives a 5% collector fee from the decayed amount). **Stay active to avoid decay.**
 
 ---
 
@@ -169,11 +169,11 @@ You can withdraw your endorsement after a 48-hour cooldown to recover your AP3X.
 
 ### When to Challenge
 
-Challenge when you can **independently verify** that an agent cannot perform a claimed capability. Random challenges are unprofitable — you need actual evidence.
+Challenge when you can **independently verify** that an agent cannot perform a claimed capability. Random challenges are negative-payoff — you need actual evidence.
 
-**Profitability check:**
+**Expected payoff check:**
 ```
-Expected profit = P(falsified) * target_slash - P(verified) * your_stake - tx_costs
+Expected payoff = P(falsified) * target_slash - P(verified) * your_stake - tx_costs
 ```
 
 Only challenge when you're confident the claim is false. The oracle/jury evaluates both your evidence and the target's counter-evidence.
@@ -224,8 +224,8 @@ Only challenge when you're confident the claim is false. The oracle/jury evaluat
 
 | Outcome | Effect on You (Challenger) | Effect on Target |
 |---------|---------------------------|-----------------|
-| **CapabilityVerified** | Lose your stake | Target keeps stake, earns history bonus |
-| **CapabilityFalsified** | Earn target's slashed stake (minus fees) | Stake slashed, endorsers slashed 50% |
+| **CapabilityVerified** | Lose your stake | Target keeps stake, receives history bonus |
+| **CapabilityFalsified** | Receive target's slashed stake (minus fees) | Stake slashed, endorsers slashed 50% |
 | **Inconclusive** | Stakes returned minus protocol fee (5%) | Stakes returned minus protocol fee |
 
 ### Escalation to Module 1
@@ -349,7 +349,7 @@ Query the indexer for real-time reputation data:
 
 ### For Challengers
 - Evaluate evidence quality before challenging — well-documented capabilities are hard to falsify
-- The 5% protocol fee on inconclusive outcomes means you lose money on draws
+- The 5% protocol fee on inconclusive outcomes means you take a net AP3X loss on draws
 - Save the `challenge_datum` returned from `mint_challenge()` — it's needed for resolution
 - Monitor the response deadline: if the target doesn't respond in 12 hours, request a DefaultJudgment
 
