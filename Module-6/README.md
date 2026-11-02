@@ -94,7 +94,7 @@ Proposals, amendments, critiques and endorsements read the identity record of th
 - has the datum credential `VerificationKey(h)`, where `h` is the controller key hash of the record or a listed Ed25519 key with the transaction purpose. `h` is a required signer and signs;
 - writes `submitted_at` / `created_at` = the lower bound of its range.
 
-A new proposal, critique or endorsement needs two transactions: a lock output with the datum, then the creation by the validator. The client checks every contract rule before the lock and refuses with a clear error: a record that is not Active, an undeclared key, a missing ancestor record, a range over one hour, a missing params record or CrossRefs, the proposal cooldown. An endorsement has no token (`critique_mint` mints only next to a critique). Withdrawals, adoption and expiry read no identity record; the scripts build them with `GovernanceClient` of the Python SDK.
+A new proposal, critique or endorsement needs two transactions: a lock output with the datum, then the creation by the validator. The client checks every contract rule before the lock and refuses with a clear error: a record that is not Active, an undeclared key, a missing ancestor record, a range over one hour, a missing params record or CrossRefs, the proposal cooldown. An endorsement mints its `gend_` token through `critique_mint`. Withdrawals, adoption and expiry read no identity record; the scripts build them with `GovernanceClient` of the Python SDK 0.2.0 or later: `GovernanceClient(agent, GovernanceDeployment.from_deploy_state(state))`. The client finds the params record, the CrossRefs, the oracle record, the node of the proposer in the activity list and the reference scripts of the deployment itself. Before a script locks a stake, it checks that the SDK blueprint gives the validator hashes of the deploy state.
 
 Inputs of the scripts:
 
@@ -104,6 +104,7 @@ Inputs of the scripts:
 | `VECTOR_AGENT_DID` or `--agent` | `smoke_test.py`, `test_validated_submit.py`, `test_expire_e2e.py` | The agent: `did:vector:<64 hex>` or the 64-hex identifier. The record must be Active and must declare the wallet key (controller or listed key with the transaction purpose). |
 | `VECTOR_ENDORSER_DID` or `--endorser` | `smoke_test.py` | Optional second agent for the endorsement steps (an agent cannot endorse its own proposal). |
 | `--finalise withdraw\|adopt` | `smoke_test.py` | How the smoke test ends the proposal; `adopt` needs the oracle key as wallet key. |
+| `VECTOR_KOIOS_URL` | `smoke_test.py` | Optional. The Koios URL of the network of the deployment, with or without `/api/v1`. `GovernanceClient` uses the Koios URL of the agent: step 4 finds the proposal of the critique by its token there. Default of the agent: Vector testnet. |
 
 The proposal cooldown of GovernanceParams (24 hours) allows one proposal per agent in that time.
 

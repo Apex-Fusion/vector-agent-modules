@@ -930,14 +930,6 @@ def test_flows_lock_then_create(world):
     assert not world.chain.submitted[0].transaction_body.required_signers
 
 
-def test_sdk_reference_inputs_format(world):
-    assert gi.sdk_reference_inputs(world.params) == [{
-        "tx_hash": str(world.params.input.transaction_id),
-        "output_index": world.params.input.index,
-        "address": str(world.deployment.params_address),
-    }]
-
-
 def test_signing_needs_the_wallet_key(world):
     rec = world.agent(PROPOSER)
     prepared = lock_proposal(world, [rec], world.window())

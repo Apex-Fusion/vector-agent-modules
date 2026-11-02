@@ -6,15 +6,16 @@ permissionless). This is a time-dependent test that must be run separately
 from the main smoke test: the lower bound of the expiry transaction must be
 after submitted_at + review_window.
 
-The expiry burns the proposal token, returns the stake to the proposer and
-spends the node of the proposer in the activity list (SpendActivity: the
-count goes down by one; the contract refuses the node of another agent). The
-script reads the activity list from the chain
-(governance_identity.find_activity_list) and takes the node of the proposer
-of the proposal. It reads the GovernanceParams record and the CrossRefs
-output of the deployment by their tokens (governance_identity
-.load_references). The expiry reads no identity record;
-GovernanceClient.validated_expire_proposal of the Python SDK builds it.
+The expiry burns the proposal token, returns the stake to the proposer
+credential and spends the node of the proposer in the activity list
+(SpendActivity: the node continues with one active proposal less and the
+same next_did; the contract refuses the node of another agent). The script
+reads the activity list from the chain (governance_identity
+.find_activity_list) and checks the node of the proposer of the proposal
+before the expiry. The expiry reads no identity record.
+GovernanceClient.expire_proposal of the Python SDK (0.2.0 or later) builds
+it: the client finds the node, the GovernanceParams record, the CrossRefs
+output and the reference scripts of the deployment itself.
 
 Usage:
     # The proposal output, for example from scripts/test_expire_e2e.py
@@ -108,16 +109,16 @@ async def test_expire(argv: list) -> bool:
         print("       python scripts/test_expire.py --latest")
         return False
 
+    from vector_agent import VectorAgent
+    from vector_agent.governance import GovernanceClient, GovernanceConfigError, GovernanceDeployment
+
     state = json.load(open(DEPLOY_STATE_FILE))
     try:
         deployment = gi.GovernanceDeployment.from_state(state, str(DEPLOY_STATE_FILE))
-    except gi.GovernanceClientError as e:
+        sdk_deployment = GovernanceDeployment.from_deploy_state(state)
+    except (gi.GovernanceClientError, GovernanceConfigError) as e:
         print(f"[ERROR] {e}")
         return False
-    validators = state.get("validators", {})
-
-    from vector_agent import VectorAgent
-    from vector_agent.governance import GovernanceClient
 
     async with VectorAgent(
         ogmios_url=state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL")),
@@ -125,26 +126,14 @@ async def test_expire(argv: list) -> bool:
         skey_path=str(Path("wallets/payment.skey").absolute()),
     ) as agent:
         context = agent.context
-        gov = GovernanceClient(
-            agent,
-            proposal_script_cbor=validators[gi.PROPOSAL_SPEND]["compiled_code"],
-            proposal_mint_cbor=validators[gi.PROPOSAL_MINT]["compiled_code"],
-        )
-        proposal_spend_ref_tx = state.get("tx_hashes", {}).get("proposal_spend_ref", "")
-        if proposal_spend_ref_tx:
-            gov.set_reference_utxos({
-                "proposal": {"tx_hash": proposal_spend_ref_tx, "output_index": 0, "address": state["wallet_address"]}
-            })
+        gov = GovernanceClient(agent, sdk_deployment)
 
         try:
-            refs = await gi.load_references(context, deployment)
             utxos = await context.async_utxos(str(deployment.proposal_spend.address))
             proposal, datum, node = expiry_inputs(utxos, deployment, target)
         except gi.GovernanceClientError as e:
             print(f"[ERROR] {e}")
             return False
-        # The expiry reads the params record and CrossRefs (no identity record)
-        gov.set_governance_reference_inputs(gi.sdk_reference_inputs(refs.params.utxo, refs.cross_refs.utxo))
         print(f"[INFO] Proposal: {proposal.input}")
         print(f"[INFO] Proposer: {vid.did_from_id(datum.proposer_did)}")
         print(f"[INFO] Activity node: {node.utxo.input} (active proposals: {node.datum.active_proposal_count})")
@@ -164,11 +153,7 @@ async def test_expire(argv: list) -> bool:
             return False
 
         print("\n[INFO] Expiring proposal...")
-        result = await gov.validated_expire_proposal(
-            utxo_ref=sdk_ref(proposal.input),
-            activity_utxo_ref=sdk_ref(node.utxo.input),
-            proposer_did=datum.proposer_did,
-        )
+        result = await gov.expire_proposal(sdk_ref(proposal.input))
         print(f"[PASS] Proposal expired: {result['tx_hash']}")
         explorer = state.get("explorer_url", "")
         if explorer:

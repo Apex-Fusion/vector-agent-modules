@@ -4,8 +4,11 @@ Module 6: End-to-End Smoke Test (identity registry deployment)
 Runs the governance lifecycle on Vector testnet. Proposals, amendments,
 critiques and endorsements go through scripts/governance_identity.py: each
 of them reads the identity record of the agent (Part 2 §7, Module-6 row).
-Withdrawals and adoption go through GovernanceClient of the Python SDK:
-exits read no identity record.
+Withdrawals and adoption go through GovernanceClient of the Python SDK
+(0.2.0 or later), built with GovernanceDeployment.from_deploy_state: exits
+read no identity record. The client finds the params record, the CrossRefs,
+the oracle record, the node of the proposer in the activity list and the
+reference scripts of the deployment itself.
 
 Usage:
     VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/smoke_test.py"
@@ -25,6 +28,10 @@ Inputs:
     - --finalise adopt: adopt the proposal at the end. The wallet key must be
       the oracle key. The default is a withdrawal by the proposer.
     - A wallet with at least 50 AP3X.
+    - VECTOR_KOIOS_URL (optional): the Koios URL of the network of the
+      deployment, with or without /api/v1. GovernanceClient uses the Koios
+      URL of the agent: step 4 finds the proposal of the critique by its
+      token there. The default of the agent is Vector testnet.
 
 The proposal cooldown (GovernanceParams.proposal_cooldown, 24 hours by
 default) allows one proposal per agent in that time. The client refuses a
@@ -155,23 +162,30 @@ async def smoke_test(args):
     # Import SDK
     try:
         from vector_agent import VectorAgent
-        from vector_agent.governance import GovernanceClient
+        from vector_agent.governance import GovernanceClient, GovernanceConfigError, GovernanceDeployment
         print("\n[OK] SDK imported successfully")
     except ImportError as e:
         print(f"\n[SKIP] SDK import failed: {e}")
-        print("       Install SDK: pip install apex-fusion-agent-sdk")
+        print('       Install SDK 0.2.0 or later: pip install "apex-fusion-agent-sdk>=0.2.0"')
         print("\n--- Offline Validation ---")
         await offline_validation(state)
+        return
+
+    # GovernanceClient builds the exits. It derives the five scripts from its
+    # embedded blueprint and the values of the deploy state, and it refuses
+    # validator hashes that differ. Check this before step 2 locks a stake.
+    try:
+        sdk_deployment = GovernanceDeployment.from_deploy_state(state)
+        sdk_deployment.scripts()
+    except GovernanceConfigError as e:
+        print(f"\n[ERROR] {e}")
         return
 
     # Connect to Vector testnet
     ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
     submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
 
-    wallet = json.load(open(WALLET_FILE))
     skey_path = str(Path("wallets/payment.skey").absolute())
-
-    validators = state.get("validators", {})
 
     try:
         async with VectorAgent(
@@ -180,18 +194,7 @@ async def smoke_test(args):
             skey_path=skey_path,
         ) as agent:
             context = agent.context
-            gov = GovernanceClient(
-                agent,
-                proposal_script_cbor=validators[gi.PROPOSAL_SPEND]["compiled_code"],
-                critique_script_cbor=validators[gi.CRITIQUE_SPEND]["compiled_code"],
-                endorsement_script_cbor=validators[gi.ENDORSEMENT_SPEND]["compiled_code"],
-                proposal_mint_cbor=validators[gi.PROPOSAL_MINT]["compiled_code"],
-                critique_mint_cbor=validators[gi.CRITIQUE_MINT]["compiled_code"],
-            )
-            # Set proposal reference UTxO for CIP-33 (reduces tx size for the SDK exits)
-            proposal_spend_ref_tx = tx_hashes.get("proposal_spend_ref", "")
-            if proposal_spend_ref_tx:
-                gov.set_reference_utxos({"proposal": {"tx_hash": proposal_spend_ref_tx, "output_index": 0, "address": wallet["address"]}})
+            gov = GovernanceClient(agent, sdk_deployment)
 
             keys = gi.SigningKeyPair(agent._wallet.payment_signing_key, agent._wallet.payment_verification_key)
             wallet_address = agent._wallet.payment_address
@@ -202,7 +205,6 @@ async def smoke_test(args):
                 params = refs.params.params
                 print(f"\n[OK] GovernanceParams record: {refs.params.utxo.input.transaction_id}#{refs.params.utxo.input.index}")
                 print(f"[OK] CrossRefs: {refs.cross_refs.utxo.input.transaction_id}#{refs.cross_refs.utxo.input.index} (names this deployment)")
-                oracle = None
                 if args.finalise == "adopt":
                     oracle = gi.find_oracle(await context.async_utxos(str(deployment.oracle_address)), deployment)
                     print(f"[OK] Oracle record: {oracle.input.transaction_id}#{oracle.input.index}")
@@ -213,8 +215,6 @@ async def smoke_test(args):
             except (gi.GovernanceClientError, vid.IdentityError) as e:
                 print(f"\n[ERROR] {e}")
                 return
-            base_refs = gi.sdk_reference_inputs(refs.params.utxo, refs.cross_refs.utxo)
-            gov.set_governance_reference_inputs(base_refs)
 
             passed = 0
             failed = 0
@@ -288,12 +288,11 @@ async def smoke_test(args):
                 fail(3, "Submit critique", e)
 
             # Test 4: Withdraw the critique (no identity check). The validator
-            # reads the open proposal as a reference input.
+            # reads an active proposal as a reference input; GovernanceClient
+            # adds the proposal of the critique.
             if critique:
                 try:
-                    proposal_utxo = await gi.load_proposal(context, deployment, proposal.position)
-                    gov.set_governance_reference_inputs(base_refs + gi.sdk_reference_inputs(proposal_utxo))
-                    result = await gov.withdraw_critique(utxo_ref=utxo_ref(critique.position))
+                    result = await gov.withdraw_critique(utxo_ref(critique.position))
                     print(f"\n[4] PASS — Critique withdrawn: {result['tx_hash']}")
                     print(f"    Explorer: {tx_link(result['tx_hash'])}")
                     passed += 1
@@ -301,8 +300,6 @@ async def smoke_test(args):
                     await asyncio.sleep(TX_WAIT)
                 except Exception as e:
                     fail(4, "Withdraw critique", e)
-                finally:
-                    gov.set_governance_reference_inputs(base_refs)
             else:
                 print("\n[4] SKIP — No critique to withdraw")
                 skipped += 1
@@ -341,7 +338,7 @@ async def smoke_test(args):
                     fail(6, "Endorse proposal", e)
                 if endorsement:
                     try:
-                        result = await gov.withdraw_endorsement(utxo_ref=utxo_ref(endorsement.position))
+                        result = await gov.withdraw_endorsement(utxo_ref(endorsement.position))
                         print(f"\n[7] PASS — Endorsement withdrawn: {result['tx_hash']}")
                         print(f"    Explorer: {tx_link(result['tx_hash'])}")
                         passed += 1
@@ -357,28 +354,20 @@ async def smoke_test(args):
                 print("[7] SKIP — No endorsement to withdraw")
                 skipped += 2
 
-            # Test 8: Withdraw or adopt the proposal (no identity check)
+            # Test 8: Withdraw or adopt the proposal (no identity check).
+            # GovernanceClient spends the node of the proposer in the activity
+            # list (one active proposal less); an adoption reads the oracle record.
             try:
-                activity = await gi.load_activity(context, deployment, agent_id)
-                if activity is None:
-                    raise gi.GovernanceClientError(f"no activity record for {vid.did_from_id(agent_id)}")
                 if args.finalise == "adopt":
-                    gov.set_governance_reference_inputs(base_refs + gi.sdk_reference_inputs(oracle))
-                    result = await gov.validated_adopt_proposal(
-                        utxo_ref=utxo_ref(current),
-                        activity_utxo_ref=utxo_ref(activity.utxo.input),
-                        proposer_did=agent_id,
+                    result = await gov.adopt_proposal(
+                        utxo_ref(current),
                         reasoning_hash=blake2b_256("Adoption reasoning: proposal meets governance quality bar"),
                         reward_amount=params.min_adoption_reward,
                     )
                     print(f"\n[8] PASS — Proposal adopted: {result['tx_hash']}")
                     print(f"    Reward: {result['reward'] / 1_000_000} AP3X")
                 else:
-                    result = await gov.validated_withdraw_proposal(
-                        utxo_ref=utxo_ref(current),
-                        activity_utxo_ref=utxo_ref(activity.utxo.input),
-                        proposer_did=agent_id,
-                    )
+                    result = await gov.withdraw_proposal(utxo_ref(current))
                     print(f"\n[8] PASS — Proposal withdrawn (token burned): {result['tx_hash']}")
                 print(f"    Explorer: {tx_link(result['tx_hash'])}")
                 passed += 1

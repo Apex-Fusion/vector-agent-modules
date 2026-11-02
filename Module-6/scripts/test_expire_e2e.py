@@ -8,7 +8,9 @@ on-chain current_slot (all should be POSIX ms).
 
 The submission reads the identity record of the agent
 (scripts/governance_identity.py: the lock, then SubmitProposal). The expiry
-reads no identity record (GovernanceClient.validated_expire_proposal).
+reads no identity record. GovernanceClient.expire_proposal of the Python SDK
+(0.2.0 or later) builds it and finds the node of the proposer in the
+activity list itself.
 
 Usage:
     VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/test_expire_e2e.py"
@@ -64,12 +66,19 @@ async def run_test(agent_arg=None):
         return False
     print(f"Agent: {vid.did_from_id(agent_id)}")
 
-    validators = state.get("validators", {})
-    proposal_cbor = validators[gi.PROPOSAL_SPEND]["compiled_code"]
-    proposal_mint_cbor = validators[gi.PROPOSAL_MINT]["compiled_code"]
-
     from vector_agent import VectorAgent
-    from vector_agent.governance import GovernanceClient
+    from vector_agent.governance import GovernanceClient, GovernanceConfigError, GovernanceDeployment
+
+    # GovernanceClient builds the expiry. It derives the five scripts from its
+    # embedded blueprint and the values of the deploy state, and it refuses
+    # validator hashes that differ. Check this before the submission locks a
+    # stake.
+    try:
+        sdk_deployment = GovernanceDeployment.from_deploy_state(state)
+        sdk_deployment.scripts()
+    except GovernanceConfigError as e:
+        print(f"[ERROR] {e}")
+        return False
 
     ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
     submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
@@ -81,11 +90,7 @@ async def run_test(agent_arg=None):
     ) as agent:
         context = agent.context
         keys = gi.SigningKeyPair(agent._wallet.payment_signing_key, agent._wallet.payment_verification_key)
-        gov = GovernanceClient(
-            agent,
-            proposal_script_cbor=proposal_cbor,
-            proposal_mint_cbor=proposal_mint_cbor,
-        )
+        gov = GovernanceClient(agent, sdk_deployment)
 
         # ── Reference inputs and identity record ────────────────────
         try:
@@ -104,17 +109,6 @@ async def run_test(agent_arg=None):
         print(f"    max_review_window:       {params.max_review_window}")
         print(f"    proposal_cooldown:       {params.proposal_cooldown}")
         print(f"    emergency_review_window: {params.emergency_review_window}")
-
-        # The expiry reads the params record and CrossRefs (no identity record)
-        gov.set_governance_reference_inputs(gi.sdk_reference_inputs(refs.params.utxo, refs.cross_refs.utxo))
-
-        # Set reference UTxO for CIP-33
-        tx_hashes = state.get("tx_hashes", {})
-        proposal_spend_ref_tx = tx_hashes.get("proposal_spend_ref", "")
-        if proposal_spend_ref_tx:
-            gov.set_reference_utxos({
-                "proposal": {"tx_hash": proposal_spend_ref_tx, "output_index": 0, "address": state["wallet_address"]}
-            })
 
         # ── DIAGNOSTIC: Current time ────────────────────────────────
         clock = gi.SlotClock.from_genesis(await context.async_genesis_param())
@@ -161,13 +155,12 @@ async def run_test(agent_arg=None):
 
         try:
             proposal_utxo = await gi.wait_for_output(context, deployment.proposal_spend.address, submitted.position)
-            activity_utxo = await gi.wait_for_output(context, deployment.proposal_spend.address, submitted.activity)
         except gi.GovernanceClientError as e:
             print(f"[ERROR] {e}")
             return False
 
         print(f"[OK] Proposal UTxO: {submit_tx[:16]}...#{proposal_utxo.input.index}")
-        print(f"[OK] Activity UTxO: {submit_tx[:16]}...#{activity_utxo.input.index}")
+        print(f"[OK] Activity UTxO: {submit_tx[:16]}...#{submitted.activity.index}")
 
         # Read datum fields
         datum = gi.ProposalDatum.from_data(proposal_utxo.output.datum)
@@ -213,8 +206,9 @@ async def run_test(agent_arg=None):
                 print(f"       Expire it later with: python scripts/test_expire.py {submit_tx} {proposal_utxo.input.index}")
                 return False
             else:
-                # 90s buffer: validated_expire_proposal sets validity_start=tip-60,
-                # so on-chain time is ~60s behind. Need extra margin.
+                # 90 s margin: GovernanceClient.expire_proposal starts the validity
+                # range 60 s before the tip, and its lower bound must be after the
+                # end of the review window.
                 wait_s = remaining_s + 90
                 print(f"[WAIT] Waiting {wait_s:.0f}s for review window to elapse...")
                 await asyncio.sleep(wait_s)
@@ -225,14 +219,7 @@ async def run_test(agent_arg=None):
         print(f"{'='*60}")
 
         try:
-            expire_result = await gov.validated_expire_proposal(
-                utxo_ref={"tx_hash": submit_tx, "output_index": proposal_utxo.input.index},
-                activity_utxo_ref={
-                    "tx_hash": str(activity_utxo.input.transaction_id),
-                    "output_index": activity_utxo.input.index,
-                },
-                proposer_did=agent_id,
-            )
+            expire_result = await gov.expire_proposal(f"{submit_tx}#{proposal_utxo.input.index}")
         except Exception as e:
             print(f"[ERROR] Expire failed: {e}")
             import traceback; traceback.print_exc()

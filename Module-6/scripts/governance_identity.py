@@ -13,7 +13,8 @@ endorsement submission need:
   the transaction purpose. ``h`` is a required signer and signs.
 
 Exits and settlements (withdrawals, adoption, rejection, expiry) read no
-identity record. ``GovernanceClient`` of the Python SDK builds them.
+identity record. ``GovernanceClient`` of the Python SDK (0.2.0 or later)
+builds them.
 
 The contracts in ``contracts/governance-suggestion`` give the shapes:
 
@@ -2270,12 +2271,3 @@ async def submit_endorsement(
         str(tx.id), TransactionInput(tx.id, step.position_index), lock_id, minted=step.minted,
         seed=TransactionInput(TransactionId(bytes.fromhex(lock_id)), lock.position_index),
     )
-
-
-def sdk_reference_inputs(*utxos: UTxO) -> list[dict]:
-    """Reference inputs in the format of ``GovernanceClient.
-    set_governance_reference_inputs`` (for the exits that the SDK builds)."""
-    return [
-        {"tx_hash": str(u.input.transaction_id), "output_index": u.input.index, "address": str(u.output.address)}
-        for u in utxos
-    ]
