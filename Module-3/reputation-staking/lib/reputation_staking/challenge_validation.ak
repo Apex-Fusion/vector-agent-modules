@@ -367,15 +367,30 @@ pub fn validate_resolve_challenge(
 
 /// Validate escalation of a Module 3 challenge to Module 1 Adversarial Auditing.
 ///
+/// The Module 1 claim of an escalation is a claim of the challenge target
+/// on the challenged capability. ResolveEscalation maps ClaimerWins to
+/// CapabilityVerified and AuditorWins to CapabilityFalsified; this mapping
+/// is sound only when the claimer is the target and the claim is on the
+/// challenged capability.
+///
 /// MUST:
 ///   1. Challenge state == Open (with response — both parties have submitted evidence)
 ///   2. Within escalation window: the upper bound of the validity range is at
 ///      most created_at + challenge_response_deadline + escalation_window
-///   3. Signed by either challenger or target (either party can escalate)
+///   3. Signed by either challenger or target. (The Module 1 claim rules
+///      also need the signature of the claimer credential, a declared key
+///      of the target's record, so the target takes part in every
+///      escalation.)
 ///   4. The transaction mints exactly one Module 1 claim token (policy
-///      audit_claim_validator_hash), and a Module 1 claim output at the
-///      claim validator holds it, with a datum that links back to this
-///      challenge
+///      audit_claim_validator_hash), and the Module 1 claim output at the
+///      claim validator that holds it has a datum with:
+///      - claimer_did == target_did (the claim of the challenge target),
+///      - claim_type == challenged_capability (the claim is on the
+///        challenged capability),
+///      - claim_hash == blake2b_256(evidence_hash ++ counter_evidence_hash)
+///        (the evidence of both parties).
+///      Module 3 does not read claimer_credential: the Module 1 claim rules
+///      check it against the target's record.
 ///   5. Continuing challenge UTXO transitions to
 ///      Escalated { audit_claim_token } with the name of that claim token.
 ///      (The output reference of the claim cannot be in the datum: it
@@ -413,11 +428,10 @@ pub fn validate_escalate_to_audit(
   expect [Pair(claim_token, 1)] =
     dict.to_pairs(assets.tokens(tx.mint, cfg.audit_claim_validator_hash))
 
-  // Rule 4 (F-NEW-7 fix): Verify a Module 1 claim output exists at the claim
-  // validator address with the claim token and a datum that links back to
-  // this challenge. The claim_hash must be
-  // blake2b_256(evidence_hash ++ counter_evidence_hash) and claim_type must
-  // be "reputation_challenge".
+  // Rule 4 (F-NEW-7 fix, W4-MODFIX3): the Module 1 claim output at the
+  // claim validator address that holds the claim token. Its datum is a
+  // claim of the target on the challenged capability, linked to the
+  // evidence of both parties.
   let expected_claim_hash =
     builtin.blake2b_256(
       builtin.append_bytearray(
@@ -441,7 +455,11 @@ pub fn validate_escalate_to_audit(
           when output.datum is {
             InlineDatum(raw) -> {
               expect claim: AuditClaimDatum = raw
-              claim.claim_hash == expected_claim_hash && claim.claim_type == "reputation_challenge"
+              and {
+                claim.claimer_did == input_datum.target_did,
+                claim.claim_type == input_datum.challenged_capability,
+                claim.claim_hash == expected_claim_hash,
+              }
             }
             _ -> False
           }
@@ -477,7 +495,11 @@ pub fn validate_escalate_to_audit(
 ///      (claim_token == audit_claim_token), with state
 ///      AuditResolved { verdict, .. }
 ///   3. Verdict mapped: ClaimerWins → CapabilityVerified, AuditorWins → CapabilityFalsified,
-///      AuditInconclusive → Inconclusive
+///      AuditInconclusive → Inconclusive. The claim of audit_claim_token is
+///      a claim of the target on the challenged capability
+///      (validate_escalate_to_audit), so ClaimerWins says that the target
+///      has the capability. The Module 1 rules refuse an auditor that is
+///      the claimer, so the auditor is the challenger.
 ///   4. Output state == Resolved { mapped_outcome }
 ///   5. All other datum fields preserved
 pub fn validate_resolve_escalation(
@@ -543,7 +565,9 @@ pub fn validate_resolve_escalation(
 }
 
 /// Map a Module 1 Verdict to a Module 3 RepChallengeOutcome.
-/// ClaimerWins means the agent's claim was valid → CapabilityVerified
+/// The claimer is the target and the claim is on the challenged capability
+/// (validate_escalate_to_audit):
+/// ClaimerWins means the target's claim was valid → CapabilityVerified
 /// AuditorWins means the auditor proved it false → CapabilityFalsified
 /// AuditInconclusive → Inconclusive
 pub fn map_audit_verdict(verdict: AuditVerdict) -> RepChallengeOutcome {

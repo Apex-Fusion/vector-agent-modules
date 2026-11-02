@@ -8,6 +8,12 @@
 /// The resolution reads the Module 1 challenge only from a reference input
 /// at the exact Module 1 challenge address that holds exactly one Module 1
 /// challenge token and names that claim token.
+///
+/// W4-MODFIX3: the minted claim is a claim of the challenge target on the
+/// challenged capability (claimer_did == target_did and claim_type ==
+/// challenged_capability). ResolveEscalation maps ClaimerWins to
+/// CapabilityVerified and AuditorWins to CapabilityFalsified, so a claim of
+/// another agent or on another capability must not decide the challenge.
 
 use aiken/builtin
 use cardano/address.{Address, Credential, Script, VerificationKey}
@@ -63,29 +69,17 @@ fn escalated_datum() -> ReputationChallengeDatum {
   }
 }
 
-/// The Module 1 claim output of the escalation: it holds `token` (a claim
-/// token of the claim validator).
+/// The Module 1 claim output with the datum `claim` that holds `token` (a
+/// claim token of the claim validator).
 fn make_module1_claim_output(
   cfg: ReputationConfig,
-  expected_claim_hash: ByteArray,
+  claim: AuditClaimDatum,
   token: ByteArray,
 ) -> Output {
-  let claim_datum =
-    AuditClaimDatum {
-      claimer_did: test_agent_did,
-      claimer_credential: VerificationKey(test_owner_key_hash),
-      claim_hash: expected_claim_hash,
-      claim_type: "reputation_challenge",
-      storage_uri: "ipfs://claim",
-      stake_amount: 50_000_000,
-      submitted_at: 3_000,
-      challenge_window: 1_800_000,
-      state: AuditOpen,
-    }
   let value =
     assets.from_lovelace(52_000_000)
       |> assets.add(cfg.audit_claim_validator_hash, token, 1)
-  make_output(script_address(cfg.audit_claim_validator_hash), value, claim_datum)
+  make_output(script_address(cfg.audit_claim_validator_hash), value, claim)
 }
 
 /// The mint of one Module 1 claim token.
@@ -216,6 +210,34 @@ fn expected_claim_hash_for(datum: ReputationChallengeDatum) -> ByteArray {
   )
 }
 
+/// The Module 1 claim of the escalation of `challenge`: the target claims
+/// the challenged capability (claim_type), and claim_hash links the claim
+/// to the evidence of both parties.
+fn escalation_claim(challenge: ReputationChallengeDatum) -> AuditClaimDatum {
+  AuditClaimDatum {
+    claimer_did: challenge.target_did,
+    claimer_credential: challenge.target_credential,
+    claim_hash: expected_claim_hash_for(challenge),
+    claim_type: challenge.challenged_capability,
+    storage_uri: "ipfs://claim",
+    stake_amount: 50_000_000,
+    submitted_at: 3_000,
+    challenge_window: 1_800_000,
+    state: AuditOpen,
+  }
+}
+
+/// A claim in the shape that the rule before W4-MODFIX3 accepted: the
+/// claim_type is the tag "reputation_challenge", not a capability.
+fn tagged_claim(claimer_did: ByteArray, claimer_key: ByteArray) -> AuditClaimDatum {
+  AuditClaimDatum {
+    ..escalation_claim(test_challenge_datum()),
+    claimer_did: claimer_did,
+    claimer_credential: VerificationKey(claimer_key),
+    claim_type: "reputation_challenge",
+  }
+}
+
 /// EscalateToAudit of `input_datum` to `output_datum` at the validity range
 /// [lo, lo + 100], signed by `signers`, with `outputs` and `mint`.
 fn escalate(
@@ -252,13 +274,21 @@ fn escalate_at(lo: Int, signers: List<ByteArray>) -> Bool {
     escalated_datum(),
     lo,
     signers,
-    [
-      make_module1_claim_output(
-        cfg,
-        expected_claim_hash_for(input_datum),
-        claim_token,
-      ),
-    ],
+    [make_module1_claim_output(cfg, escalation_claim(input_datum), claim_token)],
+    claim_mint(cfg, claim_token),
+  )
+}
+
+/// The escalation of the test challenge at 3_000, signed by the challenger,
+/// whose minted claim token is in a claim output with the datum `claim`.
+fn escalate_with_claim(claim: AuditClaimDatum) -> Bool {
+  let cfg = test_config()
+  escalate(
+    test_challenge_datum(),
+    escalated_datum(),
+    3_000,
+    [test_owner_key_hash_2],
+    [make_module1_claim_output(cfg, claim, claim_token)],
     claim_mint(cfg, claim_token),
   )
 }
@@ -290,13 +320,7 @@ test escalate_to_audit_no_response_fails() fail {
     },
     3_000,
     [test_owner_key_hash_2],
-    [
-      make_module1_claim_output(
-        cfg,
-        expected_claim_hash_for(input_datum),
-        claim_token,
-      ),
-    ],
+    [make_module1_claim_output(cfg, escalation_claim(input_datum), claim_token)],
     claim_mint(cfg, claim_token),
   )
 }
@@ -335,13 +359,7 @@ test escalate_to_audit_naming_another_claim_fails() {
     },
     3_000,
     [test_owner_key_hash_2],
-    [
-      make_module1_claim_output(
-        cfg,
-        expected_claim_hash_for(input_datum),
-        claim_token,
-      ),
-    ],
+    [make_module1_claim_output(cfg, escalation_claim(input_datum), claim_token)],
     claim_mint(cfg, claim_token),
   )
 }
@@ -356,13 +374,7 @@ test escalate_to_audit_without_claim_token_mint_fails() fail {
     escalated_datum(),
     3_000,
     [test_owner_key_hash_2],
-    [
-      make_module1_claim_output(
-        cfg,
-        expected_claim_hash_for(input_datum),
-        claim_token,
-      ),
-    ],
+    [make_module1_claim_output(cfg, escalation_claim(input_datum), claim_token)],
     assets.zero,
   )
 }
@@ -379,11 +391,78 @@ test escalate_to_audit_claim_output_without_minted_token_fails() {
     [
       make_module1_claim_output(
         cfg,
-        expected_claim_hash_for(input_datum),
+        escalation_claim(input_datum),
         "claim_token_002",
       ),
     ],
     claim_mint(cfg, claim_token),
+  )
+}
+
+// W4-MODFIX3: the claim is a claim of the target on the challenged
+// capability. The three tests below use the claim shape that the rule
+// before W4-MODFIX3 accepted (claim_type "reputation_challenge"): that rule
+// read neither the claimer nor the capability, so it accepted them.
+
+/// A claim of the challenger: ClaimerWins would mean that the challenger
+/// was right, but ResolveEscalation maps it to CapabilityVerified.
+test escalate_to_audit_with_claim_of_challenger_fails() {
+  !escalate_with_claim(tagged_claim(test_agent_did_2, test_owner_key_hash_2))
+}
+
+/// A claim of an agent that is neither party: its verdict says nothing
+/// about the target.
+test escalate_to_audit_with_claim_of_other_agent_fails() {
+  !escalate_with_claim(tagged_claim("agent_did_003", test_owner_key_hash_2))
+}
+
+/// A claim of the target that is not on the challenged capability.
+test escalate_to_audit_with_claim_without_capability_fails() {
+  !escalate_with_claim(tagged_claim(test_agent_did, test_owner_key_hash))
+}
+
+// Each test below changes one field of a valid claim.
+
+/// The valid claim with the challenger as claimer.
+test escalate_to_audit_with_capability_claim_of_challenger_fails() {
+  !escalate_with_claim(
+    AuditClaimDatum {
+      ..escalation_claim(test_challenge_datum()),
+      claimer_did: test_agent_did_2,
+      claimer_credential: VerificationKey(test_owner_key_hash_2),
+    },
+  )
+}
+
+/// The valid claim on another capability that the target also stakes.
+test escalate_to_audit_with_claim_on_other_capability_fails() {
+  !escalate_with_claim(
+    AuditClaimDatum {
+      ..escalation_claim(test_challenge_datum()),
+      claim_type: "testing",
+    },
+  )
+}
+
+/// The valid claim with a claim_hash that does not link to the evidence.
+test escalate_to_audit_with_claim_of_other_evidence_fails() {
+  !escalate_with_claim(
+    AuditClaimDatum {
+      ..escalation_claim(test_challenge_datum()),
+      claim_hash: #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    },
+  )
+}
+
+/// Module 3 binds the claimer by its DID only. The Module 1 claim rules
+/// check the claimer credential: a declared key of the target's record
+/// that signs. Here the credential is not target_credential.
+test escalate_to_audit_with_other_claimer_key_of_target() {
+  escalate_with_claim(
+    AuditClaimDatum {
+      ..escalation_claim(test_challenge_datum()),
+      claimer_credential: VerificationKey(test_owner_key_hash_2),
+    },
   )
 }
 

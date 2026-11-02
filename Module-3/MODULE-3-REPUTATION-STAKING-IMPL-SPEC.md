@@ -758,17 +758,22 @@ DEFAULT JUDGMENT:
 ### 6.10 Escalate to Audit (`EscalateToAudit`)
 
 ```
-CALLABLE BY: Either party (challenger or target)
+CALLABLE BY: Either party signs the Module 3 spend, but the Module 1 claim
+  needs the signature of a declared key of the target's record (the
+  claimer), so the target takes part in every escalation
 
 MUST:
   1. ChallengeUTXO consumed (with challenge token)
   2. state == Open AND response has been submitted (both sides have evidence)
-  3. current slot <= created_at + CHALLENGE_RESPONSE_DEADLINE + ESCALATION_WINDOW
-     (ESCALATION_WINDOW = 5,400 slots, ~6 hours after response deadline)
-  4. Creates a Module 1 Adversarial Auditing claim:
-     - claim_hash = blake2b_256(challenge evidence + counter-evidence)
-     - claim_type = "reputation_challenge"
-     - stake = forwarded from both parties' stakes
+  3. upper bound of the validity range <= created_at +
+     CHALLENGE_RESPONSE_DEADLINE + ESCALATION_WINDOW (POSIX ms)
+  4. Creates a Module 1 Adversarial Auditing claim of the target on the
+     challenged capability (W4-MODFIX3):
+     - claimer_did = target_did (Module 3 refuses another claimer)
+     - claim_type = challenged_capability (Module 3 refuses another value)
+     - claim_hash = blake2b_256(evidence_hash ++ counter_evidence_hash)
+     - stake = the Module 1 claim stake, paid by the transaction
+     The verdict mapping in 7 is sound only for such a claim
   5. The transaction mints exactly one Module 1 claim token, held by the
      claim output; ChallengeUTXO updated: state = Escalated
      { audit_claim_token } with the name of that token (wave 4, R4 P-2)

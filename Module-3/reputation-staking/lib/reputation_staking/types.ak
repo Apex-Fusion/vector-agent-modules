@@ -223,7 +223,9 @@ pub type RepChallengeAction {
     counter_evidence_uri: ByteArray,
   }
   /// Escalate to Module 1 for full adversarial resolution.
-  /// Creates a Module 1 claim and transitions challenge to Escalated state.
+  /// Creates a Module 1 claim of the target on the challenged capability
+  /// (claimer_did == target_did, claim_type == challenged_capability) and
+  /// transitions challenge to Escalated state.
   EscalateToAudit
   /// Resolve an escalated challenge by reading the Module 1 verdict.
   /// Reads the resolved Module 1 challenge via reference input, maps verdict
