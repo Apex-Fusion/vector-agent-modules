@@ -20,12 +20,22 @@ Relevant MCP tools (from the `vector-mcp-testnet` server — names surface in yo
 | Tool | What it does |
 |---|---|
 | `mcp__vector-mcp-testnet__vector_get_address` | Derive address + balance from a mnemonic — use this to confirm funding before acting. |
-| `mcp__vector-mcp-testnet__vector_register_agent` | Register a DID (soulbound NFT). Requires 10 AP3X deposit. |
+| `vector_build_identity_register` | Build (unsigned) the registration of your identity record in the identity registry (did:vector). Takes no key material. |
+| `vector_signer_get_public_key` / `vector_signer_sign` | Local signer: the public key of your wallet key, and the signature of a built transaction. |
+| `vector_submit_transaction` / `vector_await_transaction` | Broadcast a signed transaction, then wait for its confirmation. |
+| `vector_get_agent_profile` | Profile and **effective status** of `did:vector:<did_hex>` (read-only). |
 | `mcp__vector-mcp-testnet__vector_self_improvement_submit_proposal` | Submit a governance proposal. Requires 25 AP3X stake minimum. |
 | `mcp__vector-mcp-testnet__vector_self_improvement_browse` | List open proposals (for reconcile + context). |
 | `mcp__vector-mcp-testnet__vector_self_improvement_analyze_metrics` | Pull governance metrics (treasury, adoption rate, participation). |
 
-All of these take the **mnemonic** as a required arg. Read it from the file above.
+`vector_get_address` and the `vector_self_improvement_*` tools take the **mnemonic** as a required arg. Read it from the file above. The identity tools take no key material: you sign with the local signer. For the exact arguments of each identity tool, see its input schema.
+
+## Identity record (did:vector)
+
+- Your agent identity is a record in the identity registry. `did_hex` is its 64-hex identifier (lowercase); your canonical DID is `did:vector:<did_hex>`. A wallet address, a legacy `did:vector:agent:…` string or any other value is NOT `did_hex`.
+- The record names your **wallet key as its controller** and has an **Accountable Party** (the controller). It locks a deposit of max(10 AP3X, the ledger minimum of the record output).
+- The Module-6 contracts accept a proposal only when the record has effective status **Active** and the credential of the proposal (your wallet key) is the record's controller key or a listed key with the transaction purpose. So keep the wallet key as controller.
+- When a `vector_self_improvement_*` tool asks for your agent identity, give `did_hex` (see its input schema).
 
 ## Your state
 
@@ -45,10 +55,11 @@ Plus `journal.md` (append-only rationale) and `events.jsonl` (machine log).
 
 1. **Orient.** Read state + tail of journal. Call `vector_get_address` with your mnemonic to confirm wallet + balance. Call `vector_self_improvement_browse` / `vector_self_improvement_analyze_metrics` for governance context.
 
-2. **Reconcile.** If `pending_tx` is set: landed → move into `active_proposals` / clear `pending_tx`; `prepared_ts` older than 2h → discard.
+2. **Reconcile.** If `pending_tx` is set: landed → move into `active_proposals` (or, for the identity registration, set `did_hex` to the identifier of the registration) / clear `pending_tx`; `prepared_ts` older than 2h → discard.
 
 3. **Decide ONE action — strongly bias toward submitting:**
-   a. **Bootstrap** — if `did_hex` is not a 64-char hex string: call `vector_register_agent` with appropriate name/description/capabilities/framework/endpoint. Record the returned DID + tx hash in `state.json.pending_tx`. STOP.
+   a. **Bootstrap** — if `did_hex` is not a 64-char lowercase hex identity identifier: register your identity record. Get the public key of your wallet key with `vector_signer_get_public_key`. Call `vector_build_identity_register` with that key as controller, an Accountable Party (the controller), the deposit max(10 AP3X, ledger min-UTxO) and an appropriate name/description/capabilities/framework/endpoint (see its input schema). Sign the returned transaction with `vector_signer_sign`, broadcast it with `vector_submit_transaction`, and confirm it with `vector_await_transaction`. Record the identifier (64 hex) and the tx hash in `state.json.pending_tx`. STOP.
+   a2. **Active check** — before you submit, call `vector_get_agent_profile` with `did:vector:<did_hex>`. If the effective status is not Active (suspended, revoked or retired), journal the status and STOP: the contract refuses every proposal of that record.
    b. **Handle resolved proposals** — any entries in YOUR `active_proposals` that are now Adopted/Rejected/Expired on chain: record outcome, remove from list.
    c. **Submit new proposal (the default expected action).** Submit unless ALL of these are true:
       - `len(state.json.active_proposals) >= 10` (hard cap; you have plenty of distinct proposals to make below 10)
@@ -58,7 +69,7 @@ Plus `journal.md` (append-only rationale) and `events.jsonl` (machine log).
       There is **no time cooldown**. Each run should submit a fresh, non-duplicate proposal if you have governance signals. Pull metrics via `vector_self_improvement_analyze_metrics` and browse existing proposals via `vector_self_improvement_browse`, then pick an **angle not already covered** by your prior proposals. Example angles that are legitimate given treasury/adoption signals: shorter review windows, lower participation bars, treasury allocation rules, bounty incentives for endorsers, public reporting cadence, reputation-weighted voting, auto-expiry of stale proposals. Most runs: YOU SUBMIT A PROPOSAL.
       
       Call `vector_self_improvement_submit_proposal` with `proposalDocument` as a JSON string (the MCP server uploads it to IPFS and computes the hash automatically), `proposalType` (`GeneralSuggestion` is always valid; use `ParameterChange` only for parameter names you've confirmed exist in the deployed contract — otherwise it reverts with `FAIL:type_valid`), and `stakeApex: 25`.
-   d. **Noop is reserved for absolute blockers.** Valid noop reasons, and ONLY these: (i) you hit the 10-proposal cap, (ii) the MCP submission call returned a concrete error twice with different `proposalType` values and you've journaled the exact stderr, (iii) wallet balance < 26 AP3X **AND** you've already attempted a master-faucet pull (see "Funding fallback" below) and it failed or the master is drained. "Metrics feel weak" / "this is testnet" / "already 2 open proposals feels like enough" are **NOT** valid noop reasons.
+   d. **Noop is reserved for absolute blockers.** Valid noop reasons, and ONLY these: (i) you hit the 10-proposal cap, (ii) the MCP submission call returned a concrete error twice with different `proposalType` values and you've journaled the exact stderr, (iii) wallet balance < 26 AP3X **AND** you've already attempted a master-faucet pull (see "Funding fallback" below) and it failed or the master is drained, (iv) your identity record is not Active (step a2) and you've journaled its effective status. "Metrics feel weak" / "this is testnet" / "already 2 open proposals feels like enough" are **NOT** valid noop reasons.
 
 4. **Record.** Atomic state write, journal, events.
 

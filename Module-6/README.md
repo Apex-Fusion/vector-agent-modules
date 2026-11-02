@@ -66,7 +66,9 @@ aiken build    # Compile only
 | Script | Purpose |
 |--------|---------|
 | `deploy.py` | Full deployment — apply params, deploy ref scripts, create infrastructure UTxOs |
+| `governance_identity.py` | Identity-checked builders: proposal submission (lock, then SubmitProposal), amendment, critique and endorsement |
 | `smoke_test.py` | End-to-end lifecycle test (9 steps) |
+| `test_validated_submit.py` | Proposal submission only (lock, then SubmitProposal) |
 | `test_expire_e2e.py` | Expire test — submit, wait for review window, expire |
 | `treasury_fund.py` | Create new treasury batch UTxOs |
 | `treasury_replenish.py` | Monitor and auto-replenish treasury batches |
@@ -80,7 +82,35 @@ aiken build    # Compile only
 # .env with endpoints and VECTOR_IDENTITY_HASH (the script hash of the
 # identity registry; deploy the identity registry, Module-1 and Module-3 first)
 nix-shell shell.nix --run "python scripts/deploy.py"
-nix-shell shell.nix --run "python scripts/smoke_test.py"
+VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/smoke_test.py"
+```
+
+### Identity-checked actions (clients)
+
+Proposals, amendments, critiques and endorsements read the identity record of the agent (Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in agents-marketplace, Module-6 row). `scripts/governance_identity.py` builds them with pycardano; it does not need the Python SDK. Each transaction:
+
+- has a validity range with both bounds and at most one hour (`ttl - validity_start <= 3600` slots on Vector);
+- has the agent's identity record and its ancestor records as reference inputs, with the params record and CrossRefs (and the proposal for a critique or an endorsement). The record must be Active over the whole range;
+- has the datum credential `VerificationKey(h)`, where `h` is the controller key hash of the record or a listed Ed25519 key with the transaction purpose. `h` is a required signer and signs;
+- writes `submitted_at` / `created_at` = the lower bound of its range.
+
+A new proposal, critique or endorsement needs two transactions: a lock output with the datum, then the creation by the validator. The client checks every contract rule before the lock and refuses with a clear error: a record that is not Active, an undeclared key, a missing ancestor record, a range over one hour, a missing params record or CrossRefs, the proposal cooldown. An endorsement has no token (`critique_mint` mints only next to a critique). Withdrawals, adoption and expiry read no identity record; the scripts build them with `GovernanceClient` of the Python SDK.
+
+Inputs of the scripts:
+
+| Input | Used by | Meaning |
+|-------|---------|---------|
+| `wallets/deploy_state.json` | all | Must have `identity_hash`. A state without it belongs to the old deployment with the legacy agent registry: the scripts refuse it and name the deployment order. |
+| `VECTOR_AGENT_DID` or `--agent` | `smoke_test.py`, `test_validated_submit.py`, `test_expire_e2e.py` | The agent: `did:vector:<64 hex>` or the 64-hex identifier. The record must be Active and must declare the wallet key (controller or listed key with the transaction purpose). |
+| `VECTOR_ENDORSER_DID` or `--endorser` | `smoke_test.py` | Optional second agent for the endorsement steps (an agent cannot endorse its own proposal). |
+| `--finalise withdraw\|adopt` | `smoke_test.py` | How the smoke test ends the proposal; `adopt` needs the oracle key as wallet key. |
+
+The proposal cooldown of GovernanceParams (24 hours) allows one proposal per agent in that time.
+
+Offline client tests (no network, generated keys):
+
+```bash
+python -m pytest -q tests
 ```
 
 ## Contract Hashes — Mainnet (v8, agent-registry v2, previous deployment)
@@ -112,7 +142,9 @@ Module-6/
 │   ├── lib/shared -> ../../../../shared/lib/shared  ← Symlink to shared utility library
 │   ├── plutus.json                    ← Compiled blueprint
 │   └── aiken.toml
-├── scripts/                           ← Deployment + testing scripts (Python)
+├── scripts/                           ← Deployment + testing scripts (Python), identity-checked builders
+├── tests/                             ← Offline pytest suite of the client builders and dashboard helpers
+├── dashboard/                         ← Governance dashboard (MODULE6_DEPLOYMENT_FILE)
 ├── agents/                            ← Chain analytics agent template
 ├── deploy/                            ← Deployment records + compiled blueprint
 │   ├── plutus.json                    ← Compiled Plutus V3 blueprint (network-agnostic)

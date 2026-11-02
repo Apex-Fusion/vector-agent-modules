@@ -24,7 +24,7 @@ services:
       - "traefik.http.routers.dashboard-testnet.entrypoints=web"
       - "traefik.http.services.dashboard-testnet.loadbalancer.server.port=8000"
     environment:
-      - DEPLOYMENT_NETWORK=testnet
+      - MODULE6_DEPLOYMENT_FILE=/app/deploy/testnet/deployment.json
       - VECTOR_OGMIOS_URL=https://ogmios.vector.testnet.apexfusion.org
       - GOVERNANCE_WALLET_ADDRESS=addr1vxt9kdayzu20uyjju4mc0eyrd68dnudwey5wnauqgrw9vmqlz2935
     restart: unless-stopped
@@ -39,6 +39,6 @@ services:
       - "traefik.http.routers.dashboard-mainnet.entrypoints=web"
       - "traefik.http.services.dashboard-mainnet.loadbalancer.server.port=8000"
     environment:
-      - DEPLOYMENT_NETWORK=mainnet
+      - MODULE6_DEPLOYMENT_FILE=/app/deploy/mainnet/deployment.json
       - VECTOR_OGMIOS_URL=https://ogmios.vector.mainnet.apexfusion.org
     restart: unless-stopped

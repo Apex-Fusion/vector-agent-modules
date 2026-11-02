@@ -17,12 +17,8 @@ pip install -e /path/to/agent-sdk-py
 ## Running
 
 ```bash
-# Testnet (direct signing with skey on server)
 cd Module-6/dashboard
-uvicorn server:app --reload --port 8000
-
-# Production (external signing — generates unsigned tx for offline signing)
-SIGNING_MODE=external uvicorn server:app --port 8000
+MODULE6_DEPLOYMENT_FILE=../deploy/testnet/deployment.json uvicorn server:app --reload --port 8000
 ```
 
 Open http://localhost:8000
@@ -31,9 +27,16 @@ Open http://localhost:8000
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIGNING_MODE` | `direct` | `direct` = sign with skey on server, `external` = export unsigned tx |
-| `VECTOR_OGMIOS_URL` | from deploy_state | Ogmios endpoint |
-| `VECTOR_SUBMIT_URL` | from deploy_state | Tx submission endpoint |
+| `MODULE6_DEPLOYMENT_FILE` | none (required) | Path of the deployment file (`deploy/<network>/deployment.json` format). The server stops when it is missing. |
+| `VECTOR_OGMIOS_URL` | `endpoints.ogmios` of the deployment file | Ogmios endpoint |
+| `VECTOR_SUBMIT_URL` | `endpoints.submit` of the deployment file | Tx submission endpoint |
+| `GOVERNANCE_WALLET_ADDRESS` | none | Foundation wallet for the balance display |
+
+## Identity registry
+
+- Agent identifiers (proposer, critic, endorser, leaderboard) are canonical DIDs: `did:vector:<64 hex>`. `/api/agent/{did}` accepts the DID or the 64-hex identifier.
+- A deployment file without `identity_hash` describes an old Module-6 deployment with the legacy agent registry (the v8 files in `deploy/` are such files). `/api/config` then returns `deployment_note`, and the page shows it above the tabs. A deployment file for the identity registry has `identity_hash` and no note.
+- The dashboard does not read the legacy agent registry.
 
 ## Features
 
@@ -51,6 +54,7 @@ Open http://localhost:8000
 ```
 dashboard/
 ├── server.py          ← FastAPI backend (REST API, imports governance SDK)
+├── identity_view.py   ← Deployment file (MODULE6_DEPLOYMENT_FILE), old-deployment note, canonical DIDs
 ├── static/
 │   ├── index.html     ← Single-page dashboard
 │   ├── style.css      ← Dark theme styling
@@ -59,4 +63,4 @@ dashboard/
 └── README.md
 ```
 
-The server connects to Vector testnet via the `VectorAgent` SDK and reads deployment config from `../deploy/testnet/deployment.json`.
+The server connects to Vector via the SDK chain context (read-only) and reads the deployment file that `MODULE6_DEPLOYMENT_FILE` names. `identity_view.py` uses the shared identity module `../scripts/vector_identity.py`; the Docker image copies both.

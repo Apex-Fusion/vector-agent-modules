@@ -56,7 +56,7 @@ def test_offline():
         ProposalType, ProposalPriority, ProposalState, ProposalAction,
         CritiqueType, CritiqueAction, EndorsementAction,
         build_proposal_datum, build_critique_datum, build_endorsement_datum,
-        build_governance_params, build_governance_config,
+        build_governance_params,
         build_treasury_batch_datum, build_oracle_datum,
     )
 
@@ -158,25 +158,21 @@ def test_offline():
     oracle_bytes = cbor2.dumps(oracle.data)
     check(f"OracleDatum encodes ({len(oracle_bytes)} bytes)", len(oracle_bytes) > 0)
 
-    # --- GovernanceConfig ---
-    config = build_governance_config(
-        proposal_hash=b"\x01" * 28,
-        critique_hash=b"\x02" * 28,
-        prediction_hash=b"\x00" * 28,
-        registry_policy=bytes.fromhex("be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"),
-        registry_hash=bytes.fromhex("be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"),
-        reputation_hash=b"\x00" * 28,
-        jury_hash=b"\x00" * 28,
-        oracle_hash=b"\x03" * 28,
-        params_hash=b"\x04" * 28,
-        treasury_hash=b"\x05" * 28,
-        credibility_hash=b"\x00" * 28,
-        protocol_params_hash=b"\x00" * 28,
+    # --- GovernanceConfig (11 fields, identity_hash last: scripts/deploy_common.py) ---
+    from deploy_common import build_governance_config_cbor
+    identity_hash = "1d" * 28
+    config_cbor = build_governance_config_cbor(
+        refs_token_policy="06" * 28,
+        oracle_holder_hash="03" * 28,
+        params_holder_hash="04" * 28,
+        treasury_holder_hash="05" * 28,
+        record_token_policy="07" * 28,
+        identity_hash=identity_hash,
     )
-    config_bytes = cbor2.dumps(config.data)
-    config_decoded = cbor2.loads(config_bytes)
-    check(f"GovernanceConfig encodes ({len(config_bytes)} bytes)", len(config_bytes) > 100)
-    check("GovernanceConfig has 12 script hashes", len(config_decoded.value) == 12)
+    config_decoded = cbor2.loads(bytes.fromhex(config_cbor))
+    check(f"GovernanceConfig encodes ({len(config_cbor) // 2} bytes)", len(config_cbor) // 2 > 100)
+    check("GovernanceConfig has 11 fields", len(config_decoded.value) == 11)
+    check("GovernanceConfig ends with identity_hash", config_decoded.value[-1] == bytes.fromhex(identity_hash))
 
     # --- Blueprint reader ---
     blueprint_path = Path("contracts/governance-suggestion/plutus.json")

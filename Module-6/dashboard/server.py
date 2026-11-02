@@ -2,11 +2,17 @@
 Self-Improvement Dashboard — API Server
 
 FastAPI backend serving the public governance explorer dashboard.
-Connects to Vector testnet via the governance SDK.
+Connects to Vector via the governance SDK (read-only).
+
+MODULE6_DEPLOYMENT_FILE names the deployment file (deploy/<network>/
+deployment.json format); there is no default. A file without identity_hash
+describes an old deployment with the legacy agent registry: /api/config
+returns a note for it. Agent identifiers are canonical DIDs
+(did:vector:<64 hex>).
 
 Usage:
     cd Module-6/dashboard
-    uvicorn server:app --reload --port 8000
+    MODULE6_DEPLOYMENT_FILE=../deploy/testnet/deployment.json uvicorn server:app --reload --port 8000
 """
 
 import asyncio
@@ -38,10 +44,10 @@ from fastapi.staticfiles import StaticFiles
 # Module root: defaults to parent.parent for local dev, override with GAME6_ROOT for Docker
 GAME6_ROOT = Path(os.getenv("GAME6_ROOT", str(Path(__file__).parent.parent)))
 sys.path.insert(0, str(GAME6_ROOT))
+sys.path.insert(0, str(GAME6_ROOT / "scripts"))  # vector_identity (shared identity module)
 load_dotenv(GAME6_ROOT / ".env")
 
-NETWORK = os.getenv("DEPLOYMENT_NETWORK", "testnet")
-DEPLOY_STATE_FILE = GAME6_ROOT / "deploy" / NETWORK / "deployment.json"
+import identity_view  # noqa: E402
 
 # ── Global state ────────────────────────────────────────────────────────────
 
@@ -61,10 +67,14 @@ async def startup():
     from vector_agent.chain.context import VectorChainContext
     from vector_agent.governance.indexer import GovernanceIndexer
 
-    deploy_state = json.load(open(DEPLOY_STATE_FILE))
+    deploy_file = identity_view.deployment_file()
+    deploy_state = identity_view.load_deployment(deploy_file)
     endpoints = deploy_state.get("endpoints", {})
     hashes = deploy_state.get("hashes", {})
     holders = deploy_state.get("holders", {})
+    note = identity_view.deployment_note(deploy_state)
+    if note:
+        logger.warning(f"{deploy_file}: {note}")
 
     ogmios_url = os.getenv("VECTOR_OGMIOS_URL", endpoints.get("ogmios", ""))
     submit_url = os.getenv("VECTOR_SUBMIT_URL", endpoints.get("submit", ""))
@@ -158,7 +168,7 @@ async def _refresh_cache():
 
         await asyncio.gather(*[_enrich(p) for p in proposals], return_exceptions=True)
         proposals.sort(key=lambda p: p.get("quality_signal", 0), reverse=True)
-        serialized_proposals = [_serialize_proposal(p) for p in proposals]
+        serialized_proposals = [identity_view.with_dids(p) for p in proposals]
 
         # 4. Timeline — reuse proposals, fetch critiques/endorsements
         events = []
@@ -300,11 +310,11 @@ async def _refresh_cache():
             "utxo_count": balance.get("utxo_count", 0),
         }
 
-        # Commit to cache
+        # Commit to cache (agent identifiers as canonical DIDs)
         async with _cache_lock:
             _cache["proposals"] = serialized_proposals
-            _cache["timeline"] = events[:50]
-            _cache["leaderboard"] = leaderboard
+            _cache["timeline"] = identity_view.with_dids(events[:50])
+            _cache["leaderboard"] = identity_view.with_dids(leaderboard)
             _cache["stats"] = stats
             _cache["treasury"] = treasury
 
@@ -439,12 +449,12 @@ async def get_proposal_detail(tx_hash: str, output_index: int):
     proposer_did = target.get("proposer_did", "")
     track_record = await gov_indexer.get_agent_track_record(proposer_did) if proposer_did else {}
 
-    return {
-        "proposal": _serialize_proposal(target),
-        "critiques": [_serialize_dict(c) for c in critiques],
-        "endorsements": [_serialize_dict(e) for e in endorsements],
+    return identity_view.with_dids({
+        "proposal": target,
+        "critiques": critiques,
+        "endorsements": endorsements,
         "track_record": track_record,
-    }
+    })
 
 
 @app.get("/api/ipfs/{cid}")
@@ -514,7 +524,8 @@ async def get_stats():
 
 @app.get("/api/agent/{did}")
 async def get_agent(did: str):
-    return await gov_indexer.get_agent_track_record(did)
+    """Track record of an agent: did:vector:<64 hex> or the 64-hex identifier."""
+    return identity_view.with_dids(await gov_indexer.get_agent_track_record(identity_view.agent_key(did)))
 
 
 @app.get("/api/config")
@@ -522,6 +533,8 @@ async def get_config():
     return {
         "network": deploy_state.get("network", ""),
         "explorer": deploy_state.get("endpoints", {}).get("explorer", ""),
+        "identity_hash": deploy_state.get("identity_hash"),
+        "deployment_note": identity_view.deployment_note(deploy_state),
     }
 
 
@@ -561,33 +574,3 @@ async def get_timeline():
 async def get_leaderboard():
     async with _cache_lock:
         return _cache["leaderboard"]
-
-
-# ── Helpers ─────────────────────────────────────────────────────────────────
-
-
-def _serialize_proposal(p: dict) -> dict:
-    """Convert bytes fields to hex strings for JSON serialization."""
-    out = {}
-    for k, v in p.items():
-        if isinstance(v, bytes):
-            out[k] = v.hex()
-        elif isinstance(v, dict):
-            out[k] = _serialize_dict(v)
-        else:
-            out[k] = v
-    return out
-
-
-def _serialize_dict(d: dict) -> dict:
-    out = {}
-    for k, v in d.items():
-        if isinstance(v, bytes):
-            out[k] = v.hex()
-        elif isinstance(v, dict):
-            out[k] = _serialize_dict(v)
-        elif isinstance(v, list):
-            out[k] = [_serialize_dict(i) if isinstance(i, dict) else (i.hex() if isinstance(i, bytes) else i) for i in v]
-        else:
-            out[k] = v
-    return out

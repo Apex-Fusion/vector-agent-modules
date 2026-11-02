@@ -26,6 +26,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const cfg = await (await fetch('/api/config')).json();
     EXPLORER = cfg.explorer || '';
+    if (cfg.deployment_note) {
+      const note = document.getElementById('deployment-note');
+      note.textContent = cfg.deployment_note;
+      note.style.display = 'block';
+    }
   } catch (e) {
     console.error('Failed to load /api/config', e);
   }
@@ -392,10 +397,19 @@ function proposalSummary(p) {
   return escapeHtml(s);
 }
 
+// Agent identifiers are canonical DIDs (did:vector:<64 hex>). Show the start
+// and the end of the identifier; the full DID is the tooltip.
 function shortDid(did) {
   if (!did) return 'unknown';
-  const s = typeof did === 'string' ? did : did;
-  return s.length > 20 ? s.slice(0, 16) + '...' : s;
+  const s = String(did);
+  const prefix = 'did:vector:';
+  let short = s;
+  if (s.startsWith(prefix) && s.length === prefix.length + 64) {
+    short = prefix + s.slice(prefix.length, prefix.length + 8) + '…' + s.slice(-4);
+  } else if (s.length > 20) {
+    short = s.slice(0, 16) + '…';
+  }
+  return `<span class="did" title="${escapeHtml(s)}">${escapeHtml(short)}</span>`;
 }
 
 function shortHash(h) {

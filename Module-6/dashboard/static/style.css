@@ -265,6 +265,8 @@ button.warn:hover { background: var(--yellow); }
 .alert.warning { background: rgba(210, 153, 34, 0.1); border: 1px solid var(--yellow); color: var(--yellow); }
 .alert.info { background: rgba(88, 166, 255, 0.1); border: 1px solid var(--accent); color: var(--accent); }
 .alert.success { background: rgba(63, 185, 80, 0.1); border: 1px solid var(--green); color: var(--green); }
+#deployment-note { margin: 12px 24px; }
+.did { font-family: monospace; }
 
 .loading { text-align: center; color: var(--text-muted); padding: 40px; }
 .empty { text-align: center; color: var(--text-muted); padding: 40px; font-size: 14px; }

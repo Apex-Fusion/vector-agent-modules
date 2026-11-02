@@ -16,7 +16,9 @@ Usage:
     nix-shell shell.nix --run "python agents/analytics_template.py --monitor-only"
 
 Requires:
-    - Wallet with registered DID and sufficient AP3X for stakes
+    - An agent with an identity record (did:vector) and sufficient AP3X for stakes.
+      Set VECTOR_AGENT_DID (did:vector:<64 hex> or 64 hex) to exclude the
+      agent's own proposals from the review.
     - Full deployment completed (deploy.py)
     - GovernanceClient and GovernanceIndexer configured
 """
@@ -31,7 +33,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 load_dotenv()
+
+import vector_identity as vid
+
+AGENT_DID_ENV = "VECTOR_AGENT_DID"
 
 DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
@@ -52,13 +59,23 @@ TREASURY_LOW_THRESHOLD_APEX = 2_500  # MIN_TREASURY_BATCHES × BATCH_SIZE
 TREASURY_TARGET_RUNWAY_EPOCHS = 90  # Target: 90+ epochs (~15 days)
 
 
+def agent_did(value: str) -> str:
+    """The canonical DID of an agent identifier (64 hex, as the indexer gives
+    it). A value that is not an identifier stays as it is."""
+    try:
+        return vid.did_from_id(value)
+    except (TypeError, ValueError):
+        return value
+
+
 class GovernanceAnalyticsAgent:
     """Autonomous chain analytics agent for governance intelligence."""
 
     def __init__(self, indexer, client=None, agent_did=None):
         self.indexer = indexer
         self.client = client
-        self.agent_did = agent_did
+        # The indexer stores agent identifiers as 64 hex characters
+        self.agent_did = vid.normalize_agent_id(agent_did).hex() if agent_did else None
 
     async def run_analysis(self, monitor_only: bool = False):
         """Run full governance analysis cycle."""
@@ -224,7 +241,7 @@ class GovernanceAnalyticsAgent:
                 opportunities.append({
                     "proposal_hash": proposal.get("proposal_hash", ""),
                     "proposal_type": proposal.get("proposal_type", ""),
-                    "proposer_did": proposal.get("proposer_did", ""),
+                    "proposer_did": agent_did(proposal.get("proposer_did", "")),
                     "stake_amount": proposal.get("stake_amount", 0),
                     "existing_critiques": len(critiques),
                     "reason": reason,
@@ -237,7 +254,7 @@ class GovernanceAnalyticsAgent:
         print(f"  Reviewable proposals: {len(reviewable)}")
         print(f"  Critique opportunities: {len(opportunities)}")
         for opp in opportunities[:5]:
-            print(f"    [{opp['priority']}] {opp['proposal_hash'][:16]}... — {opp['reason']}")
+            print(f"    [{opp['priority']}] {opp['proposal_hash'][:16]}... by {opp['proposer_did']} — {opp['reason']}")
 
         return opportunities
 
@@ -286,7 +303,7 @@ async def main():
 
         analytics = GovernanceAnalyticsAgent(
             indexer=indexer,
-            agent_did=None,  # Set to your DID to exclude own proposals from review
+            agent_did=os.getenv(AGENT_DID_ENV) or None,  # excludes the agent's own proposals
         )
 
         result = await analytics.run_analysis(monitor_only=args.monitor_only)
