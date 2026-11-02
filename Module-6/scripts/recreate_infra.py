@@ -5,6 +5,11 @@ Recreates the GovernanceParams, Oracle, and CrossRefs NFT UTxOs
 at their holder addresses. These are needed as reference inputs
 by the governance validators.
 
+When the deploy state has record_token_policy, the GovernanceParams and
+Oracle records hold one-shot record tokens. The tokens cannot be minted
+again, so this script does not create these records. It reports a missing
+record and tells how to update the existing record instead.
+
 Usage:
     nix-shell shell.nix --run "python scripts/recreate_infra.py"
 """
@@ -21,9 +26,20 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
+from deploy_common import ORACLE_TOKEN_NAME, PARAMS_TOKEN_NAME, find_record_utxo
+
 DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
 TX_WAIT = 20
+
+
+def print_record_not_created(label: str, policy: str, token_name: bytes, instead: str):
+    """Explain why a record with a record token is not created again."""
+    print(f"\n--- {label} record: not created ---")
+    print(f"  No output at the {label} holder holds the record token "
+          f"{policy}.{token_name.hex()} ({token_name.decode()}).")
+    print("  The record token policy is one-shot: the token cannot be minted again.")
+    print(f"  {instead}")
 
 
 def compute_native_script_policy(vkey_hash: str) -> tuple[str, bytes]:
@@ -141,8 +157,14 @@ async def main():
         params_utxos = await agent.context.async_utxos(PycAddr.from_primitive(params_addr))
         oracle_utxos = await agent.context.async_utxos(PycAddr.from_primitive(oracle_addr))
 
-        has_params = any(u.output.datum is not None for u in params_utxos)
-        has_oracle = any(u.output.datum is not None for u in oracle_utxos)
+        record_token_policy = state.get("record_token_policy")
+        if record_token_policy:
+            # A record is the output that holds its record token
+            has_params = find_record_utxo(params_utxos, record_token_policy, PARAMS_TOKEN_NAME) is not None
+            has_oracle = find_record_utxo(oracle_utxos, record_token_policy, ORACLE_TOKEN_NAME) is not None
+        else:
+            has_params = any(u.output.datum is not None for u in params_utxos)
+            has_oracle = any(u.output.datum is not None for u in oracle_utxos)
 
         refs_policy = state.get("refs_token_policy", "")
         has_crossrefs = False
@@ -161,8 +183,18 @@ async def main():
             print("\n[OK] All infrastructure UTxOs present. Nothing to do.")
             return
 
+        not_created = []
+
         # 1. Recreate GovernanceParams
-        if not has_params:
+        if not has_params and record_token_policy:
+            print_record_not_created(
+                "params", record_token_policy, PARAMS_TOKEN_NAME,
+                "Update the existing record instead: python scripts/update_params.py "
+                "spends the output that holds the `params` token and moves the token "
+                "to the new record.",
+            )
+            not_created.append("GovernanceParams")
+        elif not has_params:
             print("\n--- Recreating GovernanceParams UTXO ---")
             from vector_agent.governance.datums import build_governance_params
             params_datum = build_governance_params()
@@ -172,7 +204,15 @@ async def main():
             await asyncio.sleep(TX_WAIT)
 
         # 2. Recreate Oracle
-        if not has_oracle:
+        if not has_oracle and record_token_policy:
+            print_record_not_created(
+                "oracle", record_token_policy, ORACLE_TOKEN_NAME,
+                "Update the existing record instead: spend the output that holds the "
+                "`oracle` token with the owner key, and create the new oracle record "
+                "with the same token.",
+            )
+            not_created.append("Oracle")
+        elif not has_oracle:
             print("\n--- Recreating Oracle UTXO ---")
             from vector_agent.governance.datums import build_oracle_datum
             oracle_datum = build_oracle_datum(
@@ -212,7 +252,10 @@ async def main():
         print(f"\n[OK] deploy_state.json updated")
 
         print(f"\n{'='*60}")
-        print("Infrastructure recreated successfully!")
+        if not_created:
+            print(f"Not created (record tokens): {', '.join(not_created)}")
+        else:
+            print("Infrastructure recreated successfully!")
         print(f"{'='*60}")
         print(f"\nNext: python scripts/test_expire_e2e.py")
 

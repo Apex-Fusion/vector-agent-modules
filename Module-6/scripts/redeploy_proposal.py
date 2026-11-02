@@ -55,15 +55,15 @@ def load_deploy_state() -> dict:
         return json.load(f)
 
 
-# Import functions from deploy.py
+# Import functions from deploy.py and deploy_common.py
 from deploy import (
-    build_governance_config_cbor,
     apply_governance_config,
-    script_hash_to_testnet_address,
+    script_hash_to_address,
     deploy_reference_script,
     compute_native_script_policy,
     mint_refs_nft,
 )
+from deploy_common import build_governance_config_cbor
 
 
 async def redeploy():
@@ -76,8 +76,18 @@ async def redeploy():
     tx_hashes = state.get("tx_hashes", {})
     holders = state.get("holders", {})
     refs_policy_id = state.get("refs_token_policy", "")
+    record_token_policy = state.get("record_token_policy")
 
     print(f"\nWallet: {wallet['address']}")
+
+    # GovernanceConfig has 12 fields; the last one is the record token policy
+    # of the deployment. A deploy state without it is from a deployment
+    # before record tokens, and the current validators cannot use it.
+    if not record_token_policy:
+        print(f"\n[ERROR] {DEPLOY_STATE_FILE} has no record_token_policy.")
+        print("        The current GovernanceConfig needs the record token policy (12 fields).")
+        print("        Run scripts/deploy.py for a new deployment with record tokens.")
+        return
 
     # Step 1: Re-apply GovernanceConfig to all validators (fresh blueprint)
     print("\n--- Step 1: Re-apply GovernanceConfig to fresh blueprint ---")
@@ -86,6 +96,7 @@ async def redeploy():
         oracle_holder_hash=holders["oracle"]["hash"],
         params_holder_hash=holders["params"]["hash"],
         treasury_holder_hash=holders["treasury"]["hash"],
+        record_token_policy=record_token_policy,
     )
 
     applied_bp = apply_governance_config(config_cbor)
@@ -195,7 +206,7 @@ async def redeploy():
             # finds it at the expected location. The old NFT at this address will
             # also be present; the smoke test uses exact tx_hash matching to find
             # the correct one.
-            oracle_holder_addr = script_hash_to_testnet_address(holders["oracle"]["hash"])
+            oracle_holder_addr = script_hash_to_address(holders["oracle"]["hash"])
             tx = await mint_refs_nft(
                 agent, native_script_cbor, cross_refs_data, "cross-refs-v2",
                 target_address=oracle_holder_addr,

@@ -1,8 +1,14 @@
 """
 Module 6: Update GovernanceParams UTXO
 
-Spends the existing GovernanceParams UTXO (at always-succeeds holder)
-and creates a new one with updated values.
+Spends the existing GovernanceParams record at the params holder and creates
+a new one with updated values. The holder accepts the spend only with the
+owner signature, so the wallet key hash is a required signer.
+
+When the deploy state has record_token_policy, the record is the output that
+holds the `params` record token, and the token moves to the new record.
+Without record_token_policy (deployment before record tokens), the record is
+the first output with a datum at the params holder address.
 
 Usage:
     nix-shell shell.nix --run "python scripts/update_params.py"
@@ -17,6 +23,8 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
+
+from deploy_common import PARAMS_TOKEN_NAME, find_record_utxo
 
 DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
@@ -38,10 +46,12 @@ async def main():
     from vector_agent import VectorAgent
     from vector_agent.governance.datums import build_governance_params
     from pycardano import (
-        Address, TransactionBuilder, TransactionOutput,
-        PlutusV3Script, Redeemer, RedeemerTag,
+        Address, Asset, AssetName, MultiAsset, ScriptHash, TransactionBuilder,
+        TransactionOutput, PlutusV3Script, Redeemer, RedeemerTag, Value,
     )
     from pycardano.plutus import RawPlutusData
+
+    record_token_policy = state.get("record_token_policy")
 
     ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
     submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
@@ -51,15 +61,25 @@ async def main():
         submit_url=submit_url,
         skey_path=skey_path,
     ) as agent:
+        owner_vkh = agent._wallet.payment_verification_key.hash()
+        holder_owner = state.get("holder_owner_vkey_hash")
+        if holder_owner and holder_owner != str(owner_vkh):
+            print(f"[ERROR] The holder owner is {holder_owner}, but the wallet key hash is {owner_vkh}")
+            return
+
         addr = Address.from_primitive(params_addr)
         utxos = await agent.context.async_utxos(addr)
 
         # Find existing params UTXO
         old_utxo = None
-        for u in utxos:
-            if u.output.datum is not None:
-                old_utxo = u
-                break
+        if record_token_policy:
+            # The record is the output that holds the params record token
+            old_utxo = find_record_utxo(utxos, record_token_policy, PARAMS_TOKEN_NAME)
+        else:
+            for u in utxos:
+                if u.output.datum is not None:
+                    old_utxo = u
+                    break
 
         if not old_utxo:
             print("[ERROR] No existing GovernanceParams UTXO found")
@@ -101,14 +121,23 @@ async def main():
             redeemer=Redeemer(0),  # Holder accepts any redeemer
         )
 
-        # Output: new params datum at same address
+        # Output 0: new params datum at same address. The params record token
+        # moves from the old record to the new one.
+        new_value = 3_000_000
+        if record_token_policy:
+            new_value = Value(3_000_000, MultiAsset({
+                ScriptHash(bytes.fromhex(record_token_policy)): Asset({AssetName(PARAMS_TOKEN_NAME): 1}),
+            }))
         builder.add_output(
             TransactionOutput(
                 addr,
-                3_000_000,
+                new_value,
                 datum=RawPlutusData(new_params.data),
             )
         )
+
+        # The holder needs the owner signature
+        builder.required_signers = [owner_vkh]
 
         # Set collateral
         builder.collateral_change_address = agent._wallet.payment_address

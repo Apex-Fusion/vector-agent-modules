@@ -6,11 +6,18 @@ Remote deployment using PyCardano + Ogmios HTTP, matching Module 6 patterns.
 
 Steps:
   1. Compute NativeScript refs_token_policy from wallet vkey_hash
-  2. Build ReputationConfig CBOR and apply to both validators via aiken CLI
-  3. Deploy 2 validator reference scripts (CIP-33)
-  4. Create ProtocolParams datum UTXO at holder address
-  5. Mint CrossValidatorRefs NFT + datum UTXO
-  6. Save deployment state
+  2. Compute the params (tag 1) and treasury (tag 3) holders, owned by the
+     wallet key, choose a seed UTxO and derive the record token policy
+  3. Build ReputationConfig CBOR (13 fields) and apply to both validators via aiken CLI
+  4. Mint the `params` record token and create the ProtocolParams record
+     (output 0) in one transaction that spends the seed
+  5. Deploy 2 validator reference scripts (CIP-33)
+  6. Mint CrossValidatorRefs NFT + datum UTXO
+  7. Save deployment state
+
+Resume: deploy_state.json keeps the seed, the record token policy
+(params_token_policy), the holder hashes, the owner key hash and
+genesis_minting_window. A new run reuses them and skips completed steps.
 
 Usage:
     python3 scripts/deploy_ogmios.py
@@ -38,6 +45,7 @@ from pycardano import (
     PaymentSigningKey,
     PaymentVerificationKey,
     PlutusV3Script,
+    Redeemer,
     ScriptAll,
     ScriptHash,
     ScriptPubkey,
@@ -63,6 +71,24 @@ from reputation_staking.ogmios_backend import (
 from reputation_staking.constants import TX_WAIT_SECONDS
 from reputation_staking.utils import script_hash_to_address
 
+from deploy_common import (
+    HOLDER_BLUEPRINT_PATH,
+    PARAMS_HOLDER_TAG,
+    PARAMS_TOKEN_NAME,
+    TREASURY_HOLDER_TAG,
+    UNIT_REDEEMER_CBOR,
+    apply_holder,
+    apply_record_token_policy,
+    build_protocol_params_cbor,
+    build_reputation_config_cbor,
+    find_record_utxo,
+    genesis_minting_end_ms,
+    parse_utxo_ref,
+    resume_state_error,
+    select_seed_utxo,
+    utxo_ref,
+)
+
 # ── Config ───────────────────────────────────────────────────────────────────
 
 CONTRACT_DIR = MODULE3_ROOT / "reputation-staking"
@@ -83,9 +109,6 @@ MODULE1_CHALLENGE_HASH = "781843681859bcababb90a220ad84604cb324aef4757c6a5c46a96
 MODULE1_JURY_POOL_HASH = "b15af09128457e09b23c79119aa0c8c85d25c9fd96656f2611fdc962"
 MODULE1_REFS_TOKEN_POLICY = "205d5f77ffebf60b764ba4f1873eff3764f3d1d594e5dac477a928f9"
 
-PARAMS_HOLDER_HASH = "f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867"
-TREASURY_HOLDER_HASH = "ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6"
-
 TX_WAIT = TX_WAIT_SECONDS
 
 
@@ -105,64 +128,7 @@ def make_pycardano_native_script(vkey_hash_hex: str) -> NativeScript:
     return ScriptPubkey(VerificationKeyHash(bytes.fromhex(vkey_hash_hex)))
 
 
-# ── ReputationConfig CBOR ────────────────────────────────────────────────────
-
-def build_reputation_config_cbor(refs_token_policy: str, oracle_vkey_hash: str) -> str:
-    """Build ReputationConfig as Plutus Data CBOR hex.
-    Constructor 0 with 12 fields matching the Aiken type."""
-    fields = [
-        bytes.fromhex(refs_token_policy),
-        bytes.fromhex(AGENT_REGISTRY_HASH),
-        bytes.fromhex(AGENT_REGISTRY_HASH),
-        bytes.fromhex(MODULE1_CLAIM_HASH),
-        bytes.fromhex(MODULE1_CHALLENGE_HASH),
-        bytes.fromhex(MODULE1_JURY_POOL_HASH),
-        bytes.fromhex(MODULE1_REFS_TOKEN_POLICY),
-        bytes.fromhex(PARAMS_HOLDER_HASH),
-        bytes.fromhex(TREASURY_HOLDER_HASH),
-        bytes.fromhex(AP3X_POLICY_ID) if AP3X_POLICY_ID else b"",
-        bytes.fromhex(AP3X_ASSET_NAME) if AP3X_ASSET_NAME else b"",
-        bytes.fromhex(oracle_vkey_hash),
-    ]
-    config_data = cbor2.CBORTag(121, fields)
-    return cbor2.dumps(config_data).hex()
-
-
-# ── ProtocolParams datum ─────────────────────────────────────────────────────
-
-def build_protocol_params_cbor() -> bytes:
-    """Build ProtocolParams as CBOR (Plutus Data).
-    Constructor 0 with 22 fields."""
-    valid_capabilities = [
-        b"code_review", b"testing", b"deployment", b"documentation",
-        b"security_audit", b"architecture", b"data_analysis", b"ml_training",
-    ]
-    fields = [
-        10_000_000,     # min_self_stake (10 AP3X)
-        5_000_000,      # min_endorsement (5 AP3X)
-        25_000_000,     # min_challenge_stake (25 AP3X)
-        21_600,         # stake_cooldown (24h)
-        43_200,         # endorsement_cooldown (48h)
-        100,            # decay_rate (1%)
-        180,            # activity_window (180 epochs)
-        500,            # decay_collector_fee (5%)
-        1000,           # history_multiplier (10%)
-        3,              # max_endorsement_multiplier
-        5000,           # slash_rate_endorser (50%)
-        500,            # protocol_fee_rate (5%)
-        10_800,         # challenge_response_deadline (12h)
-        21_600,         # min_agent_age (24h)
-        5_400,          # escalation_window (6h)
-        100,            # default_judgment_fee (1%)
-        50,             # genesis_agent_cap
-        100_000_000,    # genesis_bonus_amount (100 AP3X)
-        604_800,        # genesis_minting_window (28 days)
-        129_600,        # genesis_protection_period (60 days)
-        valid_capabilities,  # valid_capabilities
-        900,            # epoch_length (4h)
-    ]
-    return cbor2.dumps(cbor2.CBORTag(121, fields))
-
+# ── CrossValidatorRefs datum ─────────────────────────────────────────────────
 
 def build_cross_refs_cbor(reputation_hash: str, endorsement_hash: str) -> bytes:
     """Build CrossValidatorRefs as CBOR (Plutus Data)."""
@@ -247,33 +213,58 @@ def deploy_reference_script(
     return tx_hash
 
 
-def create_datum_utxo(
+def mint_params_record(
     context: OgmiosHttpContext,
     skey: PaymentSigningKey,
     wallet_addr: Address,
-    target_addr: Address,
-    datum_cbor: bytes,
-    lovelace: int,
-    label: str,
+    wallet_utxos: list,
+    record_policy: dict,
+    params_target: Address,
+    params_cbor: bytes,
     protected_refs: set,
 ) -> str:
-    """Create a UTXO at target_addr with inline datum. Returns tx hash."""
+    """Mint the `params` record token and create the ProtocolParams record.
+
+    One transaction spends the wallet UTxOs (the record token seed is one of
+    them), mints exactly one `params` token of the one-shot record token
+    policy, and creates the record at the params holder as output 0: inline
+    ProtocolParams datum + token. The policy is a Plutus V3 script, so the
+    transaction carries the script, a unit redeemer and collateral.
+    Returns tx hash.
+    """
     from pycardano.serialization import RawCBOR
 
-    builder = TransactionBuilder(context)
-    builder.fee_buffer = 300_000
+    policy = ScriptHash(bytes.fromhex(record_policy["policy_id"]))
+    token_name = AssetName(PARAMS_TOKEN_NAME)
 
-    wallet_utxos = get_wallet_utxos(context, wallet_addr, protected_refs)
+    mint_ma = MultiAsset({policy: Asset({token_name: 1})})
+    out_ma = MultiAsset({policy: Asset({token_name: 1})})
+
+    builder = TransactionBuilder(context)
+    builder.fee_buffer = 500_000
+
     for u in wallet_utxos:
         builder.add_input(u)
 
-    builder.add_output(
-        TransactionOutput(target_addr, lovelace, datum=RawCBOR(datum_cbor))
+    builder.mint = mint_ma
+    builder.add_minting_script(
+        PlutusV3Script(bytes.fromhex(record_policy["compiled_code"])),
+        redeemer=Redeemer(RawCBOR(UNIT_REDEEMER_CBOR)),
     )
+
+    # Output 0: the ProtocolParams record (the SDK reads params_utxo#0)
+    builder.add_output(
+        TransactionOutput(
+            params_target, Value(3_000_000, out_ma),
+            datum=RawCBOR(params_cbor),
+        )
+    )
+
+    builder.collaterals = [get_collateral_utxo(context, wallet_addr, protected_refs)]
 
     tx = builder.build_and_sign([skey], change_address=wallet_addr)
     tx_hash = submit_tx(tx)
-    print(f"  [{label}] Created: {tx_hash}")
+    print(f"  [params] Record token minted, ProtocolParams record created: {tx_hash}")
     return tx_hash
 
 
@@ -348,6 +339,10 @@ def deploy():
         print("ERROR: Blueprint not found. Run 'aiken build' in reputation-staking/")
         sys.exit(1)
 
+    if not HOLDER_BLUEPRINT_PATH.exists():
+        print("ERROR: Holder blueprint not found. Run 'aiken build' in shared/holder-scripts/")
+        sys.exit(1)
+
     # Load wallet
     skey, vkey, wallet_addr = load_wallet(WALLET_SKEY_PATH)
     vkey_hash_hex = str(vkey.hash())
@@ -364,6 +359,10 @@ def deploy():
         with open(DEPLOY_STATE_FILE) as f:
             state = json.load(f)
     tx_hashes = state.get("tx_hashes", {})
+    state_error = resume_state_error(state, vkey_hash_hex)
+    if state_error:
+        print(f"ERROR: {DEPLOY_STATE_FILE}: {state_error}")
+        sys.exit(1)
 
     # ── Step 0: Verify environment ──────────────────────────────────────
 
@@ -384,10 +383,70 @@ def deploy():
     native_script = make_pycardano_native_script(vkey_hash_hex)
     print(f"  Policy ID: {refs_policy_id}")
 
-    # ── Step 2: Apply ReputationConfig ──────────────────────────────────
+    # ── Step 2: Holder scripts + record token policy ────────────────────
 
-    print("\n--- Step 2: Apply ReputationConfig ---")
-    config_cbor = build_reputation_config_cbor(refs_policy_id, vkey_hash_hex)
+    print("\n--- Step 2: Holder Scripts + Record Token Policy ---")
+    params_holder = apply_holder(PARAMS_HOLDER_TAG, vkey_hash_hex)
+    treasury_holder = apply_holder(TREASURY_HOLDER_TAG, vkey_hash_hex)
+    params_addr = script_hash_to_address(params_holder["hash"])
+    treasury_addr = script_hash_to_address(treasury_holder["hash"])
+    print(f"  Params holder:   {params_holder['hash']}")
+    print(f"                   {params_addr}")
+    print(f"  Treasury holder: {treasury_holder['hash']}")
+    print(f"                   {treasury_addr}")
+
+    seed_ref = state.get("record_token_seed")
+    if seed_ref:
+        # Never choose a new seed once a policy was saved
+        print(f"  Seed (from deploy state): {seed_ref}")
+    else:
+        seed_ref = utxo_ref(select_seed_utxo(wallet_utxos))
+        print(f"  Seed (new): {seed_ref}")
+
+    record_policy = apply_record_token_policy(*parse_utxo_ref(seed_ref))
+    params_token_policy = record_policy["policy_id"]
+    saved_policy = state.get("params_token_policy")
+    if saved_policy and saved_policy != params_token_policy:
+        print(f"  ERROR: The seed gives policy {params_token_policy}, "
+              f"but the deploy state has {saved_policy}.")
+        print("         The record token script changed after the first run.")
+        sys.exit(1)
+    print(f"  Record token policy: {params_token_policy}")
+
+    genesis_minting_window = state.get("genesis_minting_window") or genesis_minting_end_ms()
+    print(f"  genesis_minting_window: {genesis_minting_window} (POSIX ms)")
+
+    # Keep the seed and the record token policy before the first on-chain step
+    state.update({
+        "holder_owner_vkey_hash": vkey_hash_hex,
+        "params_holder_hash": params_holder["hash"],
+        "params_holder_address": params_addr,
+        "treasury_holder_hash": treasury_holder["hash"],
+        "treasury_holder_address": treasury_addr,
+        "record_token_seed": seed_ref,
+        "params_token_policy": params_token_policy,
+        "genesis_minting_window": genesis_minting_window,
+    })
+    save_state(state)
+
+    # ── Step 3: Apply ReputationConfig ──────────────────────────────────
+
+    print("\n--- Step 3: Apply ReputationConfig ---")
+    config_cbor = build_reputation_config_cbor(
+        refs_token_policy=refs_policy_id,
+        registry_policy_id=AGENT_REGISTRY_HASH,
+        registry_script_hash=AGENT_REGISTRY_HASH,
+        audit_claim_validator_hash=MODULE1_CLAIM_HASH,
+        audit_challenge_validator_hash=MODULE1_CHALLENGE_HASH,
+        audit_jury_pool_hash=MODULE1_JURY_POOL_HASH,
+        audit_refs_token_policy=MODULE1_REFS_TOKEN_POLICY,
+        params_script_hash=params_holder["hash"],
+        treasury_script_hash=treasury_holder["hash"],
+        ap3x_policy_id=AP3X_POLICY_ID,
+        ap3x_asset_name=AP3X_ASSET_NAME,
+        oracle_credential=vkey_hash_hex,
+        params_token_policy=params_token_policy,
+    )
     print(f"  Config CBOR: {len(config_cbor) // 2} bytes")
 
     applied_bp = apply_reputation_config(config_cbor)
@@ -407,16 +466,53 @@ def deploy():
     endorsement_hash = applied_validators["endorsement.endorsement.spend"]["hash"]
     reputation_addr = script_hash_to_address(reputation_hash)
     endorsement_addr = script_hash_to_address(endorsement_hash)
-    params_addr = script_hash_to_address(PARAMS_HOLDER_HASH)
 
     print(f"  Reputation:  {reputation_hash}")
     print(f"               {reputation_addr}")
     print(f"  Endorsement: {endorsement_hash}")
     print(f"               {endorsement_addr}")
 
-    # ── Step 3: Deploy reference scripts ────────────────────────────────
+    # ── Step 4: Mint params record token + ProtocolParams record ────────
+    # First on-chain step: one transaction spends the seed, mints exactly one
+    # `params` token and creates the ProtocolParams record (output 0).
 
-    print("\n--- Step 3: Deploy Reference Scripts ---")
+    if "params_utxo" not in tx_hashes:
+        print("\n--- Step 4: Mint Params Record Token + ProtocolParams Record ---")
+
+        wallet_utxos = get_wallet_utxos(context, wallet_addr, protected_refs)
+        if any(utxo_ref(u) == seed_ref for u in wallet_utxos):
+            params_cbor = build_protocol_params_cbor(genesis_minting_window)
+            tx_hash = mint_params_record(
+                context, skey, wallet_addr, wallet_utxos, record_policy,
+                Address.from_primitive(params_addr), params_cbor, protected_refs,
+            )
+            tx_hashes["params_utxo"] = tx_hash
+            state["tx_hashes"] = tx_hashes
+            save_state(state)
+
+            print(f"  Waiting {TX_WAIT}s for confirmation...")
+            time.sleep(TX_WAIT)
+        else:
+            # The seed is spent: a prior run can have created the record
+            record = find_record_utxo(
+                context.utxos(params_addr), params_token_policy, PARAMS_TOKEN_NAME,
+            )
+            if record is None:
+                print(f"  ERROR: Seed UTxO {seed_ref} is spent and the ProtocolParams record is not on chain.")
+                print("         If the record transaction is pending, wait and run again.")
+                print(f"         Otherwise move {DEPLOY_STATE_FILE} to a different path")
+                print("         and start a new deployment.")
+                sys.exit(1)
+            tx_hashes["params_utxo"] = bytes(record.input.transaction_id).hex()
+            state["tx_hashes"] = tx_hashes
+            save_state(state)
+            print(f"  ProtocolParams record found: {utxo_ref(record)}")
+    else:
+        print(f"\n--- Step 4: ProtocolParams record already created (skipping) ---")
+
+    # ── Step 5: Deploy reference scripts ────────────────────────────────
+
+    print("\n--- Step 5: Deploy Reference Scripts ---")
 
     ref_scripts = [
         ("reputation.reputation.spend", "reputation_spend"),
@@ -448,34 +544,10 @@ def deploy():
         print(f"  Waiting {TX_WAIT}s for confirmation...")
         time.sleep(TX_WAIT)
 
-    # ── Step 4: Create ProtocolParams datum UTXO ────────────────────────
-
-    if "params_utxo" not in tx_hashes:
-        print("\n--- Step 4: Create ProtocolParams UTXO ---")
-
-        params_cbor = build_protocol_params_cbor()
-        params_target = Address.from_primitive(params_addr)
-
-        tx_hash = create_datum_utxo(
-            context, skey, wallet_addr, params_target,
-            params_cbor, 3_000_000, "params", protected_refs,
-        )
-        tx_hashes["params_utxo"] = tx_hash
-        protected_refs.add(f"{tx_hash}#0")
-
-        state["tx_hashes"] = tx_hashes
-        save_state(state)
-
-        print(f"  Waiting {TX_WAIT}s for confirmation...")
-        time.sleep(TX_WAIT)
-    else:
-        print(f"\n--- Step 4: ProtocolParams already deployed (skipping) ---")
-        protected_refs.add(tx_hashes["params_utxo"])
-
-    # ── Step 5: Mint CrossValidatorRefs NFT ─────────────────────────────
+    # ── Step 6: Mint CrossValidatorRefs NFT ─────────────────────────────
 
     if "cross_refs_nft" not in tx_hashes:
-        print("\n--- Step 5: Mint CrossValidatorRefs NFT ---")
+        print("\n--- Step 6: Mint CrossValidatorRefs NFT ---")
 
         refs_datum_cbor = build_cross_refs_cbor(reputation_hash, endorsement_hash)
 
@@ -489,11 +561,11 @@ def deploy():
         state["tx_hashes"] = tx_hashes
         save_state(state)
     else:
-        print(f"\n--- Step 5: CrossRefs NFT already minted (skipping) ---")
+        print(f"\n--- Step 6: CrossRefs NFT already minted (skipping) ---")
 
-    # ── Step 6: Save final state ────────────────────────────────────────
+    # ── Step 7: Save final state ────────────────────────────────────────
 
-    print("\n--- Step 6: Save Final State ---")
+    print("\n--- Step 7: Save Final State ---")
 
     # Save applied blueprint
     DEPLOY_DIR.mkdir(exist_ok=True)
@@ -533,6 +605,7 @@ def deploy():
     print(f"\n  Reputation validator:  {reputation_hash}")
     print(f"  Endorsement validator: {endorsement_hash}")
     print(f"  Refs token policy:     {refs_policy_id}")
+    print(f"  Params token policy:   {params_token_policy}")
     for name, tx in tx_hashes.items():
         print(f"  {name}: {tx}")
 

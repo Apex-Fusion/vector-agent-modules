@@ -22,6 +22,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
+from deploy_common import ORACLE_TOKEN_NAME, PARAMS_TOKEN_NAME, find_record_utxo
+
 DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
 
@@ -90,6 +92,7 @@ async def run_test():
         holders = state.get("holders", {})
         tx_hashes = state.get("tx_hashes", {})
         refs_policy = state.get("refs_token_policy", "")
+        record_token_policy = state.get("record_token_policy")
 
         from pycardano import Address as PycAddr
 
@@ -113,6 +116,10 @@ async def run_test():
         if params_addr:
             expected_tx = tx_hashes.get("params_utxo", "")
             params_utxos = await find_utxos_at(params_addr, "params")
+            if record_token_policy:
+                # The record is the output that holds the `params` record token
+                record = find_record_utxo(params_utxos, record_token_policy, PARAMS_TOKEN_NAME)
+                params_utxos = [record] if record else []
             found_params = False
             # Pass 1: exact tx match
             for u in params_utxos:
@@ -150,6 +157,10 @@ async def run_test():
         if oracle_addr:
             expected_tx = tx_hashes.get("oracle_utxo", "")
             oracle_utxos = await find_utxos_at(oracle_addr, "oracle")
+            if record_token_policy:
+                # The record is the output that holds the `oracle` record token
+                record = find_record_utxo(oracle_utxos, record_token_policy, ORACLE_TOKEN_NAME)
+                oracle_utxos = [record] if record else []
             found_oracle = False
             for u in oracle_utxos:
                 tx_hash = str(u.input.transaction_id)

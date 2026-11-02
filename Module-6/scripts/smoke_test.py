@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 load_dotenv()
 
+from deploy_common import ORACLE_TOKEN_NAME, PARAMS_TOKEN_NAME, find_record_utxo
+
 DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
 
@@ -149,12 +151,17 @@ async def smoke_test():
             params_addr = holders.get("params", {}).get("address", "")
             oracle_addr = holders.get("oracle", {}).get("address", "")
             refs_policy = state.get("refs_token_policy", "")
+            record_token_policy = state.get("record_token_policy")
 
             if params_addr:
                 try:
                     from pycardano import Address
                     expected_params_tx = tx_hashes.get("params_utxo", "")
                     params_utxos = await agent.context.async_utxos(Address.from_primitive(params_addr))
+                    if record_token_policy:
+                        # The record is the output that holds the `params` record token
+                        record = find_record_utxo(params_utxos, record_token_policy, PARAMS_TOKEN_NAME)
+                        params_utxos = [record] if record else []
                     # Prefer the UTxO from current deployment
                     found = False
                     for u in params_utxos:
@@ -181,6 +188,10 @@ async def smoke_test():
                     from pycardano import Address
                     expected_oracle_tx = tx_hashes.get("oracle_utxo", "")
                     oracle_utxos = await agent.context.async_utxos(Address.from_primitive(oracle_addr))
+                    if record_token_policy:
+                        # The record is the output that holds the `oracle` record token
+                        record = find_record_utxo(oracle_utxos, record_token_policy, ORACLE_TOKEN_NAME)
+                        oracle_utxos = [record] if record else []
                     found = False
                     for u in oracle_utxos:
                         tx_hash = str(u.input.transaction_id)

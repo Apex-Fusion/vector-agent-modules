@@ -23,6 +23,8 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
+from deploy_common import ORACLE_TOKEN_NAME, PARAMS_TOKEN_NAME, find_record_utxo
+
 DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
 
@@ -62,15 +64,24 @@ async def test_expire():
         holders = state.get("holders", {})
         tx_hashes = state.get("tx_hashes", {})
         refs_policy = state.get("refs_token_policy", "")
+        record_token_policy = state.get("record_token_policy")
 
         from pycardano import Address as PycAddr
 
-        for holder_name, holder_key in [("params", "params_utxo"), ("oracle", "oracle_utxo")]:
+        for holder_name, holder_key, token_name in [
+            ("params", "params_utxo", PARAMS_TOKEN_NAME),
+            ("oracle", "oracle_utxo", ORACLE_TOKEN_NAME),
+        ]:
             addr = holders.get(holder_name, {}).get("address", "")
             expected_tx = tx_hashes.get(holder_key, "")
             if addr:
                 try:
                     utxos = await agent.context.async_utxos(PycAddr.from_primitive(addr))
+                    if record_token_policy:
+                        # The record is the output that holds its record token
+                        record = find_record_utxo(utxos, record_token_policy, token_name)
+                        utxos = [record] if record else []
+                        expected_tx = ""
                     for u in utxos:
                         if u.output.datum is not None:
                             if not expected_tx or str(u.input.transaction_id) == expected_tx:

@@ -2,12 +2,22 @@
 Module 6: Full Deployment Script (testnet or mainnet)
 
 Handles the complete deployment flow:
-  1. Apply GovernanceConfig parameter to all validators via `aiken blueprint apply`
-  2. Deploy holder reference scripts (params/oracle/treasury)
-  3. Deploy Module-6 validator reference scripts (CIP-33)
-  4. Create infrastructure UTxOs (GovernanceParams, Oracle, Treasury)
-  5. Mint refs NFT and deploy GovernanceCrossRefs datum
+  1. Compute the holder scripts (params/oracle/treasury), owned by the wallet key
+  2. Compute the NativeScript refs_token_policy
+  3. Choose a seed UTxO and derive the one-shot record token policy
+  4. Apply GovernanceConfig parameter to all validators via `aiken blueprint apply`
+  5. Deploy to the chain:
+     a. One transaction spends the seed, mints the `params` and `oracle` record
+        tokens, and creates the GovernanceParams record (output 0) and the
+        oracle record (output 1)
+     b. Deploy holder reference scripts (params/oracle/treasury)
+     c. Deploy Module-6 validator reference scripts (CIP-33)
+     d. Create Treasury batch UTxOs
+     e. Mint refs NFT and deploy GovernanceCrossRefs datum
   6. Save full deployment state
+
+Resume: the seed, the record token policy and the tx hashes are kept in
+wallets/deploy_state.json. A new run reuses them and skips completed steps.
 
 Usage:
     nix-shell shell.nix --run "python scripts/deploy.py"
@@ -34,16 +44,31 @@ from pathlib import Path
 import cbor2
 from dotenv import load_dotenv
 
+from deploy_common import (
+    AGENT_REGISTRY_HASH,
+    HOLDER_BLUEPRINT_PATH,
+    HOLDER_TAGS,
+    ORACLE_TOKEN_NAME,
+    PARAMS_TOKEN_NAME,
+    UNIT_REDEEMER,
+    apply_holder,
+    apply_record_token_policy,
+    build_governance_config_cbor,
+    find_record_utxo,
+    parse_utxo_ref,
+    resume_state_error,
+    select_collateral_utxo,
+    select_seed_utxo,
+    utxo_ref,
+)
+
 load_dotenv()
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 GAME6_ROOT = Path(__file__).parent.parent
-REPO_ROOT = GAME6_ROOT.parent
 CONTRACT_DIR = GAME6_ROOT / "contracts" / "governance-suggestion"
-HOLDER_DIR = REPO_ROOT / "shared" / "holder-scripts"
 BLUEPRINT_PATH = CONTRACT_DIR / "plutus.json"
-HOLDER_BLUEPRINT_PATH = HOLDER_DIR / "plutus.json"
 WALLET_FILE = GAME6_ROOT / "wallets" / "governance_wallet.json"
 SKEY_PATH = GAME6_ROOT / "wallets" / "payment.skey"
 MNEMONIC_FILE = os.getenv("VECTOR_MNEMONIC_FILE")  # Optional: path to BIP39 mnemonic file
@@ -55,11 +80,6 @@ OGMIOS_URL = os.getenv("VECTOR_OGMIOS_URL", "https://ogmios.vector.testnet.apexf
 SUBMIT_URL = os.getenv("VECTOR_SUBMIT_URL", "https://submit.vector.testnet.apexfusion.org/api/submit/tx")
 EXPLORER_URL = os.getenv("VECTOR_EXPLORER_URL", "https://vector.testnet.apexscan.org")
 NETWORK = "vector-mainnet" if "mainnet" in OGMIOS_URL else "vector-testnet"
-
-# ── Constants ────────────────────────────────────────────────────────────────
-
-AGENT_REGISTRY_HASH = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
-ZEROED_28 = "00" * 28
 
 
 def load_wallet() -> dict:
@@ -91,50 +111,7 @@ def compute_native_script_policy(vkey_hash: str) -> tuple[str, bytes]:
     return policy_id, native_script_cbor
 
 
-# ── GovernanceConfig CBOR ────────────────────────────────────────────────────
-
-def build_governance_config_cbor(
-    refs_token_policy: str,
-    oracle_holder_hash: str,
-    params_holder_hash: str,
-    treasury_holder_hash: str,
-) -> str:
-    """Build GovernanceConfig as Plutus Data CBOR (hex).
-
-    Constructor 0 with 11 fields (all ByteArray).
-    """
-    fields = [
-        bytes.fromhex(refs_token_policy),       # refs_token_policy
-        bytes.fromhex(ZEROED_28),               # prediction_validator_hash
-        bytes.fromhex(AGENT_REGISTRY_HASH),     # registry_policy_id
-        bytes.fromhex(AGENT_REGISTRY_HASH),     # registry_script_hash
-        bytes.fromhex(ZEROED_28),               # reputation_validator_hash (Module-3 not deployed)
-        bytes.fromhex(ZEROED_28),               # jury_pool_hash (Phase 1.2)
-        bytes.fromhex(oracle_holder_hash),      # governance_oracle_hash
-        bytes.fromhex(params_holder_hash),      # governance_params_hash
-        bytes.fromhex(treasury_holder_hash),    # governance_treasury_hash
-        bytes.fromhex(ZEROED_28),               # credibility_pool_hash (Phase 1.2)
-        bytes.fromhex(ZEROED_28),               # protocol_params_hash
-    ]
-    # Plutus Data constructor: Tag 121 + 0 = constr(0, fields)
-    config_data = cbor2.CBORTag(121, fields)
-    return cbor2.dumps(config_data).hex()
-
-
 # ── Apply parameters ────────────────────────────────────────────────────────
-
-def apply_holder_tag(holder_blueprint: Path, tag: int) -> dict:
-    """Apply an integer tag to the holder validator, return hash + compiled code."""
-    tag_cbor = cbor2.dumps(tag).hex()
-    result = subprocess.run(
-        ["aiken", "blueprint", "apply", "-i", str(holder_blueprint),
-         "-m", "holder", "-v", "holder", tag_cbor],
-        capture_output=True, text=True, check=True,
-    )
-    applied = json.loads(result.stdout)
-    v = applied["validators"][0]
-    return {"hash": v["hash"], "compiled_code": v["compiledCode"]}
-
 
 def apply_governance_config(config_cbor_hex: str) -> dict:
     """Apply GovernanceConfig to all Module-6 validators, return applied blueprint."""
@@ -195,9 +172,10 @@ def sign_tx(builder, agent):
 
     pycardano's build_and_sign has a bug with PaymentExtendedSigningKey where
     to_verification_key() returns an empty payload. We work around it by
-    building the body first, then manually constructing the witness.
+    building the body first, then the witness set from the builder (scripts,
+    redeemers, datums), and then adding the verification key witness manually.
     """
-    from pycardano import Transaction, TransactionWitnessSet, VerificationKeyWitness
+    from pycardano import Transaction, VerificationKeyWitness
     from pycardano.key import PaymentExtendedSigningKey
 
     sk = agent._wallet.payment_signing_key
@@ -209,10 +187,8 @@ def sign_tx(builder, agent):
     tx_body = builder.build(change_address=change_addr)
     vk = agent._wallet.payment_verification_key
     signature = sk.sign(tx_body.hash())
-    witness_set = TransactionWitnessSet(
-        vkey_witnesses=[VerificationKeyWitness(vk, signature)],
-        native_scripts=builder.native_scripts or None,
-    )
+    witness_set = builder.build_witness_set()
+    witness_set.vkey_witnesses = [VerificationKeyWitness(vk, signature)]
     return Transaction(tx_body, witness_set)
 
 
@@ -300,6 +276,60 @@ async def create_datum_utxo(agent, address, datum_data, lovelace: int, label: st
     return tx_hash
 
 
+async def mint_record_tokens(agent, seed_utxo, collateral_utxo, record_token: dict,
+                             records: list, label: str) -> str:
+    """Mint the record tokens and create the records in one transaction.
+
+    The transaction spends the seed UTxO: the one-shot record token policy
+    accepts a mint only in that transaction. `records` is a list of
+    (address, datum_data, token_name). Output i of the transaction is record i:
+    3 AP3X, one record token and the inline datum. The policy is a Plutus V3
+    script, so the transaction carries the script, a unit redeemer and
+    collateral.
+    """
+    from pycardano import (
+        Address, Asset, AssetName, MultiAsset, PlutusV3Script, Redeemer,
+        ScriptHash, TransactionBuilder, TransactionOutput, Value,
+    )
+    from pycardano.plutus import RawPlutusData
+
+    policy_id = ScriptHash(bytes.fromhex(record_token["policy_id"]))
+    policy_script = PlutusV3Script(bytes.fromhex(record_token["compiled_code"]))
+
+    builder = TransactionBuilder(agent.context)
+    builder.add_input(seed_utxo)
+    builder.add_input_address(agent._wallet.payment_address)
+    builder.fee_buffer = 300_000  # pycardano fee underestimate workaround
+
+    builder.mint = MultiAsset({
+        policy_id: Asset({AssetName(token_name): 1 for _, _, token_name in records})
+    })
+    builder.add_minting_script(policy_script, Redeemer(RawPlutusData(UNIT_REDEEMER)))
+
+    for address, datum_data, token_name in records:
+        builder.add_output(
+            TransactionOutput(
+                Address.from_primitive(address),
+                Value(3_000_000, MultiAsset({policy_id: Asset({AssetName(token_name): 1})})),
+                datum=RawPlutusData(datum_data),
+            )
+        )
+
+    builder.collaterals = [collateral_utxo]
+
+    tx = sign_tx(builder, agent)
+
+    tx_cbor = tx.to_cbor()
+    if isinstance(tx_cbor, bytes):
+        tx_cbor = tx_cbor.hex()
+
+    tx_hash = str(tx.id)
+    await agent.context.async_submit_tx_cbor(tx_cbor)
+    print(f"  [{label}] Record tokens minted: {tx_hash}")
+    print(f"    Explorer: {EXPLORER_URL}/tx/{tx_hash}")
+    return tx_hash
+
+
 async def mint_refs_nft(agent, native_script_cbor: bytes, refs_datum_data, label: str, target_address: str = None) -> str:
     """Mint a refs NFT and create the CrossRefs UTXO with inline datum.
 
@@ -357,7 +387,7 @@ async def deploy():
     print("Module 6: Self-Improvement Module — Full Deployment")
     print("=" * 60)
 
-    # ── Step 0: Load wallet and blueprints ────────────────────────────────
+    # ── Step 0: Load wallet, blueprints and deploy state ─────────────────
 
     mnemonic = None
     if MNEMONIC_FILE:
@@ -384,12 +414,25 @@ async def deploy():
     blueprint = load_blueprint(BLUEPRINT_PATH)
     print(f"Blueprint: {blueprint['preamble']['title']} v{blueprint['preamble']['version']}")
 
+    # Resume support: load the state of prior runs
+    existing_state = {}
+    if DEPLOY_STATE_FILE.exists():
+        with open(DEPLOY_STATE_FILE) as f:
+            existing_state = json.load(f)
+    tx_hashes = existing_state.get("tx_hashes", {})
+    state_error = resume_state_error(existing_state, wallet["vkey_hash"])
+    if state_error:
+        print(f"ERROR: {DEPLOY_STATE_FILE}: {state_error}")
+        return
+    saved_policy = existing_state.get("record_token_policy")
+    saved_seed = existing_state.get("record_token_seed")
+
     # ── Step 1: Compute holder hashes ─────────────────────────────────────
 
-    print("\n--- Step 1: Holder Script Hashes ---")
+    print("\n--- Step 1: Holder Script Hashes (owner = wallet key) ---")
     holders = {}
-    for tag, name in [(1, "params"), (2, "oracle"), (3, "treasury")]:
-        info = apply_holder_tag(HOLDER_BLUEPRINT_PATH, tag)
+    for tag, name in HOLDER_TAGS:
+        info = apply_holder(tag, wallet["vkey_hash"], HOLDER_BLUEPRINT_PATH)
         holders[name] = info
         addr = script_hash_to_address(info["hash"])
         print(f"  {name}: hash={info['hash']}")
@@ -401,14 +444,49 @@ async def deploy():
     refs_policy_id, native_script_cbor = compute_native_script_policy(wallet["vkey_hash"])
     print(f"  Policy ID: {refs_policy_id}")
 
-    # ── Step 3: Build GovernanceConfig and apply to validators ────────────
+    # ── Step 3: Record token policy (seed UTxO) ──────────────────────────
 
-    print("\n--- Step 3: Apply GovernanceConfig ---")
+    print("\n--- Step 3: Record Token Policy ---")
+
+    from vector_agent import VectorAgent
+
+    agent_kwargs = dict(ogmios_url=OGMIOS_URL, submit_url=SUBMIT_URL)
+    if mnemonic:
+        agent_kwargs["mnemonic"] = mnemonic
+    else:
+        agent_kwargs["skey_path"] = str(SKEY_PATH.absolute())
+
+    if saved_seed:
+        # Never choose a new seed once a policy was saved
+        seed_ref = saved_seed
+        print(f"  Seed (from deploy state): {seed_ref}")
+    else:
+        async with VectorAgent(**agent_kwargs) as agent:
+            wallet_utxos = await agent.context.async_utxos(str(agent._wallet.payment_address))
+        if not wallet_utxos:
+            print("  ERROR: Wallet has no UTxO. Fund wallet first.")
+            return
+        seed_ref = utxo_ref(select_seed_utxo(wallet_utxos))
+        print(f"  Seed (new): {seed_ref}")
+
+    record_token = apply_record_token_policy(*parse_utxo_ref(seed_ref))
+    record_token["seed"] = seed_ref
+    if saved_policy and saved_policy != record_token["policy_id"]:
+        print(f"  ERROR: The seed gives policy {record_token['policy_id']}, "
+              f"but the deploy state has {saved_policy}.")
+        print("         The record token script changed after the first run.")
+        return
+    print(f"  Policy ID: {record_token['policy_id']}")
+
+    # ── Step 4: Build GovernanceConfig and apply to validators ────────────
+
+    print("\n--- Step 4: Apply GovernanceConfig ---")
     config_cbor = build_governance_config_cbor(
         refs_token_policy=refs_policy_id,
         oracle_holder_hash=holders["oracle"]["hash"],
         params_holder_hash=holders["params"]["hash"],
         treasury_holder_hash=holders["treasury"]["hash"],
+        record_token_policy=record_token["policy_id"],
     )
     print(f"  Config CBOR: {len(config_cbor) // 2} bytes")
 
@@ -430,17 +508,13 @@ async def deploy():
     print(f"\n  Proposal validator hash: {proposal_hash}")
     print(f"  Critique validator hash: {critique_hash}")
 
-    # ── Step 4: Deploy to testnet ────────────────────────────────────────
+    # Keep the seed and the record token policy before the first on-chain step
+    save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
+                      proposal_hash, critique_hash, tx_hashes)
 
-    print(f"\n--- Step 4: Deploy to {NETWORK} ---")
+    # ── Step 5: Deploy to the chain ──────────────────────────────────────
 
-    from vector_agent import VectorAgent
-
-    agent_kwargs = dict(ogmios_url=OGMIOS_URL, submit_url=SUBMIT_URL)
-    if mnemonic:
-        agent_kwargs["mnemonic"] = mnemonic
-    else:
-        agent_kwargs["skey_path"] = str(SKEY_PATH.absolute())
+    print(f"\n--- Step 5: Deploy to {NETWORK} ---")
 
     async with VectorAgent(**agent_kwargs) as agent:
         balance = await agent.get_balance()
@@ -449,20 +523,73 @@ async def deploy():
         min_required = 150_000_000  # ~150 AP3X for all deployments
         if balance.lovelace < min_required:
             print(f"  ERROR: Need at least {min_required / 1_000_000} AP3X. Fund wallet first.")
-            save_deploy_state_offline(wallet, holders, refs_policy_id, applied_validators,
-                                      proposal_hash, critique_hash)
             return
 
-        # Resume support: load existing tx_hashes from prior runs
-        existing_state = {}
-        if DEPLOY_STATE_FILE.exists():
-            with open(DEPLOY_STATE_FILE) as f:
-                existing_state = json.load(f)
-        tx_hashes = existing_state.get("tx_hashes", {})
         TX_WAIT = 20  # seconds between transactions for UTxO confirmation
 
-        # 4a: Deploy holder reference scripts
-        print("\n  4a. Deploying holder reference scripts...")
+        params_addr = script_hash_to_address(holders["params"]["hash"])
+        oracle_addr = script_hash_to_address(holders["oracle"]["hash"])
+
+        # 5a: First on-chain step. One transaction spends the seed, mints the
+        # `params` and `oracle` record tokens, and creates the GovernanceParams
+        # record (output 0) and the oracle record (output 1).
+        if "params_utxo" in tx_hashes and "oracle_utxo" in tx_hashes:
+            print(f"\n  5a. GovernanceParams and Oracle records already created (skipping)")
+        else:
+            print("\n  5a. Minting record tokens + creating GovernanceParams and Oracle records...")
+            wallet_utxos = await agent.context.async_utxos(str(agent._wallet.payment_address))
+            seed_utxo = next(
+                (u for u in wallet_utxos if utxo_ref(u) == record_token["seed"]), None
+            )
+            if seed_utxo is None:
+                # The seed is spent: a prior run can have created the records
+                params_record = find_record_utxo(
+                    await agent.context.async_utxos(params_addr),
+                    record_token["policy_id"], PARAMS_TOKEN_NAME,
+                )
+                oracle_record = find_record_utxo(
+                    await agent.context.async_utxos(oracle_addr),
+                    record_token["policy_id"], ORACLE_TOKEN_NAME,
+                )
+                if params_record is None or oracle_record is None:
+                    print(f"  ERROR: Seed UTxO {record_token['seed']} is spent and the records are not on chain.")
+                    print("         If the record transaction is pending, wait and run again.")
+                    print(f"         Otherwise move {DEPLOY_STATE_FILE} to a different path")
+                    print("         and start a new deployment.")
+                    return
+                tx_hashes["params_utxo"] = str(params_record.input.transaction_id)
+                tx_hashes["oracle_utxo"] = str(oracle_record.input.transaction_id)
+                print(f"  Records found: params {utxo_ref(params_record)}, "
+                      f"oracle {utxo_ref(oracle_record)}")
+            else:
+                from vector_agent.governance.datums import build_governance_params, build_oracle_datum
+                params_datum = build_governance_params()
+                oracle_datum = build_oracle_datum(
+                    oracle_vkey_hash=bytes.fromhex(wallet["vkey_hash"]),
+                    treasury_script_hash=bytes.fromhex(holders["treasury"]["hash"]),
+                )
+                # The oracle credential must be a verification key credential
+                # (constructor 0). The validators reject a script credential.
+                if oracle_datum.data.value[0].tag != 121:
+                    print("  ERROR: The oracle datum credential is not a verification key credential.")
+                    return
+                collateral = select_collateral_utxo(wallet_utxos, avoid_ref=record_token["seed"])
+                tx = await mint_record_tokens(
+                    agent, seed_utxo, collateral, record_token,
+                    [
+                        (params_addr, params_datum.data, PARAMS_TOKEN_NAME),  # output 0
+                        (oracle_addr, oracle_datum.data, ORACLE_TOKEN_NAME),  # output 1
+                    ],
+                    "records",
+                )
+                tx_hashes["params_utxo"] = tx
+                tx_hashes["oracle_utxo"] = tx
+                await asyncio.sleep(TX_WAIT)
+            save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
+                              proposal_hash, critique_hash, tx_hashes)
+
+        # 5b: Deploy holder reference scripts
+        print("\n  5b. Deploying holder reference scripts...")
         for name in ["params", "oracle", "treasury"]:
             key = f"holder_{name}_ref"
             if key in tx_hashes:
@@ -472,8 +599,8 @@ async def deploy():
             tx_hashes[key] = tx
             await asyncio.sleep(TX_WAIT)
 
-        # 4b: Deploy Module-6 validator reference scripts
-        print("\n  4b. Deploying Module-6 validator reference scripts...")
+        # 5c: Deploy Module-6 validator reference scripts
+        print("\n  5c. Deploying Module-6 validator reference scripts...")
         ref_script_keys = [
             ("proposal.proposal_mint.mint", "proposal_mint"),
             ("proposal.proposal_spend.spend", "proposal_spend"),
@@ -490,39 +617,8 @@ async def deploy():
             tx_hashes[key] = tx
             await asyncio.sleep(TX_WAIT)
 
-        # 4c: Create GovernanceParams UTXO at params holder address
-        if "params_utxo" not in tx_hashes:
-            print("\n  4c. Creating GovernanceParams UTXO...")
-            from vector_agent.governance.datums import build_governance_params
-            params_datum = build_governance_params()
-            params_addr = script_hash_to_address(holders["params"]["hash"])
-            tx = await create_datum_utxo(
-                agent, params_addr, params_datum.data, 3_000_000, "params"
-            )
-            tx_hashes["params_utxo"] = tx
-            await asyncio.sleep(TX_WAIT)
-        else:
-            print(f"\n  4c. GovernanceParams already deployed (skipping)")
-
-        # 4d: Create Oracle UTXO at oracle holder address
-        if "oracle_utxo" not in tx_hashes:
-            print("\n  4d. Creating Oracle UTXO...")
-            from vector_agent.governance.datums import build_oracle_datum
-            oracle_datum = build_oracle_datum(
-                oracle_vkey_hash=bytes.fromhex(wallet["vkey_hash"]),
-                treasury_script_hash=bytes.fromhex(holders["treasury"]["hash"]),
-            )
-            oracle_addr = script_hash_to_address(holders["oracle"]["hash"])
-            tx = await create_datum_utxo(
-                agent, oracle_addr, oracle_datum.data, 3_000_000, "oracle"
-            )
-            tx_hashes["oracle_utxo"] = tx
-            await asyncio.sleep(TX_WAIT)
-        else:
-            print(f"\n  4d. Oracle already deployed (skipping)")
-
-        # 4e: Create Treasury batch UTxOs at treasury holder address
-        print("\n  4e. Creating Treasury batch UTxOs...")
+        # 5d: Create Treasury batch UTxOs at treasury holder address
+        print("\n  5d. Creating Treasury batch UTxOs...")
         from vector_agent.governance.datums import build_treasury_batch_datum
         treasury_addr = script_hash_to_address(holders["treasury"]["hash"])
         for batch_id in range(1, 4):  # 3 batches
@@ -539,9 +635,9 @@ async def deploy():
             tx_hashes[key] = tx
             await asyncio.sleep(TX_WAIT)
 
-        # 4f: Mint refs NFT and deploy GovernanceCrossRefs datum
+        # 5e: Mint refs NFT and deploy GovernanceCrossRefs datum
         if "cross_refs_nft" not in tx_hashes:
-            print("\n  4f. Minting refs NFT + deploying GovernanceCrossRefs...")
+            print("\n  5e. Minting refs NFT + deploying GovernanceCrossRefs...")
             proposal_mint_hash = applied_validators.get(
                 "proposal.proposal_mint.mint", {}
             ).get("hash", "")
@@ -563,13 +659,13 @@ async def deploy():
             )
             tx_hashes["cross_refs_nft"] = tx
         else:
-            print(f"\n  4f. CrossRefs NFT already minted (skipping)")
+            print(f"\n  5e. CrossRefs NFT already minted (skipping)")
 
         print(f"\n  Final balance: {(await agent.get_balance()).ada} AP3X")
 
-    # ── Step 5: Save deployment state ────────────────────────────────────
+    # ── Step 6: Save deployment state ────────────────────────────────────
 
-    save_deploy_state(wallet, holders, refs_policy_id, applied_validators,
+    save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
                       proposal_hash, critique_hash, tx_hashes)
 
     print("\n" + "=" * 60)
@@ -578,13 +674,21 @@ async def deploy():
     print(f"\nNext: python scripts/smoke_test.py")
 
 
-def save_deploy_state(wallet, holders, refs_policy_id, applied_validators,
+def save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
                       proposal_hash, critique_hash, tx_hashes):
+    """Write wallets/deploy_state.json.
+
+    record_token: {"policy_id", "seed", ...} of the one-shot record token
+    policy. The holders are owned by the wallet key (holder_owner_vkey_hash).
+    """
     state = {
         "network": NETWORK,
         "wallet_address": wallet["address"],
         "wallet_vkey_hash": wallet["vkey_hash"],
+        "holder_owner_vkey_hash": wallet["vkey_hash"],
         "refs_token_policy": refs_policy_id,
+        "record_token_policy": record_token["policy_id"],
+        "record_token_seed": record_token["seed"],
         "holders": {
             name: {"hash": info["hash"],
                     "address": script_hash_to_address(info["hash"]),
@@ -608,13 +712,6 @@ def save_deploy_state(wallet, holders, refs_policy_id, applied_validators,
     with open(DEPLOY_STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
     print(f"\nDeployment state saved to {DEPLOY_STATE_FILE}")
-
-
-def save_deploy_state_offline(wallet, holders, refs_policy_id, applied_validators,
-                               proposal_hash, critique_hash):
-    """Save state without tx hashes (offline mode)."""
-    save_deploy_state(wallet, holders, refs_policy_id, applied_validators,
-                      proposal_hash, critique_hash, {})
 
 
 if __name__ == "__main__":
