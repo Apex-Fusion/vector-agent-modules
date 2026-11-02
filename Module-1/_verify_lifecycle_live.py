@@ -216,14 +216,6 @@ def main() -> int:
         elif "--inconclusive" in _sys.argv:
             tv = "Inconclusive"
         plutus_trace = "--plutus-trace" in _sys.argv
-        # The verdict policy of the deployment decides whether the
-        # resolution mints a verdict; then apply_verdict follows it.
-        from simulation.tx_builder import DeploymentState
-        if DeploymentState(deployment).verdict_policy.rule(tv) is not None:
-            expected_lifecycle.insert(
-                expected_lifecycle.index("resolve_jury_success") + 1,
-                "apply_verdict_success",
-            )
         s = HappyPathScenario(
             **kwargs, jury_size=5, pool_size=15, target_verdict=tv,
         )

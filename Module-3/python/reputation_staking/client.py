@@ -24,16 +24,27 @@ agents-marketplace, Module-3 row):
   record. The methods accept a canonical DID (`did:vector:<64 hex>`) or
   64 hex characters.
 - An action that opens or extends a position (CreateStake, an endorsement, a
-  challenge, a history bonus) reads the agent's record. The transaction has
-  the record and the ancestor records (`vector_identity.record_chain`) as
-  reference inputs and a validity range of at most one hour. Each time that
-  the contract stores (last_updated, created_at) is the lower bound `lo` of
-  that range. The record must have effective status Active over [lo, hi] and
-  list each staked, endorsed or challenged capability.
+  challenge, a history bonus) reads the acting agent's record. The
+  transaction has the record and the ancestor records
+  (`vector_identity.record_chain`) as reference inputs and a validity range
+  of at most one hour. created_at is the lower bound `lo` of that range;
+  last_updated of a stake is the upper bound `hi` of the range of the last
+  owner action. The record must have effective status Active over [lo, hi]
+  and list each staked or endorsed capability. The target of an endorsement
+  also needs an Active record that lists the capabilities.
 - The controller of the record signs: its key hash is a required signer. When
-  the controller key is not the wallet key, pass `controller_skey`. Openings
-  also keep the signature of the wallet key (owner_credential,
-  endorser_credential, challenger_credential).
+  the controller key is not the wallet key, pass `controller_skey`. The
+  wallet key is the payout credential that an opening stores
+  (owner_credential, endorser_credential, challenger_credential) and it
+  signs. It must be a declared credential of the record: the controller key
+  or a listed key with the transaction purpose.
+- Challenges lock the target's stake. A challenge reads no target record:
+  the target's stake decides (it lists the capability, and its
+  owner_credential becomes target_credential). The opening spends the stake
+  with LockForChallenge, which adds the challenge token name to
+  challenge_locks. DistributeOutcome spends it again: ReleaseChallenge
+  removes the lock (CapabilityVerified, Inconclusive), and SlashStake removes
+  the lock and slashes the stake (CapabilityFalsified).
 - The client checks these rules before it builds a transaction. It raises
   vector_identity.IdentityError (or a subclass) when a rule fails.
 
@@ -99,6 +110,7 @@ from reputation_staking.plutus_data import (
     EndorsementValidatorDatumEndorsement,
     HistoryBonusDatum,
     HistoryBonusSourceChallengeWon,
+    LockForChallengeRedeemer,
     MintChallengeTokenRedeemer,
     MintEndorsementTokenRedeemer,
     MintHistoryBonusRedeemer,
@@ -110,6 +122,7 @@ from reputation_staking.plutus_data import (
     RepChallengeStateOpen,
     RepChallengeStateResolved,
     ReputationChallengeDatum,
+    ReleaseChallengeRedeemer,
     ResolveChallengeRedeemer,
     SlashEndorsementRedeemer,
     SlashStakeRedeemer,
@@ -169,6 +182,25 @@ def _token_quantity(utxo: UTxO, policy: ScriptHash, name: AssetName) -> int:
     if not multi_asset or policy not in multi_asset:
         return 0
     return int(multi_asset[policy].get(name, 0))
+
+
+def _out_ref(utxo: UTxO) -> OutputReference:
+    return OutputReference(
+        transaction_id=bytes(utxo.input.transaction_id), output_index=utxo.input.index,
+    )
+
+
+def _without_lock(stake: StakeDatum, name: bytes) -> IndefiniteList:
+    """challenge_locks of `stake` without the first `name` (the contract's
+    `without_lock`). Raises ValueError when the stake has no such lock."""
+    locks = [bytes(n) for n in stake.challenge_locks]
+    if name not in locks:
+        raise ValueError(
+            f"the stake of {vi.did_from_id(bytes(stake.agent_did))} has no lock of "
+            f"the challenge token {name.hex()}"
+        )
+    locks.remove(name)
+    return IndefiniteList(locks)
 
 
 class ReputationStakingClient:
@@ -469,6 +501,20 @@ class ReputationStakingClient:
         value = Value(amount, multi_asset) if multi_asset else Value(amount)
         return TransactionOutput(address, value, datum=datum)
 
+    def _continuing_stake(
+        self, stake_utxo: UTxO, datum: StakeDatum, coin: Optional[int] = None,
+    ) -> TransactionOutput:
+        """The continuing StakeUTXO of a spent stake: the same address and
+        tokens, `coin` lovelace (the lovelace of the spent stake when None),
+        raised to the minimum of the output, and `datum`."""
+        amount = stake_utxo.output.amount
+        return self._output(
+            stake_utxo.output.address,
+            int(amount.coin) if coin is None else coin,
+            deepcopy(amount.multi_asset),
+            datum,
+        )
+
     def _finish(
         self,
         builder: TransactionBuilder,
@@ -544,6 +590,13 @@ class ReputationStakingClient:
             raise RuntimeError(f"{vi.did_from_id(target_id)} has no stake UTxO")
         return utxo, decode_datum(StakeDatum, utxo.output.datum)
 
+    def _require_declared_wallet(self, record: vi.IdentityRecord) -> None:
+        """The wallet key is the payout credential that an opening stores.
+        The contract accepts only a declared credential of the acting
+        agent's record: the controller key or a listed key with the
+        transaction purpose. Raises IdentityError otherwise."""
+        vi.require_declared_credential(record, self._vkey_hash_bytes())
+
     # ── Stake Operations ─────────────────────────────────────────────────
 
     def build_create_seed_utxo(
@@ -558,6 +611,7 @@ class ReputationStakingClient:
             staked_capabilities=IndefiniteList(_capability_bytes(capabilities)),
             last_updated=slot_to_posix_ms(self._tip_slot()),
             history_points=0,
+            challenge_locks=IndefiniteList([]),
         )
         builder = self._new_builder(None)
         builder.add_output(TransactionOutput(self.reputation_addr, min_lovelace, datum=datum))
@@ -592,7 +646,9 @@ class ReputationStakingClient:
         """CreateStake: spend the seed UTxO, mint the stake token and create
         the stake UTxO. The agent's record is Active over the validity range
         and lists each capability; the controller and the wallet key
-        (owner_credential) sign; last_updated is the lower bound."""
+        (owner_credential, a declared credential of the record) sign;
+        last_updated is the upper bound; challenge_locks is empty. The seed
+        holds no reputation token."""
         if not seed_utxo:
             raise ValueError("seed_utxo is required for CreateStake")
         agent_id = vi.normalize_agent_id(agent_did)
@@ -607,10 +663,17 @@ class ReputationStakingClient:
             )
         chain = self._active_chain(agent_id, window, caps)
         controller = self._controller_key(chain[0], controller_skey)
+        self._require_declared_wallet(chain[0])
 
         seed = self._resolve_utxo(seed_utxo)
         if seed.output.address.payment_part != self.rep_policy:
             raise ValueError(f"seed UTxO {seed_utxo} is not at the reputation address")
+        seed_assets = getattr(seed.output.amount, "multi_asset", None) or {}
+        if any(quantity for quantity in seed_assets.get(self.rep_policy, {}).values()):
+            raise ValueError(
+                f"seed UTxO {seed_utxo} holds a reputation token; CreateStake "
+                f"needs a seed without one"
+            )
         seed_datum = decode_datum(StakeDatum, seed.output.datum)
         if bytes(seed_datum.agent_did) != agent_id:
             raise ValueError(
@@ -624,8 +687,9 @@ class ReputationStakingClient:
             owner_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
             stake_amount=stake_amount,
             staked_capabilities=IndefiniteList(caps),
-            last_updated=window.lo,
+            last_updated=window.hi,
             history_points=0,
+            challenge_locks=IndefiniteList([]),
         )
 
         builder = self._new_builder(window)
@@ -688,10 +752,11 @@ class ReputationStakingClient:
         controller_skey: Optional[PaymentSigningKey] = None,
     ) -> Transaction:
         """MintEndorsementToken: the endorser's record is Active and its
-        controller and the wallet key (endorser_credential) sign; the
-        target's record is Active and lists each endorsed capability; the
-        target's stake backs each endorsed capability; created_at is the
-        lower bound."""
+        controller and the wallet key (endorser_credential, a declared
+        credential of the record) sign; the target's record is Active and
+        lists each endorsed capability; the target's stake backs each
+        endorsed capability; created_at is the lower bound; slashed_by is
+        empty."""
         endorser_id = vi.normalize_agent_id(endorser_did)
         target_id = vi.normalize_agent_id(target_did)
         if endorser_id == target_id:
@@ -709,6 +774,7 @@ class ReputationStakingClient:
         endorser_chain = self._active_chain(endorser_id, window, (), utxos)
         target_chain = self._active_chain(target_id, window, caps, utxos)
         controller = self._controller_key(endorser_chain[0], controller_skey)
+        self._require_declared_wallet(endorser_chain[0])
 
         stake_utxo, stake = self._target_stake(target_id)
         staked = {bytes(c) for c in stake.staked_capabilities}
@@ -730,6 +796,7 @@ class ReputationStakingClient:
                 stake_amount=stake_amount,
                 endorsed_capabilities=IndefiniteList(caps),
                 created_at=window.lo,
+                slashed_by=IndefiniteList([]),
             )
         )
 
@@ -791,10 +858,14 @@ class ReputationStakingClient:
     ) -> Tuple[Transaction, EndorsementValidatorDatumChallenge]:
         """MintChallengeToken: the challenger's record is Active, at least
         min_agent_age old at the lower bound, and its controller and the
-        wallet key (challenger_credential) sign; the target's record is
-        Active and lists the capability; target_credential is the
-        owner_credential of the target's stake; created_at is the lower
-        bound."""
+        wallet key (challenger_credential, a declared credential of the
+        record) sign; created_at is the lower bound.
+
+        The target's record is not read: the target's stake decides. It
+        lists the capability, and target_credential is its owner_credential.
+        The transaction spends the stake with LockForChallenge; the
+        continuing stake keeps its address, value and datum, with the
+        challenge token name added first to challenge_locks."""
         challenger_id = vi.normalize_agent_id(challenger_did)
         target_id = vi.normalize_agent_id(target_did)
         if challenger_id == target_id:
@@ -810,23 +881,25 @@ class ReputationStakingClient:
                 f"stake_amount {stake_amount} is below min_challenge_stake "
                 f"{params.min_challenge_stake}"
             )
-        utxos = self.identity_utxos()
-        challenger_chain = self._active_chain(challenger_id, window, (), utxos)
+        challenger_chain = self._active_chain(challenger_id, window, ())
         self._require_age(challenger_chain[0], params, window)
-        target_chain = self._active_chain(target_id, window, [capability_bytes], utxos)
         controller = self._controller_key(challenger_chain[0], controller_skey)
+        self._require_declared_wallet(challenger_chain[0])
 
         stake_utxo, stake = self._target_stake(target_id)
         if capability_bytes not in {bytes(c) for c in stake.staked_capabilities}:
             raise ValueError(
                 f"the stake of {vi.did_from_id(target_id)} does not back {capability}"
             )
-
-        token = AssetName(
-            bytes.fromhex(
-                derive_challenge_token_name(challenger_id.hex(), target_id.hex(), capability)
-            )
+        token_bytes = bytes.fromhex(
+            derive_challenge_token_name(challenger_id.hex(), target_id.hex(), capability)
         )
+        if token_bytes in {bytes(n) for n in stake.challenge_locks}:
+            raise ValueError(
+                f"an open challenge of {vi.did_from_id(challenger_id)} against "
+                f"{capability} already locks the stake of {vi.did_from_id(target_id)}"
+            )
+        token = AssetName(token_bytes)
         datum = EndorsementValidatorDatumChallenge(
             datum=ReputationChallengeDatum(
                 challenger_did=challenger_id,
@@ -844,8 +917,15 @@ class ReputationStakingClient:
                 state=RepChallengeStateOpen(),
             )
         )
+        locked = dataclasses.replace(
+            stake,
+            challenge_locks=IndefiniteList([token_bytes] + [bytes(n) for n in stake.challenge_locks]),
+        )
 
         builder = self._new_builder(window)
+        builder.add_script_input(
+            stake_utxo, script=self.rep_ref_utxo, redeemer=Redeemer(LockForChallengeRedeemer()),
+        )
         builder.mint = MultiAsset({self.end_policy: Asset({token: 1})})
         builder.add_minting_script(
             self.end_ref_utxo, redeemer=Redeemer(MintChallengeTokenRedeemer()),
@@ -856,10 +936,10 @@ class ReputationStakingClient:
                 MultiAsset({self.end_policy: Asset({token: 1})}), datum,
             )
         )
+        builder.add_output(self._continuing_stake(stake_utxo, locked))
         self._add_reference_inputs(
             builder,
-            [r.utxo for r in challenger_chain] + [r.utxo for r in target_chain]
-            + [stake_utxo, params_utxo, self.cross_refs_utxo],
+            [r.utxo for r in challenger_chain] + [params_utxo, self.cross_refs_utxo],
         )
         tx = self._finish(
             builder, [controller],
@@ -1007,10 +1087,15 @@ class ReputationStakingClient:
     ) -> Transaction:
         """DistributeOutcome for CapabilityVerified or Inconclusive.
 
-        Burns the challenge token. CapabilityVerified pays the challenge
-        stake less the protocol fee to target_credential; Inconclusive pays
-        the stake less half the fee to challenger_credential. The treasury
-        gets the fee. The wallet pays the fee and the rest of the payouts.
+        Burns the challenge token and spends the target's stake with
+        ReleaseChallenge: the continuing stake keeps its address, value and
+        datum, without the lock of this challenge. fee = stake ×
+        protocol_fee_rate. CapabilityVerified pays the challenge stake less
+        the fee to target_credential and the fee to the treasury.
+        Inconclusive pays the stake less half of the fee to
+        challenger_credential and that half to the treasury; the target's
+        stake keeps all its AP3X. The wallet pays the transaction fee and the
+        rest of the payouts.
 
         A history bonus is not a condition of DistributeOutcome (W2-M36
         decision 4). With `mint_bonus` (CapabilityVerified only), the
@@ -1032,14 +1117,15 @@ class ReputationStakingClient:
         params_utxo, params = self.params_record()
         challenge_stake = inner.stake_amount
         fee = challenge_stake * params.protocol_fee_rate // 10_000
-        challenge_token = AssetName(
-            bytes.fromhex(
-                derive_challenge_token_name(
-                    bytes(inner.challenger_did).hex(), bytes(inner.target_did).hex(),
-                    bytes(inner.challenged_capability).decode("utf-8"),
-                )
+        token_bytes = bytes.fromhex(
+            derive_challenge_token_name(
+                bytes(inner.challenger_did).hex(), bytes(inner.target_did).hex(),
+                bytes(inner.challenged_capability).decode("utf-8"),
             )
         )
+        challenge_token = AssetName(token_bytes)
+        stake_utxo, stake = self._target_stake(bytes(inner.target_did))
+        released = dataclasses.replace(stake, challenge_locks=_without_lock(stake, token_bytes))
 
         builder = self._new_builder(window)
         builder.add_script_input(
@@ -1047,19 +1133,27 @@ class ReputationStakingClient:
             script=self.end_ref_utxo,
             redeemer=Redeemer(ChallengeSpendRedeemer(action=DistributeOutcomeRedeemer())),
         )
+        builder.add_script_input(
+            stake_utxo,
+            script=self.rep_ref_utxo,
+            redeemer=Redeemer(ReleaseChallengeRedeemer(challenge_ref=_out_ref(challenge_utxo))),
+        )
+        builder.add_output(self._continuing_stake(stake_utxo, released))
         mint = MultiAsset({self.end_policy: Asset({challenge_token: -1})})
         if verified:
+            treasury_fee = fee
             builder.add_output(
                 self._output(credential_address(inner.target_credential), challenge_stake - fee)
             )
         else:
+            treasury_fee = fee // 2
             builder.add_output(
                 self._output(
-                    credential_address(inner.challenger_credential), challenge_stake - fee // 2,
+                    credential_address(inner.challenger_credential), challenge_stake - treasury_fee,
                 )
             )
-        if fee > 0:
-            builder.add_output(self._output(self.treasury_addr, fee))
+        if treasury_fee > 0:
+            builder.add_output(self._output(self.treasury_addr, treasury_fee))
 
         signing_keys: List[PaymentSigningKey] = []
         required = [self._vkey_hash_bytes()]
@@ -1124,9 +1218,10 @@ class ReputationStakingClient:
         slash_rate_endorser, fee = slash × protocol_fee_rate. The challenger
         gets slash − fee and the treasury gets the fee. When the remaining
         stake is at least min_endorsement, the endorsement continues at the
-        same address with the same datum and stake_amount = remaining. Else
-        the endorsement token is burned and the endorser gets the remaining
-        stake.
+        same address with the same datum, stake_amount = remaining and the
+        challenge token name added first to slashed_by. Else the endorsement
+        token is burned and the endorser gets the remaining stake. A
+        challenge slashes an endorsement at most once (slashed_by).
         """
         endorser_id = vi.normalize_agent_id(endorser_did)
         target_id = vi.normalize_agent_id(target_did)
@@ -1150,6 +1245,14 @@ class ReputationStakingClient:
         endorsed = {bytes(c) for c in endorsement.endorsed_capabilities}
         if bytes(challenge.challenged_capability) not in endorsed:
             raise ValueError("the endorsement does not endorse the challenged capability")
+        challenge_token = bytes.fromhex(
+            derive_challenge_token_name(
+                bytes(challenge.challenger_did).hex(), target_id.hex(),
+                bytes(challenge.challenged_capability).decode("utf-8"),
+            )
+        )
+        if challenge_token in {bytes(n) for n in endorsement.slashed_by}:
+            raise ValueError("this challenge already slashed the endorsement")
 
         window = self.tx_window()
         params_utxo, params = self.params_record()
@@ -1182,7 +1285,13 @@ class ReputationStakingClient:
                     endorsement_utxo.output.address, remaining,
                     MultiAsset({self.end_policy: Asset({token: 1})}),
                     EndorsementValidatorDatumEndorsement(
-                        datum=dataclasses.replace(endorsement, stake_amount=remaining)
+                        datum=dataclasses.replace(
+                            endorsement,
+                            stake_amount=remaining,
+                            slashed_by=IndefiniteList(
+                                [challenge_token] + [bytes(n) for n in endorsement.slashed_by]
+                            ),
+                        )
                     ),
                 )
             )
@@ -1252,13 +1361,14 @@ class ReputationStakingClient:
         """DistributeOutcome for CapabilityFalsified with SlashStake.
 
         Spends the resolved challenge (DistributeOutcome) and the target's
-        stake (SlashStake), burns the challenge token, pays the challenger
-        target_slash − fee + the challenge stake and the treasury the fee,
-        and continues the stake with stake_amount − target_slash
-        (target_slash = stake_amount / number of staked capabilities) and
-        last_updated = the lower bound. With `mint_bonus`, the transaction
-        also mints the challenger's ChallengeWon bonus (see
-        build_distribute_outcome).
+        locked stake (SlashStake), burns the challenge token, pays the
+        challenger held + target_slash − fee (held = the AP3X that the
+        challenge UTxO holds) and the treasury the fee, and continues the
+        stake with stake_amount − target_slash (target_slash = stake_amount /
+        number of staked capabilities), without the lock of this challenge
+        and with the same last_updated (a slash is not an owner action).
+        With `mint_bonus`, the transaction also mints the challenger's
+        ChallengeWon bonus (see build_distribute_outcome).
         """
         challenge_utxo, inner = self.get_challenge(challenger_did, target_did, capability)
         if not isinstance(self.resolved_outcome(inner), RepChallengeOutcomeFalsified):
@@ -1273,21 +1383,19 @@ class ReputationStakingClient:
         target_slash = stake.stake_amount // num_capabilities
         remaining = stake.stake_amount - target_slash
         fee = target_slash * params.protocol_fee_rate // 10_000
-        challenger_reward = target_slash - fee + inner.stake_amount
+        held = int(challenge_utxo.output.amount.coin)
+        challenger_reward = held + target_slash - fee
 
-        challenge_ref = OutputReference(
-            transaction_id=bytes(challenge_utxo.input.transaction_id),
-            output_index=challenge_utxo.input.index,
-        )
-        challenge_token = AssetName(
-            bytes.fromhex(
-                derive_challenge_token_name(
-                    bytes(inner.challenger_did).hex(), target_id.hex(),
-                    bytes(inner.challenged_capability).decode("utf-8"),
-                )
+        token_bytes = bytes.fromhex(
+            derive_challenge_token_name(
+                bytes(inner.challenger_did).hex(), target_id.hex(),
+                bytes(inner.challenged_capability).decode("utf-8"),
             )
         )
-        stake_token = AssetName(bytes.fromhex(derive_stake_token_name(target_id.hex())))
+        challenge_token = AssetName(token_bytes)
+        slashed = dataclasses.replace(
+            stake, stake_amount=remaining, challenge_locks=_without_lock(stake, token_bytes),
+        )
 
         builder = self._new_builder(window)
         builder.add_script_input(
@@ -1298,20 +1406,14 @@ class ReputationStakingClient:
         builder.add_script_input(
             stake_utxo,
             script=self.rep_ref_utxo,
-            redeemer=Redeemer(SlashStakeRedeemer(challenge_ref=challenge_ref)),
+            redeemer=Redeemer(SlashStakeRedeemer(challenge_ref=_out_ref(challenge_utxo))),
         )
         builder.add_output(
             self._output(credential_address(inner.challenger_credential), challenger_reward)
         )
         if fee > 0:
             builder.add_output(self._output(self.treasury_addr, fee))
-        builder.add_output(
-            self._output(
-                stake_utxo.output.address, remaining,
-                MultiAsset({self.rep_policy: Asset({stake_token: 1})}),
-                dataclasses.replace(stake, stake_amount=remaining, last_updated=window.lo),
-            )
-        )
+        builder.add_output(self._continuing_stake(stake_utxo, slashed, remaining))
 
         mint = MultiAsset({self.end_policy: Asset({challenge_token: -1})})
         signing_keys: List[PaymentSigningKey] = []

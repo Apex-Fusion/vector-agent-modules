@@ -16,9 +16,9 @@ Lifecycle (the "happy path"):
     4. select_jury          -> emits {"event_type": "select_jury_success", ..., "jurors":[did_hex,...]}
     5. commit_vote x5       -> emits {"event_type": "commit_vote_success",  "juror":did_hex, ...}
     6. reveal_vote x5       -> emits {"event_type": "reveal_vote_success",  "juror":did_hex, ..., "verdict":"ClaimerWins"|"AuditorWins"}
-    7. resolve_jury         -> emits {"event_type": "resolve_jury_success", "verdict":..., "verdict_ref":..., ...}
-    7b. apply_verdict       -> emits {"event_type": "apply_verdict_success", "agent_did":..., "action":...}
-                               only when the verdict policy gives a verdict for the outcome
+    7. resolve_jury         -> emits {"event_type": "resolve_jury_success", "verdict":..., "refund_to":..., ...}
+                               (a jury resolution gives no identity verdict; only an
+                               oracle resolution does)
     8. distribute_rewards x5-> emits {"event_type": "distribute_rewards_success", "juror":did_hex, "amount":int, ...}
     9. cleanup_resolved     -> emits {"event_type": "cleanup_resolved_success", ...}
 
@@ -286,9 +286,6 @@ class HappyPathScenario(ScenarioRunner):
         # Resolved-challenge UTxO ref (set by _step_resolve_jury, used
         # by _step_distribute_rewards and _step_cleanup_resolved).
         self._resolved_challenge_ref: str | None = None
-        # Verdict output ref (set by _step_resolve_jury when the verdict
-        # policy gives a verdict; used by _step_apply_verdict).
-        self._verdict_ref: str | None = None
         # Sum of ADA returned to the master via WithdrawJuror (across
         # all 15 jurors) — observability only, used by lifecycle verifier.
         self._withdraw_returned_lovelace: int = 0
@@ -534,7 +531,6 @@ class HappyPathScenario(ScenarioRunner):
             base["distribute_index"] = self._distribute_index
             base["withdraw_index"] = self._withdraw_index
             base["resolved_challenge_ref"] = self._resolved_challenge_ref
-            base["verdict_ref"] = self._verdict_ref
             base["withdraw_returned_lovelace"] = (
                 self._withdraw_returned_lovelace
             )
@@ -574,8 +570,6 @@ class HappyPathScenario(ScenarioRunner):
         self._withdraw_index = int(payload.get("withdraw_index", 0) or 0)
         if "resolved_challenge_ref" in payload:
             self._resolved_challenge_ref = payload.get("resolved_challenge_ref")
-        if "verdict_ref" in payload:
-            self._verdict_ref = payload.get("verdict_ref")
         self._withdraw_returned_lovelace = int(
             payload.get("withdraw_returned_lovelace", 0) or 0
         )
@@ -775,7 +769,6 @@ class HappyPathScenario(ScenarioRunner):
             "commit_vote": lambda: self._step_commit_vote_batch(epoch),
             "reveal_vote": lambda: self._step_reveal_vote_batch(epoch),
             "resolve_jury": lambda: self._step_resolve_jury(epoch),
-            "apply_verdict": lambda: self._step_apply_verdict(epoch),
             "distribute_rewards":
                 lambda: self._step_distribute_rewards(
                     epoch, self._distribute_index,
@@ -2311,10 +2304,7 @@ class HappyPathScenario(ScenarioRunner):
         self._verdict = result["verdict"]
         self._resolved_challenge_ref = result["resolved_challenge_ref"]
         self._tx_hashes["resolve_jury"] = result["tx_hash"]
-        # A verdict output exists when the verdict policy gives a rule for
-        # the outcome; the next step applies it to the losing agent's record.
-        self._verdict_ref = result.get("verdict_ref")
-        self._step = "apply_verdict" if self._verdict_ref else "distribute_rewards"
+        self._step = "distribute_rewards"
         self._distribute_index = 0
         self.checkpoint()
 
@@ -2340,8 +2330,7 @@ class HappyPathScenario(ScenarioRunner):
                 "jury_fee": result["jury_fee"],
                 "claimer_payout": result.get("claimer_payout"),
                 "auditor_payout": result.get("auditor_payout"),
-                "verdict_ref": self._verdict_ref,
-                "identity_verdict": result.get("identity_verdict"),
+                "refund_to": result.get("refund_to"),
             },
             {
                 "event_type": "verdict",
@@ -2357,44 +2346,6 @@ class HappyPathScenario(ScenarioRunner):
                 "epoch": epoch,
             },
         ]
-
-    def _step_apply_verdict(self, epoch: int) -> list[dict]:
-        """Apply the verdict of the resolution to the losing agent's identity
-        record (``tx_builder.build_apply_verdict``; Part 2 §3.8). The master
-        pays the fees; the application needs no other signature."""
-        self._require_real_master_skey()
-        from simulation.chain import OgmiosContext, wait_confirm
-        from simulation import tx_builder as _txb
-
-        ctx = OgmiosContext()
-        deployment = self._deployment_state()
-        if not self._verdict_ref:
-            raise RuntimeError("apply_verdict: no verdict_ref (run resolve_jury first).")
-
-        result = _txb.build_apply_verdict(
-            ctx, deployment,
-            self.master_skey, self.master_vkey, self.master_wallet_addr,
-            self._verdict_ref,
-        )
-        wait_confirm(secs=WAIT_CONFIRM_SECS)
-
-        self._tx_hashes["apply_verdict"] = result["tx_hash"]
-        self._step = "distribute_rewards"
-        self._distribute_index = 0
-        self.checkpoint()
-
-        return [{
-            "event_type": "apply_verdict_success",
-            "tx_hash": result["tx_hash"],
-            "slot": ctx.last_block_slot,
-            "step_index": 7,
-            "epoch": epoch,
-            "scenario": self.name,
-            "agent_did": result["agent_did"],
-            "action": result["action"],
-            "until": result["until"],
-            "verdict_ref": self._verdict_ref,
-        }]
 
     def _step_distribute_rewards(
         self, epoch: int, juror_index: int,
@@ -2471,10 +2422,8 @@ class HappyPathScenario(ScenarioRunner):
         _time.sleep(5)
 
         # Use the auditor as fee payer (permissionless validator). The
-        # recovered auditor stake (preserved through ResolveJury into the
-        # Resolved UTxO) flows back to the fee payer's address as change,
-        # so picking the auditor returns the auditor's own forfeited
-        # stake to them and keeps the master's spend bound minimal.
+        # AP3X of the Resolved UTxO goes to its refund_to: the master
+        # wallet, which funded that AP3X in ResolveJury.
         auditor = self.auditor
         result = _txb.build_cleanup_resolved(
             ctx, deployment,
@@ -2502,6 +2451,7 @@ class HappyPathScenario(ScenarioRunner):
             "epoch": epoch,
             "scenario": self.name,
             "recovered_coin": result["recovered_coin"],
+            "refund_to": result["refund_to"],
         }]
 
     # ------------------------------------------------------------------ #

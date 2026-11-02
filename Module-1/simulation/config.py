@@ -26,7 +26,7 @@ from typing import Any, Mapping
 
 from pycardano import Network
 
-from simulation.identity_party import AuditingConfig, VerdictPolicy
+from simulation.identity_party import AuditingConfig, VerdictPolicy, identity_party_parameters
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -161,6 +161,14 @@ else:
 #     "auditor_wins": {"action": "suspend" | "revoke", "duration_ms": int} | null,
 #     "claimer_wins": {"action": "suspend" | "revoke", "duration_ms": int} | null
 #   }
+#
+# identity_party takes three parameters, in this order: the AuditingConfig,
+# the hash of the challenge validator and the hash of the claim validator
+# (scripts/identity_deploy.py plan). A manifest that also holds the
+# "parameters" object of plan.json must name these three parameters
+# (IDENTITY_PARTY_PARAMETER_KEYS), with the values of this manifest. A plan
+# without "identity_party_claim_hash_cbor" comes from an identity_party with
+# two parameters, which the current contracts replace.
 
 #: The order of the deployments that give the identity values.
 IDENTITY_DEPLOYMENT_ORDER = "identity registry, Module-1, Module-3, Module-6"
@@ -176,6 +184,15 @@ IDENTITY_MANIFEST_KEYS = (
     "module1.oracle_vkh",
     "module1.refs_token_policy",
     "verdict_policy",
+)
+
+#: The keys of the plan.json "parameters" object that hold the parameters of
+#: identity_party, in the apply order (AuditingConfig, challenge hash, claim
+#: hash).
+IDENTITY_PARTY_PARAMETER_KEYS = (
+    "auditing_config_cbor",
+    "identity_party_challenge_hash_cbor",
+    "identity_party_claim_hash_cbor",
 )
 
 
@@ -209,6 +226,13 @@ class IdentityDeployment:
             config_holder=self.config_holder,
             verdict_policy=self.verdict_policy,
         )
+
+    def identity_party_parameters(
+        self, challenge_hash: bytes, claim_hash: bytes
+    ) -> tuple[bytes, bytes, bytes]:
+        """The CBOR of the parameters of identity_party, in the apply order:
+        (AuditingConfig, challenge hash, claim hash)."""
+        return identity_party_parameters(self.auditing_config, challenge_hash, claim_hash)
 
 
 def _missing(path: str) -> IdentityConfigError:
@@ -261,7 +285,8 @@ def _out_ref(manifest: Mapping[str, Any], path: str) -> str:
 
 def load_identity_deployment(manifest: Mapping[str, Any]) -> IdentityDeployment:
     """Read the identity values of a deployment manifest, in the order of
-    IDENTITY_MANIFEST_KEYS. Raises IdentityConfigError when a value is
+    IDENTITY_MANIFEST_KEYS, and compare the identity_party parameters of a
+    plan.json "parameters" object. Raises IdentityConfigError when a value is
     missing or not valid; the message names the deployment order."""
     identity_hash = _hash28(manifest, "identity.identity_hash")
     identity_ref = _out_ref(manifest, "identity.identity_ref")
@@ -279,7 +304,7 @@ def load_identity_deployment(manifest: Mapping[str, Any]) -> IdentityDeployment:
         raise
     except ValueError as exc:
         raise IdentityConfigError(str(exc)) from exc
-    return IdentityDeployment(
+    deployment = IdentityDeployment(
         identity_hash=identity_hash,
         identity_ref=identity_ref,
         config_policy=config_policy,
@@ -290,6 +315,39 @@ def load_identity_deployment(manifest: Mapping[str, Any]) -> IdentityDeployment:
         refs_token_policy=refs_token_policy,
         verdict_policy=verdict_policy,
     )
+    _check_plan_parameters(manifest, deployment)
+    return deployment
+
+
+def _check_plan_parameters(manifest: Mapping[str, Any], deployment: IdentityDeployment) -> None:
+    """Compare the identity_party parameters of a plan.json "parameters"
+    object with the parameters of this manifest. A manifest without
+    "parameters" passes. Raises IdentityConfigError when a parameter is
+    missing (a plan for an identity_party with two parameters) or has
+    another value."""
+    plan = manifest.get("parameters")
+    if plan is None:
+        return
+    if not isinstance(plan, Mapping):
+        raise IdentityConfigError("`parameters` must be the object of plan.json")
+    expected = deployment.identity_party_parameters(
+        _hash28(manifest, "hashes.challenge"), _hash28(manifest, "hashes.claim"),
+    )
+    for key, value in zip(IDENTITY_PARTY_PARAMETER_KEYS, expected):
+        written = plan.get(key)
+        if not written:
+            raise IdentityConfigError(
+                f"the manifest has no `parameters.{key}`. identity_party takes "
+                f"(AuditingConfig, challenge hash, claim hash); make the plan "
+                f"again with scripts/identity_deploy.py plan and deploy its "
+                f"identity_party."
+            )
+        if str(written).lower() != value.hex():
+            raise IdentityConfigError(
+                f"`parameters.{key}` is not the value of this manifest "
+                f"({value.hex()}); the plan and the manifest are for different "
+                f"deployments."
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════

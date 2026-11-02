@@ -45,6 +45,50 @@ class ScriptCredential(PlutusData):
 Credential = Union[VerificationKeyCredential, ScriptCredential]
 
 
+# ── Address (cardano/address) ────────────────────────────────────────────────
+
+
+@dataclass
+class InlineStakeCredential(PlutusData):
+    """Constructor 0 of StakeCredential: Inline(Credential)"""
+    CONSTR_ID = 0
+    credential: Credential
+
+
+@dataclass
+class PointerStakeCredential(PlutusData):
+    """Constructor 1 of StakeCredential: Pointer { slot_number,
+    transaction_index, certificate_index }"""
+    CONSTR_ID = 1
+    slot_number: int
+    transaction_index: int
+    certificate_index: int
+
+
+StakeCredential = Union[InlineStakeCredential, PointerStakeCredential]
+
+
+@dataclass
+class SomeStakeCredential(PlutusData):
+    """Option<StakeCredential>: Some (constructor 0)"""
+    CONSTR_ID = 0
+    stake_credential: StakeCredential
+
+
+@dataclass
+class NoStakeCredential(PlutusData):
+    """Option<StakeCredential>: None (constructor 1)"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class PlutusAddress(PlutusData):
+    """Address { payment_credential, stake_credential }"""
+    CONSTR_ID = 0
+    payment_credential: Credential
+    stake_credential: Union[SomeStakeCredential, NoStakeCredential]
+
+
 # ── OutputReference (Plutus V3) ──────────────────────────────────────────────
 
 
@@ -64,7 +108,13 @@ class OutputReference(PlutusData):
 
 @dataclass
 class StakeDatum(PlutusData):
-    """StakeDatum — one per agent at the reputation validator address."""
+    """StakeDatum — one per agent at the reputation validator address.
+
+    last_updated is the upper bound of the validity range of the last owner
+    action (CreateStake, IncreaseStake, DecreaseStake, UpdateCapabilities).
+    challenge_locks holds the challenge token names of the open challenges
+    against the stake (LockForChallenge adds one, ReleaseChallenge and
+    SlashStake remove one); it is empty at creation."""
     CONSTR_ID = 0
     agent_did: bytes
     owner_credential: Credential
@@ -72,6 +122,7 @@ class StakeDatum(PlutusData):
     staked_capabilities: IndefiniteList  # List<ByteArray>
     last_updated: int  # POSIX ms
     history_points: int
+    challenge_locks: IndefiniteList  # List<ByteArray>
 
 
 # StakeAction redeemers (reputation spend)
@@ -110,8 +161,25 @@ class ClaimDecayRefundRedeemer(PlutusData):
 
 @dataclass
 class SlashStakeRedeemer(PlutusData):
-    """Constructor 5: SlashStake { challenge_ref }"""
+    """Constructor 5: SlashStake { challenge_ref } (also removes the lock
+    of that challenge)"""
     CONSTR_ID = 5
+    challenge_ref: OutputReference
+
+
+@dataclass
+class LockForChallengeRedeemer(PlutusData):
+    """Constructor 6: LockForChallenge (the transaction mints the challenge
+    token; the continuing stake adds its name first in challenge_locks)"""
+    CONSTR_ID = 6
+
+
+@dataclass
+class ReleaseChallengeRedeemer(PlutusData):
+    """Constructor 7: ReleaseChallenge { challenge_ref } (the challenge
+    closes without CapabilityFalsified; the continuing stake drops its
+    lock)"""
+    CONSTR_ID = 7
     challenge_ref: OutputReference
 
 
@@ -146,7 +214,9 @@ class BurnGenesisBonusRedeemer(PlutusData):
 
 @dataclass
 class EndorsementDatum(PlutusData):
-    """EndorsementDatum — one per endorser-target pair."""
+    """EndorsementDatum — one per endorser-target pair. slashed_by holds
+    the challenge token names of the resolved challenges that slashed the
+    endorsement (each one at most once); it is empty at creation."""
     CONSTR_ID = 0
     endorser_did: bytes
     endorser_credential: Credential
@@ -154,6 +224,7 @@ class EndorsementDatum(PlutusData):
     stake_amount: int
     endorsed_capabilities: IndefiniteList  # List<ByteArray>
     created_at: int  # POSIX ms
+    slashed_by: IndefiniteList  # List<ByteArray>
 
 
 # EndorsementAction redeemers
@@ -216,9 +287,10 @@ class RepChallengeStateOpen(PlutusData):
 
 @dataclass
 class RepChallengeStateEscalated(PlutusData):
-    """Constructor 1: Escalated { audit_claim_ref }"""
+    """Constructor 1: Escalated { audit_claim_token } — the asset name of
+    the Module 1 claim token that the escalation minted"""
     CONSTR_ID = 1
-    audit_claim_ref: OutputReference
+    audit_claim_token: bytes
 
 
 @dataclass
@@ -406,9 +478,84 @@ class HistoryBonusDatum(PlutusData):
     created_at: int  # POSIX ms
 
 
+# ── Module 1 mirror types (lib/reputation_staking/types.ak) ──────────────────
+# ResolveEscalation reads the Module 1 challenge as a reference input. These
+# mirror the Module 1 ChallengeDatum (11 fields) and ChallengeState; the
+# field order of AuditResolved follows Module 1 Resolved { verdict, refund_to }.
+
+
+@dataclass
+class AuditClaimerWins(PlutusData):
+    """Constructor 0 of AuditVerdict: ClaimerWins"""
+    CONSTR_ID = 0
+
+
+@dataclass
+class AuditAuditorWins(PlutusData):
+    """Constructor 1 of AuditVerdict: AuditorWins"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class AuditInconclusive(PlutusData):
+    """Constructor 2 of AuditVerdict: AuditInconclusive"""
+    CONSTR_ID = 2
+
+
+AuditVerdictData = Union[AuditClaimerWins, AuditAuditorWins, AuditInconclusive]
+
+
+@dataclass
+class AuditPendingOracle(PlutusData):
+    """Constructor 0 of AuditChallengeState: PendingOracle"""
+    CONSTR_ID = 0
+
+
+@dataclass
+class AuditPendingJury(PlutusData):
+    """Constructor 1 of AuditChallengeState: PendingJury"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class AuditVoting(PlutusData):
+    """Constructor 2 of AuditChallengeState: AuditVoting { selected_jurors }"""
+    CONSTR_ID = 2
+    selected_jurors: IndefiniteList  # List<PolicyId>
+
+
+@dataclass
+class AuditResolved(PlutusData):
+    """Constructor 3 of AuditChallengeState: AuditResolved { verdict,
+    refund_to }. Module 3 reads only the verdict."""
+    CONSTR_ID = 3
+    verdict: AuditVerdictData
+    refund_to: PlutusAddress
+
+
+AuditChallengeStateData = Union[AuditPendingOracle, AuditPendingJury, AuditVoting, AuditResolved]
+
+
+@dataclass
+class AuditChallengeDatum(PlutusData):
+    """AuditChallengeDatum — the Module 1 ChallengeDatum (11 fields)."""
+    CONSTR_ID = 0
+    claim_ref: OutputReference
+    auditor_did: bytes
+    auditor_credential: Credential
+    stake_amount: int
+    evidence_hash: bytes
+    evidence_uri: bytes
+    challenged_at: int  # POSIX ms
+    resolution_deadline: int  # ms
+    eligible_jurors: IndefiniteList  # List<PolicyId>
+    state: AuditChallengeStateData
+    claim_token: bytes
+
+
 # ── Endorsement Validator Wrapper Types ──────────────────────────────────────
 # These use NESTED Constr encoding:
-#   Endorsement(datum) = Constr(0, [Constr(0, [6 fields])])
+#   Endorsement(datum) = Constr(0, [Constr(0, [7 fields])])
 #   Challenge(datum) = Constr(1, [Constr(0, [13 fields])])
 
 

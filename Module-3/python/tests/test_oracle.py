@@ -71,7 +71,7 @@ def test_resolve_reads_no_identity_record(world):
 
 
 def test_distribute_uses_the_slash_path_for_falsified(world):
-    world.stake_a()
+    world.stake_a(challenge_locks=(world.lock_b(),))
     add_challenge(world, RepChallengeStateResolved(outcome=RepChallengeOutcomeFalsified()))
     oracle, sent = oracle_of(world)
     oracle.distribute_outcome(world.did("B"), world.did("A"), "code_review")
@@ -80,6 +80,7 @@ def test_distribute_uses_the_slash_path_for_falsified(world):
 
 
 def test_distribute_verified_with_bonus(world):
+    world.stake_a(challenge_locks=(world.lock_b(),))
     add_challenge(world, RepChallengeStateResolved(outcome=RepChallengeOutcomeVerified()))
     oracle, sent = oracle_of(world)
     oracle.distribute_outcome(

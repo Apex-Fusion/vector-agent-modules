@@ -579,13 +579,16 @@ class GovernanceParams:
 
 @dataclass(frozen=True)
 class CrossRefs:
-    """``GovernanceCrossRefs``: the hashes that the validators read at run
-    time."""
+    """``GovernanceCrossRefs`` (5 fields): the hashes that the validators
+    read at run time. ``endorsement_validator_hash`` (last) is the hash of
+    the endorsement spend validator; the critique mint policy finds the
+    endorsement inputs of a transaction with it."""
 
     proposal_validator_hash: bytes
     critique_validator_hash: bytes
     proposal_mint_hash: bytes
     critique_mint_hash: bytes
+    endorsement_validator_hash: bytes
 
     def to_data(self) -> cbor2.CBORTag:
         return _constr(0, [
@@ -593,11 +596,15 @@ class CrossRefs:
             self.critique_validator_hash,
             self.proposal_mint_hash,
             self.critique_mint_hash,
+            self.endorsement_validator_hash,
         ])
 
     @classmethod
     def from_data(cls, value: Any) -> "CrossRefs":
-        f = _fields(_tree(value), 4, "GovernanceCrossRefs")
+        """Decode the 5-field datum. A 4-field datum (no
+        endorsement_validator_hash) comes from an older deployment and
+        raises GovernanceDatumError."""
+        f = _fields(_tree(value), 5, "GovernanceCrossRefs")
         return cls(*(_bytes(v, "GovernanceCrossRefs") for v in f))
 
 
@@ -863,6 +870,7 @@ class GovernanceDeployment:
             self.critique_spend.hash,
             self.proposal_mint.hash,
             self.critique_mint.hash,
+            self.endorsement_spend.hash,
         )
 
 
@@ -1001,8 +1009,9 @@ def find_oracle(utxos: Iterable[UTxO], deployment: GovernanceDeployment) -> UTxO
 
 def find_cross_refs(utxos: Iterable[UTxO], deployment: GovernanceDeployment) -> CrossRefsRecord:
     """The CrossRefs output of this deployment: it holds a token of
-    ``refs_token_policy`` and its datum names the validators of the
-    deployment. The output of the deploy transaction comes first."""
+    ``refs_token_policy`` and its 5-field datum names the validators of the
+    deployment (a 4-field datum of an older deployment never matches). The
+    output of the deploy transaction comes first."""
     matches = []
     for utxo in utxos:
         if not policy_tokens(utxo, deployment.refs_token_policy) or utxo.output.datum is None:
@@ -1020,8 +1029,10 @@ def find_cross_refs(utxos: Iterable[UTxO], deployment: GovernanceDeployment) -> 
             f"no output with a {deployment.refs_token_policy.hex()} token names "
             f"proposal_spend {expected.proposal_validator_hash.hex()}, "
             f"critique_spend {expected.critique_validator_hash.hex()}, "
-            f"proposal_mint {expected.proposal_mint_hash.hex()} and "
-            f"critique_mint {expected.critique_mint_hash.hex()}."
+            f"proposal_mint {expected.proposal_mint_hash.hex()}, "
+            f"critique_mint {expected.critique_mint_hash.hex()} and "
+            f"endorsement_spend {expected.endorsement_validator_hash.hex()} "
+            f"(5-field GovernanceCrossRefs)."
         )
     matches.sort(key=lambda m: bytes(m.utxo.input.transaction_id) != deployment.cross_refs_tx)
     return matches[0]

@@ -62,8 +62,10 @@ logger = logging.getLogger(__name__)
 
 # State field indices within inline datums (cardano-cli JSON format)
 # StakeDatum: fields[0]=agent_did, [1]=owner_credential, [2]=stake_amount,
-#             [3]=capabilities, [4]=last_updated, [5]=history_points
-# EndorsementDatum (wrapped): fields[0]=inner, inner.fields[0..5]
+#             [3]=capabilities, [4]=last_updated, [5]=history_points,
+#             [6]=challenge_locks (not indexed)
+# EndorsementDatum (wrapped): fields[0]=inner, inner.fields[0..6]
+#             ([6]=slashed_by, not indexed)
 # ChallengeDatum (wrapped): fields[0]=inner, inner.fields[0..12]
 
 
@@ -400,7 +402,7 @@ class ReputationIndexer:
     def _parse_endorsement(self, utxo_ref: str, datum: dict):
         """Parse an EndorsementValidatorDatum.Endorsement (nested Constr)."""
         try:
-            # Outer: Constr(0, [inner]) where inner has 6 fields
+            # Outer: Constr(0, [inner]) where inner has 7 fields
             if datum.get("constructor") != 0:
                 return
             inner = datum["fields"][0]

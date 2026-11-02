@@ -7,6 +7,16 @@
 **Date:** 2026-04-16  
 **Author:** Apex Security Audit Team  
 
+> **Note (identity registry).** This document describes the v14-mainnet
+> deployment with the legacy agent registry. The current contracts use the
+> identity registry instead of the agent registry (Part 2 §7 of
+> `docs/IDENTITY_REGISTRY.md` in agents-marketplace): claims, challenges and
+> jurors read the agent's identity record (did:vector) and its ancestors as
+> reference inputs. Only an oracle resolution gives an identity verdict; a
+> verdict expires 30 days after the resolution. See `README.md`,
+> `deploy/DEPLOY.md` and `contracts/tests/identity-party.md` for the current
+> rules.
+
 ---
 
 ## 1. What Is Adversarial Auditing?

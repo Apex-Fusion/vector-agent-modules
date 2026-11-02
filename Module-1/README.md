@@ -74,8 +74,8 @@ Python-based simulation engine for testing module economics and agent strategies
 | `config.py` | Simulation parameters, module configuration and the identity deployment values (`load_identity_deployment`) |
 | `chain.py` | Simulated blockchain state (UTxOs, slots, transactions, reward balances) |
 | `wallet_factory.py` | Agent wallet creation and identity registration |
-| `tx_builder.py` | Transaction construction for all module actions, identity Register, Consent Update and ApplyVerdict |
-| `identity_party.py` | Module-1 as an identity party: verdict datum and token name, verdict policy, AuditingConfig, redeemers |
+| `tx_builder.py` | Transaction construction for all module actions, identity Register, Consent Update, ApplyVerdict and the reclaim of an expired verdict |
+| `identity_party.py` | Module-1 as an identity party: verdict datum (with `deposit_to` and `expires_at`) and token name, verdict policy, AuditingConfig, the `identity_party` parameters, Plutus addresses, redeemers |
 | `vector_identity.py` | Shared identity record model (copy of `Module-3/python/reputation_staking/vector_identity.py`; do not edit) |
 | `agent_pool.py` | Agent behavior models and strategy implementations |
 | `world_state.py` | Aggregate module state tracking |
@@ -89,9 +89,13 @@ as reference inputs, use a validity range of at most one hour, and refuse
 before they build when the record is not Active or the signing key is not
 declared. Juror records list the master key with the transaction purpose,
 because the master key is the juror credential. The happy path registers
-the claimant with Module-1 as a party, adds Module-1 to the auditor with a
-Consent Update, and applies the verdict of the resolution when the verdict
-policy gives one. A withdrawal from `Script(M1)` takes the whole reward
+the claimant with Module-1 as a party and adds Module-1 to the auditor with a
+Consent Update. A jury resolution (ResolveJury) gives no verdict; only an
+oracle resolution does. The Resolved state of ResolveJury names the funding
+wallet as `refund_to`, and CleanupResolved pays the kept AP3X to it. A
+verdict applies until its `expires_at` (30 days after the resolution);
+after that, `build_reclaim_verdict` pays the AP3X of the verdict output to
+its `deposit_to`. A withdrawal from `Script(M1)` takes the whole reward
 balance of that account (read from the chain), and a record output holds
 at least the larger of 10 AP3X and the ledger minimum.
 
@@ -100,7 +104,10 @@ defaults (deployment order: identity registry, Module-1, Module-3,
 Module-6): `identity.identity_hash`, `identity.identity_ref`,
 `identity.config_policy`, `identity.config_holder`, `hashes.identity_party`,
 `identity_party_ref`, `module1.oracle_vkh`, `module1.refs_token_policy` and
-`verdict_policy` (the format of `deploy/identity/config.json`).
+`verdict_policy` (the format of `deploy/identity/config.json`). When the
+manifest also holds the `parameters` object of `plan.json`, it must name the
+three `identity_party` parameters in the apply order (AuditingConfig,
+challenge hash, claim hash) with the values of the manifest.
 
 **Status:** Phase A (infrastructure) + Phase B (engine) complete. Phase C (module logic + scenarios) in progress.
 

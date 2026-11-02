@@ -62,6 +62,7 @@ from pycardano import (
     TransactionOutput,
     UTxO,
     Value,
+    VerificationKeyHash,
 )
 from pycardano.backend.base import ProtocolParameters
 
@@ -116,6 +117,26 @@ CONFIG_HOLDER_ADDR = Address(ScriptHash(CONFIG_HOLDER), network=Network.MAINNET)
 
 # Canned slot used by the fake context (deterministic for all tests).
 CANNED_SLOT = 100_000_000
+
+# The wallet that funded the AP3X of a Resolved challenge output in
+# ResolveJury: ``Resolved { verdict, refund_to }`` names it, and
+# CleanupResolved pays that AP3X back to it.
+RESOLVE_FUNDER_KEY_HASH = hashlib.blake2b(b"resolve-jury-funder", digest_size=28).digest()
+RESOLVE_FUNDER_ADDR = Address(
+    payment_part=VerificationKeyHash(RESOLVE_FUNDER_KEY_HASH), network=Network.MAINNET,
+)
+# Plutus Data of RESOLVE_FUNDER_ADDR:
+# Address { payment_credential: VerificationKey(h), stake_credential: None }.
+RESOLVE_FUNDER_DATA = cbor2.CBORTag(121, [
+    cbor2.CBORTag(121, [RESOLVE_FUNDER_KEY_HASH]), cbor2.CBORTag(122, []),
+])
+
+
+def resolved_state_data(verdict_tag: int = 121) -> cbor2.CBORTag:
+    """``Resolved { verdict, refund_to }`` (CBORTag 124): the verdict
+    constructor ``verdict_tag`` (121 ClaimerWins, 122 AuditorWins, 123
+    Inconclusive) and refund_to = RESOLVE_FUNDER_ADDR."""
+    return cbor2.CBORTag(124, [cbor2.CBORTag(verdict_tag, []), RESOLVE_FUNDER_DATA])
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -2382,7 +2403,7 @@ def patched_network_for_select_jury(
 #   validators/claim.ak     :: validate_forfeit_claim  (lines 419-495)
 #   types.ak :: ChallengeAction::ResolveJury  Constr3 -> CBORTag(124, [])
 #   types.ak :: ClaimAction::ForfeitClaim    Constr3 -> CBORTag(124, [])
-#   types.ak :: ChallengeState::Resolved     Constr3 -> CBORTag(124, [verdict])
+#   types.ak :: ChallengeState::Resolved     Constr3 -> CBORTag(124, [verdict, refund_to])
 #   types.ak :: Verdict enum —
 #         ClaimerWins   Constr0 -> CBORTag(121, [])
 #         AuditorWins   Constr1 -> CBORTag(122, [])
@@ -3036,7 +3057,7 @@ def sample_resolved_challenge_utxo(
       - coin = default_stake_amount (auditor stake preserved, NOT drained)
       - multi_asset = { challenge_policy: { challenge_token_bytes: 1 } }
       - field[9] state = Resolved { verdict = ClaimerWins }
-          CBORTag(124, [CBORTag(121, [])])
+          CBORTag(124, [CBORTag(121, []), refund_to])
 
     We pick ClaimerWins arbitrarily — the fee_per_juror math does not
     depend on the verdict constructor (validator L791-811 uses
@@ -3064,8 +3085,8 @@ def sample_resolved_challenge_utxo(
 
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
     # Resolved { verdict = ClaimerWins }
-    #   = CBORTag(124, [CBORTag(121, [])])
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    #   = CBORTag(124, [CBORTag(121, []), RESOLVE_FUNDER_DATA])
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [
@@ -3107,8 +3128,8 @@ def sample_resolved_challenge_utxo_auditor_wins(
     raw = bytes(orig.output.datum.cbor) if hasattr(orig.output.datum, "cbor") else bytes(orig.output.datum)
     decoded = cbor2.loads(raw)
     fields = list(decoded.value)
-    # Flip verdict inside Resolved wrapper: CBORTag(124, [CBORTag(122, [])])
-    fields[9] = cbor2.CBORTag(124, [cbor2.CBORTag(122, [])])
+    # Flip verdict inside Resolved: CBORTag(124, [CBORTag(122, []), refund_to])
+    fields[9] = resolved_state_data(122)
     new_datum = RawCBOR(cbor2.dumps(cbor2.CBORTag(121, fields)))
 
     # Fresh txid so dispatchers can distinguish this variant.
@@ -3521,8 +3542,8 @@ def sample_resolved_challenge_utxo_for_cleanup(
     claim_ref_tag = cbor2.CBORTag(121, [claim_seed_txid, 0])
 
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
-    # Resolved { verdict = ClaimerWins } = CBORTag(124, [CBORTag(121, [])])
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    # Resolved { verdict = ClaimerWins, refund_to = RESOLVE_FUNDER_ADDR }
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [
@@ -3583,7 +3604,7 @@ def sample_resolved_challenge_utxo_for_cleanup_too_early(
     claim_seed_txid = hashlib.blake2b(b"claim-utxo-txid", digest_size=32).digest()
     claim_ref_tag = cbor2.CBORTag(121, [claim_seed_txid, 0])
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [
@@ -3633,7 +3654,7 @@ def sample_resolved_challenge_utxo_for_cleanup_no_nft(
     claim_seed_txid = hashlib.blake2b(b"claim-utxo-txid", digest_size=32).digest()
     claim_ref_tag = cbor2.CBORTag(121, [claim_seed_txid, 0])
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [

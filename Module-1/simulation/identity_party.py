@@ -1,6 +1,6 @@
 """Module-1 as a party of identity records (Part 2 §3.8): the verdict datum,
-the verdict policy, the AuditingConfig, the Module-1 party and the redeemers
-of the ``identity_party`` validator.
+the verdict policy, the AuditingConfig, the parameters of ``identity_party``,
+the Module-1 party and the redeemers of the ``identity_party`` validator.
 
 The on-chain source of truth is ``contracts/lib/adversarial_auditing/types.ak``
 (``VerdictAction``, ``VerdictRule``, ``VerdictPolicy``, ``IdentityVerdict``,
@@ -10,9 +10,15 @@ The on-chain source of truth is ``contracts/lib/adversarial_auditing/types.ak``
 
 All code that depends on the shape of the verdict datum is in this module:
 the type, its encoding and decoding, the token name, the mapping from the
-verdict policy to a verdict, and the record change of a verdict application.
-The transaction builders use only the functions of this module and never
-encode or decode a verdict themselves.
+verdict policy to a verdict, the record change of a verdict application and
+the reclaim rule of an expired verdict. The transaction builders use only
+the functions of this module and never encode or decode a verdict
+themselves.
+
+Only an oracle resolution (OracleResolve) gives a verdict. A jury resolution
+(ResolveJury) and a timeout (TimeoutResolve) give no verdict: the auditor
+names the eligible jurors of a challenge, so a jury outcome is not safe for
+an identity verdict.
 
 The module has no network access. It needs only ``cbor2`` and the shared
 identity module ``simulation.vector_identity``.
@@ -22,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple, Union
 
 import cbor2
 
@@ -39,6 +45,17 @@ CLAIMER_WINS = "ClaimerWins"
 AUDITOR_WINS = "AuditorWins"
 INCONCLUSIVE = "Inconclusive"
 OUTCOMES = (CLAIMER_WINS, AUDITOR_WINS, INCONCLUSIVE)
+
+#: The challenge actions that resolve a challenge (``ChallengeAction`` of
+#: types.ak). Only ORACLE_RESOLVE can give a verdict.
+ORACLE_RESOLVE = "OracleResolve"
+RESOLVE_JURY = "ResolveJury"
+TIMEOUT_RESOLVE = "TimeoutResolve"
+RESOLUTIONS = (ORACLE_RESOLVE, RESOLVE_JURY, TIMEOUT_RESOLVE)
+
+#: Milliseconds from the upper bound of the resolution transaction to the
+#: ``expires_at`` of its verdict: 30 days (``days_30_ms``).
+VERDICT_LIFETIME_MS = vi.DAYS_30_MS
 
 #: The roles that Module-1 can hold, with the highest rights of each role
 #: (Part 1 §5 "Parties", Part 2 §3.8 "Roles").
@@ -169,20 +186,156 @@ class AuditingConfig:
         return vi.serialise_data(self.data())
 
 
+def identity_party_parameters(
+    config: AuditingConfig, challenge_hash: bytes, claim_hash: bytes
+) -> Tuple[bytes, bytes, bytes]:
+    """The parameters of ``identity_party`` in the order of ``aiken blueprint
+    apply`` (``scripts/identity_deploy.py plan``): the AuditingConfig, the
+    hash of the challenge validator, then the hash of the claim validator.
+    Each item is the CBOR of its Plutus Data, as ``plan.json`` writes it
+    (``auditing_config_cbor``, ``identity_party_challenge_hash_cbor``,
+    ``identity_party_claim_hash_cbor``). The verdict mint reads the claim of
+    a resolved challenge only at the claim validator ``claim_hash``. Raises
+    ValueError when a hash does not have 28 bytes."""
+    for name, value in (("challenge hash", challenge_hash), ("claim hash", claim_hash)):
+        if not isinstance(value, (bytes, bytearray)) or len(value) != 28:
+            raise ValueError(f"the {name} of identity_party must have 28 bytes")
+    return (
+        config.cbor(),
+        vi.serialise_data(bytes(challenge_hash)),
+        vi.serialise_data(bytes(claim_hash)),
+    )
+
+
+# ── Plutus addresses ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class PlutusCredential:
+    """``Credential`` of ``cardano/address``: ``VerificationKey(hash)``
+    (Constr 0) or ``Script(hash)`` (Constr 1). ``hash`` has 28 bytes."""
+
+    hash: bytes
+    script: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.hash, (bytes, bytearray)) or len(self.hash) != 28:
+            raise ValueError("a credential hash has 28 bytes")
+
+    def data(self) -> cbor2.CBORTag:
+        return vi.constr(1 if self.script else 0, [bytes(self.hash)])
+
+    def to_json(self) -> dict:
+        return {"type": "script" if self.script else "key", "hash": bytes(self.hash).hex()}
+
+
+@dataclass(frozen=True)
+class StakePointer:
+    """``Pointer { slot_number, transaction_index, certificate_index }``
+    (Constr 1 of ``StakeCredential``)."""
+
+    slot_number: int
+    transaction_index: int
+    certificate_index: int
+
+
+@dataclass(frozen=True)
+class PlutusAddress:
+    """``Address { payment_credential, stake_credential }`` of
+    ``cardano/address``. ``stake`` is None (no stake part), a
+    ``PlutusCredential`` (``Inline``) or a ``StakePointer``. The contracts
+    compare the whole address: a payout output must have this payment part
+    and this stake part."""
+
+    payment: PlutusCredential
+    stake: Union[None, PlutusCredential, StakePointer] = None
+
+    def data(self) -> cbor2.CBORTag:
+        if self.stake is None:
+            stake = None
+        elif isinstance(self.stake, PlutusCredential):
+            stake = vi.constr(0, [self.stake.data()])
+        else:
+            pointer = self.stake
+            stake = vi.constr(1, [
+                int(pointer.slot_number),
+                int(pointer.transaction_index),
+                int(pointer.certificate_index),
+            ])
+        return vi.constr(0, [self.payment.data(), vi.option_data(stake)])
+
+    def to_json(self) -> dict:
+        if self.stake is None:
+            stake = None
+        elif isinstance(self.stake, PlutusCredential):
+            stake = self.stake.to_json()
+        else:
+            stake = {"pointer": [
+                self.stake.slot_number,
+                self.stake.transaction_index,
+                self.stake.certificate_index,
+            ]}
+        return {"payment_credential": self.payment.to_json(), "stake_credential": stake}
+
+
+def _decode_credential(value: Any, what: str) -> PlutusCredential:
+    index, fields = vi.unconstr(value)
+    if (
+        index not in (0, 1)
+        or len(fields) != 1
+        or not isinstance(fields[0], (bytes, bytearray))
+        or len(fields[0]) != 28
+    ):
+        raise vi.IdentityDecodeError(f"{what}: not a Credential")
+    return PlutusCredential(bytes(fields[0]), script=index == 1)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def decode_address(value: Any, what: str = "Address") -> PlutusAddress:
+    """Decode the Plutus Data tree of an ``Address``. Raises
+    ``IdentityDecodeError`` for another shape."""
+    index, fields = vi.unconstr(value)
+    if index != 0 or len(fields) != 2:
+        raise vi.IdentityDecodeError(f"{what}: expected constructor 0 with 2 fields")
+    payment = _decode_credential(fields[0], f"{what}.payment_credential")
+    option, option_fields = vi.unconstr(fields[1])
+    if option == 1 and not option_fields:
+        return PlutusAddress(payment)
+    if option != 0 or len(option_fields) != 1:
+        raise vi.IdentityDecodeError(f"{what}.stake_credential: not an Option")
+    kind, stake_fields = vi.unconstr(option_fields[0])
+    if kind == 0 and len(stake_fields) == 1:
+        return PlutusAddress(
+            payment, _decode_credential(stake_fields[0], f"{what}.stake_credential")
+        )
+    if kind == 1 and len(stake_fields) == 3 and all(_is_int(v) for v in stake_fields):
+        return PlutusAddress(payment, StakePointer(*stake_fields))
+    raise vi.IdentityDecodeError(f"{what}.stake_credential: not a StakeCredential")
+
+
 # ── Verdict datum ───────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class IdentityVerdict:
-    """``IdentityVerdict { agent, action, duration, challenge }``: the inline
-    datum of a verdict output. ``challenge`` is the output reference of the
-    challenge input that the resolution transaction spends."""
+    """``IdentityVerdict { agent, action, duration, challenge, deposit_to,
+    expires_at }``: the inline datum of a verdict output. ``challenge`` is
+    the output reference of the challenge input that the oracle resolution
+    spends. ``deposit_to`` gets the AP3X of the verdict output when the
+    verdict expires without an application. ``expires_at`` (POSIX ms) is the
+    upper bound of the resolution plus 30 days: an application needs
+    ``hi <= expires_at``, and a reclaim needs ``expires_at < lo``."""
 
     agent: bytes
     action: VerdictAction
     duration: int
     challenge_tx_id: bytes
     challenge_index: int
+    deposit_to: PlutusAddress
+    expires_at: int
 
     def data(self) -> cbor2.CBORTag:
         return vi.constr(0, [
@@ -190,6 +343,8 @@ class IdentityVerdict:
             vi.constr(int(self.action), []),
             int(self.duration),
             vi.output_reference_data(self.challenge_tx_id, self.challenge_index),
+            self.deposit_to.data(),
+            int(self.expires_at),
         ])
 
     def datum_cbor(self) -> bytes:
@@ -197,7 +352,8 @@ class IdentityVerdict:
         return vi.serialise_data(self.data())
 
     def token_name(self) -> bytes:
-        """``verdict_token_name``: blake2b_256 of the serialised verdict."""
+        """``verdict_token_name``: blake2b_256 of the serialised verdict,
+        with all fields."""
         return vi.hash_data(self.data())
 
     def to_json(self) -> dict:
@@ -206,13 +362,16 @@ class IdentityVerdict:
             "action": self.action.label,
             "duration_ms": self.duration,
             "challenge": f"{bytes(self.challenge_tx_id).hex()}#{self.challenge_index}",
+            "deposit_to": self.deposit_to.to_json(),
+            "expires_at": self.expires_at,
             "token_name": self.token_name().hex(),
         }
 
 
 def decode_verdict(value: Any) -> IdentityVerdict:
     """Decode a verdict datum (CBOR bytes or hex, a tree, or a pycardano
-    datum object). Raises ``IdentityDecodeError`` for another shape."""
+    datum object). Raises ``IdentityDecodeError`` for another shape, for
+    example the 4-field verdict of an older deployment."""
     try:
         tree = vi.data_from(value)
     except vi.IdentityDecodeError:
@@ -220,31 +379,34 @@ def decode_verdict(value: Any) -> IdentityVerdict:
     except Exception as exc:  # cbor2 errors, bad hex
         raise vi.IdentityDecodeError(f"verdict datum is not CBOR: {exc}") from exc
     index, fields = vi.unconstr(tree)
-    if index != 0 or len(fields) != 4:
-        raise vi.IdentityDecodeError("IdentityVerdict: expected constructor 0 with 4 fields")
-    agent, action, duration, challenge = fields
+    if index != 0 or len(fields) != 6:
+        raise vi.IdentityDecodeError("IdentityVerdict: expected constructor 0 with 6 fields")
+    agent, action, duration, challenge, deposit_to, expires_at = fields
     action_index, action_fields = vi.unconstr(action)
     ref_index, ref_fields = vi.unconstr(challenge)
     if not isinstance(agent, (bytes, bytearray)):
         raise vi.IdentityDecodeError("IdentityVerdict.agent: expected a byte string")
     if action_index not in (0, 1) or action_fields:
         raise vi.IdentityDecodeError("IdentityVerdict.action: not a VerdictAction")
-    if isinstance(duration, bool) or not isinstance(duration, int):
+    if not _is_int(duration):
         raise vi.IdentityDecodeError("IdentityVerdict.duration: expected an integer")
     if (
         ref_index != 0
         or len(ref_fields) != 2
         or not isinstance(ref_fields[0], (bytes, bytearray))
-        or isinstance(ref_fields[1], bool)
-        or not isinstance(ref_fields[1], int)
+        or not _is_int(ref_fields[1])
     ):
         raise vi.IdentityDecodeError("IdentityVerdict.challenge: not an OutputReference")
+    if not _is_int(expires_at):
+        raise vi.IdentityDecodeError("IdentityVerdict.expires_at: expected an integer")
     return IdentityVerdict(
         agent=bytes(agent),
         action=VerdictAction(action_index),
         duration=duration,
         challenge_tx_id=bytes(ref_fields[0]),
         challenge_index=ref_fields[1],
+        deposit_to=decode_address(deposit_to, "IdentityVerdict.deposit_to"),
+        expires_at=expires_at,
     )
 
 
@@ -252,17 +414,32 @@ def resolution_verdict(
     policy: VerdictPolicy,
     outcome: str,
     *,
+    resolution: str,
     claimer_did: bytes,
     auditor_did: bytes,
     challenge_tx_id: bytes,
     challenge_index: int,
+    deposit_to: PlutusAddress,
+    hi: int,
 ) -> Optional[IdentityVerdict]:
     """The verdict of a challenge resolution (``resolution_verdict`` of
-    identity_party.ak), or None when the policy gives no rule for the
-    outcome. The agent is the losing side: the claimer for AuditorWins, the
-    auditor for ClaimerWins. ``challenge_tx_id`` and ``challenge_index`` are
-    the output reference of the challenge input that the resolution
-    spends."""
+    identity_party.ak), or None. Only an oracle resolution
+    (``resolution == ORACLE_RESOLVE``) gives a verdict; a jury resolution
+    and a timeout give None. An oracle resolution gives None when the policy
+    gives no rule for the outcome.
+
+    The agent is the losing side: the claimer for AuditorWins, the auditor
+    for ClaimerWins. ``challenge_tx_id`` and ``challenge_index`` are the
+    output reference of the challenge input that the resolution spends.
+    ``deposit_to`` is the address of the wallet that funds the verdict
+    output. ``hi`` is the upper bound (POSIX ms) of the validity range of the
+    resolution; ``expires_at = hi + 30 days``."""
+    if resolution not in RESOLUTIONS:
+        raise ValueError(f"unknown resolution {resolution!r}")
+    if outcome not in OUTCOMES:
+        raise ValueError(f"unknown challenge outcome {outcome!r}")
+    if resolution != ORACLE_RESOLVE:
+        return None
     rule = policy.rule(outcome)
     if rule is None:
         return None
@@ -273,7 +450,21 @@ def resolution_verdict(
         duration=rule.duration,
         challenge_tx_id=bytes(challenge_tx_id),
         challenge_index=int(challenge_index),
+        deposit_to=deposit_to,
+        expires_at=int(hi) + VERDICT_LIFETIME_MS,
     )
+
+
+def check_reclaim(verdict: IdentityVerdict, lo: int, hi: int) -> None:
+    """The time rule of a reclaim (``reclaim_ok``): the verdict expired
+    before the lower bound (``expires_at < lo``), and the range has at most
+    one hour. Raises ``IdentityError`` otherwise."""
+    vi.check_window(lo, hi)
+    if not verdict.expires_at < lo:
+        raise vi.IdentityError(
+            f"the verdict expires at {verdict.expires_at}; a reclaim needs a "
+            f"lower bound after it (lower bound {lo})"
+        )
 
 
 def verdict_from_output(datum: Any, token_name: bytes) -> IdentityVerdict:
@@ -300,7 +491,9 @@ def mint_verdict_redeemer() -> cbor2.CBORTag:
 
 
 def burn_verdict_redeemer() -> cbor2.CBORTag:
-    """``VerdictMint.BurnVerdict`` (Constr 1)."""
+    """``VerdictMint.BurnVerdict`` (Constr 1): in a verdict application
+    (with the withdrawal of ``Script(M1)``) and in a reclaim after
+    ``expires_at`` (without that withdrawal)."""
     return vi.constr(1, [])
 
 
@@ -404,10 +597,11 @@ def verdict_application(
     hi: int,
 ) -> VerdictApplication:
     """The application of ``verdict`` to the agent's record over the window
-    ``[lo, hi]``. Raises ``IdentityError`` when the record is not the
-    verdict's agent, when it is a tombstone, when it has no Module-1 party
-    with the right that the action needs, or when a suspension would end
-    before ``hi``.
+    ``[lo, hi]``. Raises ``IdentityError`` when the verdict expired before
+    ``hi`` (an application needs ``hi <= expires_at``), when the record is
+    not the verdict's agent, when it is a tombstone, when it has no Module-1
+    party with the right that the action needs, or when a suspension would
+    end before ``hi``.
 
     - Suspend: redeemer ``Suspend { ByParty { index } }``; the new record
       holds the Module-1 hold ``{ reason 64, since lo, until }`` with
@@ -417,6 +611,11 @@ def verdict_application(
       the tombstone with ``Revoked { Script { M1 }, 64, lo }``.
     """
     vi.check_window(lo, hi)
+    if hi > verdict.expires_at:
+        raise vi.IdentityError(
+            f"the verdict expires at {verdict.expires_at}, before the upper "
+            f"bound {hi}; it cannot apply any more (reclaim the verdict output)"
+        )
     if record.agent_id != verdict.agent:
         raise vi.IdentityError(
             f"the verdict names {vi.did_from_id(verdict.agent)}, "
@@ -464,17 +663,28 @@ __all__ = [
     "INCONCLUSIVE",
     "IdentityVerdict",
     "MODULE1_RIGHTS",
+    "ORACLE_RESOLVE",
     "OUTCOMES",
+    "PlutusAddress",
+    "PlutusCredential",
+    "RESOLUTIONS",
+    "RESOLVE_JURY",
+    "StakePointer",
+    "TIMEOUT_RESOLVE",
+    "VERDICT_LIFETIME_MS",
     "VerdictAction",
     "VerdictApplication",
     "VerdictPolicy",
     "VerdictRule",
     "apply_verdict_redeemer",
     "burn_verdict_redeemer",
+    "check_reclaim",
     "consent_parties",
     "consent_redeemer",
+    "decode_address",
     "decode_verdict",
     "has_module1_party",
+    "identity_party_parameters",
     "mint_verdict_redeemer",
     "module1_party",
     "resolution_verdict",

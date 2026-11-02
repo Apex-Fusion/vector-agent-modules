@@ -38,6 +38,7 @@ from reputation_staking.plutus_data import (
     RepChallengeOutcomeVerified,
     RepChallengeStateOpen,
     RepChallengeStateResolved,
+    ReleaseChallengeRedeemer,
     ResolveChallengeRedeemer,
     SlashEndorsementRedeemer,
     SlashStakeRedeemer,
@@ -135,7 +136,8 @@ class TestCreateStake:
         token = bytes.fromhex(derive_stake_token_name(world.ids["A"].hex()))
         assert mint_of(tx) == {(REP_HASH, token): 1}
         [out] = outputs_to(tx, address(REP_HASH))
-        assert out.datum.last_updated == LO
+        assert out.datum.last_updated == HI
+        assert list(out.datum.challenge_locks) == []
         assert bytes(out.datum.agent_did) == world.ids["A"]
         assert out.datum.owner_credential == VerificationKeyCredential(key_hash(world.wallet))
         assert out.amount.coin == 10 * AP3X
@@ -273,16 +275,15 @@ class TestMintChallenge:
         )
 
     def test_shape(self, world):
-        stake = world.stake_a()
+        """The target's record is not read; the target's stake is spent with
+        LockForChallenge and continues with the lock added first."""
+        stake = world.stake_a(challenge_locks=(b"\x01" * 32,))
         tx, datum = self.build(world)
-        assert refs_of(tx) == {
-            ref(world.records["B"]), ref(world.records["A"]), ref(stake), END_REF,
-        } | world.deployment_refs()
+        assert refs_of(tx) == {ref(world.records["B"]), END_REF, REP_REF} | world.deployment_refs()
+        assert ref(stake) in inputs_of(tx)
         assert signers_of(tx) == {key_hash(world.wallet), key_hash(world.ctrl["B"])}
         assert_window(tx)
-        token = bytes.fromhex(
-            derive_challenge_token_name(world.ids["B"].hex(), world.ids["A"].hex(), "code_review")
-        )
+        token = world.lock_b()
         assert mint_of(tx) == {(END_HASH, token): 1}
         [out] = outputs_to(tx, address(END_HASH))
         assert out.datum == datum
@@ -290,7 +291,38 @@ class TestMintChallenge:
         assert inner.created_at == LO
         assert isinstance(inner.state, RepChallengeStateOpen)
         assert inner.challenger_credential == VerificationKeyCredential(key_hash(world.wallet))
-        assert [type(d) for _, d in redeemers_of(tx)] == [MintChallengeTokenRedeemer]
+        kinds = sorted(type(d).__name__ for _, d in redeemers_of(tx))
+        assert kinds == ["LockForChallengeRedeemer", "MintChallengeTokenRedeemer"]
+        [stake_out] = outputs_to(tx, address(REP_HASH))
+        before = decode_datum(StakeDatum, stake.output.datum)
+        assert stake_out.datum == dataclasses.replace(
+            before, challenge_locks=[token, b"\x01" * 32])
+        assert stake_out.amount == stake.output.amount
+
+    def test_target_record_is_not_read(self, world):
+        """A revoked target whose record lost the capability can be
+        challenged while its stake lists the capability (rule D-dodge)."""
+        world.stake_a(capabilities=("code_review", "deployment"))
+        world.record("A", status=vi.Status.revoked(vi.Signer.controller_set(), 1, LO - 1))
+        self.build(world, capability="deployment")
+
+    def test_refuses_capability_the_stake_does_not_back(self, world):
+        world.stake_a(capabilities=("testing",))
+        with pytest.raises(ValueError, match="does not back"):
+            self.build(world)
+
+    def test_refuses_a_second_lock_with_the_same_name(self, world):
+        world.stake_a(challenge_locks=(world.lock_b(),))
+        with pytest.raises(ValueError, match="already locks"):
+            self.build(world)
+
+    def test_refuses_an_undeclared_wallet_key(self, world):
+        """challenger_credential (the wallet key) must be the controller or a
+        listed key with the transaction purpose."""
+        world.stake_a()
+        world.record("B", keys=())
+        with pytest.raises(vi.IdentityError, match="neither the controller"):
+            self.build(world)
 
     def test_target_credential_is_the_stake_owner(self, world):
         """target_credential = owner_credential of the target's stake (here
@@ -308,10 +340,6 @@ class TestMintChallenge:
         with pytest.raises(vi.IdentityError, match="min_agent_age"):
             self.build(world)
 
-    def test_refuses_target_without_capability(self, world):
-        world.stake_a(capabilities=("code_review", "deployment"))
-        with pytest.raises(vi.IdentityError, match="deployment"):
-            self.build(world, capability="deployment")
 
     def test_refuses_challenger_suspended(self, world):
         world.stake_a()
@@ -379,6 +407,7 @@ def resolved(outcome):
 
 class TestDistributeOutcome:
     def add_challenge(self, world, outcome):
+        world.stake_a(challenge_locks=(world.lock_b(),))
         return world.context.add(challenge_utxo(
             world.ids["B"], world.ids["A"], key_hash(world.wallet), world.owner_a,
             state=resolved(outcome),
@@ -386,21 +415,28 @@ class TestDistributeOutcome:
 
     def test_verified_without_bonus(self, world):
         challenge = self.add_challenge(world, RepChallengeOutcomeVerified())
+        stake = world.client().find_stake_utxo(world.did("A"))
         tx = world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
-        assert ref(challenge) in inputs_of(tx)
+        assert {ref(challenge), ref(stake)} <= inputs_of(tx)
         # No identity record: a bonus is not a condition (W2-M36 decision 4)
-        assert refs_of(tx) == {END_REF} | world.deployment_refs()
+        assert refs_of(tx) == {END_REF, REP_REF} | world.deployment_refs()
         fee = 25 * AP3X * 500 // 10_000
         [target_out] = outputs_to(tx, key_address(world.owner_a))
         assert target_out.amount.coin == 25 * AP3X - fee
         [treasury_out] = outputs_to(tx, address(TREASURY))
         assert treasury_out.amount.coin >= fee
+        # ReleaseChallenge: the stake keeps its value and loses the lock.
+        [stake_out] = outputs_to(tx, address(REP_HASH))
+        assert list(stake_out.datum.challenge_locks) == []
+        assert stake_out.amount == stake.output.amount
+        [release] = [d for _, d in redeemers_of(tx) if isinstance(d, ReleaseChallengeRedeemer)]
+        assert bytes(release.challenge_ref.transaction_id) == bytes(challenge.input.transaction_id)
         token = bytes.fromhex(
             derive_challenge_token_name(world.ids["B"].hex(), world.ids["A"].hex(), "code_review")
         )
         assert mint_of(tx) == {(END_HASH, token): -1}
         kinds = {type(d) for _, d in redeemers_of(tx)}
-        assert kinds == {ChallengeSpendRedeemer, BurnChallengeTokenRedeemer}
+        assert kinds == {ChallengeSpendRedeemer, BurnChallengeTokenRedeemer, ReleaseChallengeRedeemer}
         assert tx.transaction_body.validity_start == TIP_SLOT
 
     def test_verified_with_bonus(self, world):
@@ -436,14 +472,19 @@ class TestDistributeOutcome:
         client.build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
 
     def test_inconclusive_pays_challenger(self, world):
+        """The challenger gets the stake less half of the fee; the treasury
+        gets that half."""
         self.add_challenge(world, RepChallengeOutcomeInconclusive())
         tx = world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
-        fee = 25 * AP3X * 500 // 10_000
+        half = 25 * AP3X * 500 // 10_000 // 2
         [challenger_out] = [
             o for o in outputs_to(tx, key_address(key_hash(world.wallet)))
-            if o.amount.coin == 25 * AP3X - fee // 2
+            if o.amount.coin == 25 * AP3X - half
         ]
         assert challenger_out
+        [treasury_out] = outputs_to(tx, address(TREASURY))
+        # At least the half (raised to the ledger minimum), less than the fee.
+        assert half <= treasury_out.amount.coin < 2 * half
         with pytest.raises(ValueError, match="no winner"):
             world.client().build_distribute_outcome(
                 world.did("B"), world.did("A"), "code_review", mint_bonus=True,
@@ -460,7 +501,7 @@ class TestDistributeOutcome:
 
 class TestFalsifiedPath:
     def setup_falsified(self, world, endorsement_amount=20 * AP3X):
-        world.stake_a()
+        world.stake_a(challenge_locks=(world.lock_b(),))
         challenge = world.context.add(challenge_utxo(
             world.ids["B"], world.ids["A"], key_hash(world.wallet), world.owner_a,
             state=resolved(RepChallengeOutcomeFalsified()),
@@ -483,7 +524,8 @@ class TestFalsifiedPath:
         fee = slash * 500 // 10_000
         [out] = outputs_to(tx, address(END_HASH))
         before = decode_datum(EndorsementValidatorDatumEndorsement, endorsement.output.datum).datum
-        assert out.datum.datum == dataclasses.replace(before, stake_amount=20 * AP3X - slash)
+        assert out.datum.datum == dataclasses.replace(
+            before, stake_amount=20 * AP3X - slash, slashed_by=[world.lock_b()])
         assert out.amount.coin >= 20 * AP3X - slash
         challenger_paid = sum(
             o.amount.coin for o in outputs_to(tx, key_address(key_hash(world.wallet)))
@@ -496,6 +538,16 @@ class TestFalsifiedPath:
         assert isinstance(data, EndorsementSpendRedeemer)
         assert isinstance(data.action, SlashEndorsementRedeemer)
         assert tx.transaction_body.validity_start == TIP_SLOT
+
+    def test_slash_refuses_a_second_slash_by_the_same_challenge(self, world):
+        _, _, endorser_key = self.setup_falsified(world)
+        challenge = world.client().find_challenge_utxo(world.did("B"), world.did("A"), "code_review")
+        world.context.remove(world.client().find_endorsement_utxo(world.did("B"), world.did("A")))
+        world.context.add(endorsement_utxo(
+            world.ids["B"], world.ids["A"], endorser_key, slashed_by=(world.lock_b(),),
+        ))
+        with pytest.raises(ValueError, match="already slashed"):
+            world.client().build_slash_endorsement(world.did("B"), world.did("A"), ref(challenge))
 
     def test_slash_closes_small_endorsement(self, world):
         """remaining < min_endorsement: burn the token, pay the endorser."""
@@ -526,12 +578,16 @@ class TestFalsifiedPath:
             o for o in outputs_to(tx, address(REP_HASH)) if isinstance(o.datum, StakeDatum)
         ]
         assert stake_out.datum.stake_amount == 100 * AP3X - target_slash
-        assert stake_out.datum.last_updated == LO
+        # A slash is not an owner action: last_updated stays; the lock goes.
+        before = decode_datum(StakeDatum, stake.output.datum)
+        assert stake_out.datum.last_updated == before.last_updated
+        assert list(stake_out.datum.challenge_locks) == []
         assert stake_out.amount.coin >= 100 * AP3X - target_slash
         challenger_paid = max(
             o.amount.coin for o in outputs_to(tx, key_address(key_hash(world.wallet)))
         )
-        assert challenger_paid >= target_slash - fee + 25 * AP3X
+        # held (the AP3X of the challenge UTxO) + slash − fee
+        assert challenger_paid >= challenge.output.amount.coin + target_slash - fee
         kinds = [type(d) for _, d in redeemers_of(tx)]
         assert SlashStakeRedeemer in kinds and BurnChallengeTokenRedeemer in kinds
         [slash] = [d for _, d in redeemers_of(tx) if isinstance(d, SlashStakeRedeemer)]

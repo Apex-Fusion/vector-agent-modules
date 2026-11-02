@@ -636,7 +636,6 @@ _STEP_EVENT_TO_NAME = {
     "reveal_vote_success":         "build_reveal_vote",
     "reveal_vote_skipped":         "(reveal intentionally skipped)",
     "resolve_jury_success":        "build_resolve_jury",
-    "apply_verdict_success":       "build_apply_verdict",
     "distribute_rewards_success":  "build_distribute_rewards",
     "cleanup_resolved_success":    "build_cleanup_resolved",
     "juror_withdrawn":             "build_withdraw_juror",
@@ -704,7 +703,6 @@ def _advance_stuck_step(scenario) -> None:
         "transition_to_voting": "select_jury",
         "select_jury": "commit_vote",
         "resolve_jury": "distribute_rewards",
-        "apply_verdict": "distribute_rewards",
         "cleanup_resolved": "withdraw_jurors",
         "drain_to_master": "done",
         # iter-4: WithdrawClaim scenario.

@@ -7,6 +7,7 @@ from reputation_staking.datums import (
     CREATE_STAKE,
     DISTRIBUTE_OUTCOME,
     EXPIRE_CHALLENGE,
+    LOCK_FOR_CHALLENGE,
     MINT_CHALLENGE_TOKEN,
     MINT_ENDORSEMENT_TOKEN,
     MINT_STAKE_TOKEN,
@@ -15,8 +16,10 @@ from reputation_staking.datums import (
     build_history_bonus_datum_json,
     build_resolved_challenge_datum_json,
     build_stake_datum_json,
+    release_challenge_redeemer,
     resolve_challenge_redeemer,
     script_credential_json,
+    slash_stake_redeemer,
     vk_credential_json,
 )
 from tests.conftest import AGENT_A_DID, AGENT_B_DID
@@ -46,30 +49,33 @@ class TestVkCredentialJson:
 
 class TestStakeDatumJson:
     def test_field_count(self):
+        """7 fields; challenge_locks (last) is empty at creation."""
         datum = build_stake_datum_json(AGENT_A_DID, VKEY_HASH, 10_000_000, ["code_review"], LO_MS)
-        assert len(datum["fields"]) == 6
+        assert len(datum["fields"]) == 7
+        assert datum["fields"][6] == {"list": []}
 
     def test_constructor_zero(self):
         datum = build_stake_datum_json(AGENT_A_DID, VKEY_HASH, 10_000_000, ["code_review"], LO_MS)
         assert datum["constructor"] == 0
 
     def test_posix_ms_timestamp(self):
-        """last_updated is the POSIX ms value as given (the lower bound)."""
+        """last_updated is the POSIX ms value as given (the upper bound)."""
         datum = build_stake_datum_json(AGENT_A_DID, VKEY_HASH, 10_000_000, ["code_review"], LO_MS)
         assert datum["fields"][4]["int"] == LO_MS
 
 
 class TestEndorsementDatumJson:
     def test_nested_constr(self):
-        """Endorsement uses nested Constr: Constr(0, [Constr(0, [6 fields])])."""
+        """Endorsement uses nested Constr: Constr(0, [Constr(0, [7 fields])])."""
         datum = build_endorsement_datum_json(
             AGENT_B_DID, VKEY_HASH, AGENT_A_DID, 5_000_000, ["code_review"], LO_MS
         )
         assert datum["constructor"] == 0  # Endorsement variant
         inner = datum["fields"][0]
         assert inner["constructor"] == 0  # Inner EndorsementDatum
-        assert len(inner["fields"]) == 6
+        assert len(inner["fields"]) == 7
         assert inner["fields"][5] == {"int": LO_MS}
+        assert inner["fields"][6] == {"list": []}  # slashed_by
 
 
 class TestChallengeDatumJson:
@@ -168,6 +174,13 @@ class TestRedeemerConstants:
             "constructor": 1,
             "fields": [{"constructor": 7, "fields": []}],
         }
+
+    def test_stake_lock_redeemers(self):
+        """SlashStake (5), LockForChallenge (6), ReleaseChallenge (7)."""
+        ref = {"constructor": 0, "fields": [{"bytes": "ab" * 32}, {"int": 1}]}
+        assert slash_stake_redeemer("ab" * 32, 1) == {"constructor": 5, "fields": [ref]}
+        assert LOCK_FOR_CHALLENGE == {"constructor": 6, "fields": []}
+        assert release_challenge_redeemer("ab" * 32, 1) == {"constructor": 7, "fields": [ref]}
 
 
 class TestResolveChallengeRedeemer:

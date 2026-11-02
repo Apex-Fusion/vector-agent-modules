@@ -7,9 +7,11 @@ These produce the JSON dictionaries that cardano-cli expects for
 All encoding follows Aiken's Plutus V3 CBOR conventions:
   - Sum type variants use NESTED Constr
   - OutputReference: TransactionId is raw ByteArray (no Constr wrapper)
-  - Timestamps are POSIX milliseconds. A time that the contract stores
-    (created_at, last_updated) is the lower bound of the validity range of
-    the transaction (`slot_to_posix_ms(validity_start)`).
+  - Timestamps are POSIX milliseconds. created_at (endorsements,
+    challenges, history bonuses) is the lower bound of the validity range of
+    the transaction (`slot_to_posix_ms(validity_start)`). last_updated of a
+    stake is the upper bound of the validity range of the last owner action
+    (`slot_to_posix_ms(ttl)`); the range lasts at most one hour.
 
 An agent identifier (`*_did`) is the 64-hex identifier of the agent's
 identity record (did:vector).
@@ -52,8 +54,9 @@ def build_stake_datum_json(
     capabilities: List[str],
     last_updated_ms: int,
 ) -> dict:
-    """Build StakeDatum. last_updated is POSIX ms (the lower bound of the
-    validity range)."""
+    """Build a new StakeDatum (7 fields). last_updated is POSIX ms (the
+    upper bound of the validity range). history_points is 0 and
+    challenge_locks is empty at creation."""
     return {
         "constructor": 0,
         "fields": [
@@ -63,6 +66,7 @@ def build_stake_datum_json(
             {"list": [{"bytes": cap.encode().hex()} for cap in capabilities]},
             {"int": last_updated_ms},
             {"int": 0},  # history_points
+            {"list": []},  # challenge_locks
         ],
     }
 
@@ -77,7 +81,8 @@ def build_endorsement_datum_json(
 ) -> dict:
     """Build EndorsementDatum wrapped in EndorsementValidatorDatum.Endorsement.
 
-    Aiken uses NESTED Constr encoding: Constr(0, [Constr(0, [6 fields])]).
+    Aiken uses NESTED Constr encoding: Constr(0, [Constr(0, [7 fields])]).
+    slashed_by is empty at creation.
     """
     return {
         "constructor": 0,  # Endorsement variant
@@ -91,6 +96,7 @@ def build_endorsement_datum_json(
                     {"int": stake_amount},
                     {"list": [{"bytes": cap.encode().hex()} for cap in capabilities]},
                     {"int": created_at_ms},
+                    {"list": []},  # slashed_by
                 ],
             },
         ],
@@ -211,6 +217,23 @@ def update_capabilities_redeemer(capabilities: List[str]) -> dict:
 
 
 CLAIM_DECAY_REFUND = redeemer_json(4)
+
+
+def slash_stake_redeemer(challenge_tx_hash: str, challenge_tx_ix: int) -> dict:
+    """SlashStake { challenge_ref } (constructor 5)."""
+    return redeemer_json(5, [output_reference_json(challenge_tx_hash, challenge_tx_ix)])
+
+
+# LockForChallenge (constructor 6): the transaction opens a challenge
+# against the stake.
+LOCK_FOR_CHALLENGE = redeemer_json(6)
+
+
+def release_challenge_redeemer(challenge_tx_hash: str, challenge_tx_ix: int) -> dict:
+    """ReleaseChallenge { challenge_ref } (constructor 7): the challenge
+    closes without CapabilityFalsified."""
+    return redeemer_json(7, [output_reference_json(challenge_tx_hash, challenge_tx_ix)])
+
 
 # Endorsement mint redeemers
 MINT_ENDORSEMENT_TOKEN = redeemer_json(0)

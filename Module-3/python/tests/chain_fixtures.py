@@ -305,7 +305,8 @@ def cross_refs_utxo(wallet: Address) -> UTxO:
 
 
 def stake_utxo(agent_id: bytes, owner_key_hash: bytes, amount: int = 100 * AP3X,
-               capabilities=("code_review", "testing"), last_updated: int = LO - vi.DAYS_7_MS) -> UTxO:
+               capabilities=("code_review", "testing"), last_updated: int = LO - vi.DAYS_7_MS,
+               challenge_locks=()) -> UTxO:
     datum = StakeDatum(
         agent_did=agent_id,
         owner_credential=VerificationKeyCredential(owner_key_hash),
@@ -313,6 +314,7 @@ def stake_utxo(agent_id: bytes, owner_key_hash: bytes, amount: int = 100 * AP3X,
         staked_capabilities=IndefiniteList([c.encode() for c in capabilities]),
         last_updated=last_updated,
         history_points=0,
+        challenge_locks=IndefiniteList(list(challenge_locks)),
     )
     token = bytes.fromhex(derive_stake_token_name(agent_id.hex()))
     return utxo_at(address(REP_HASH), Value(amount, tokens(REP_HASH, token)), datum=RawCBOR(datum.to_cbor()))
@@ -320,7 +322,7 @@ def stake_utxo(agent_id: bytes, owner_key_hash: bytes, amount: int = 100 * AP3X,
 
 def endorsement_utxo(endorser_id: bytes, target_id: bytes, endorser_key_hash: bytes,
                      amount: int = 20 * AP3X, capabilities=("code_review",),
-                     created_at: int = LO - vi.DAY_MS) -> UTxO:
+                     created_at: int = LO - vi.DAY_MS, slashed_by=()) -> UTxO:
     datum = EndorsementValidatorDatumEndorsement(
         datum=EndorsementDatum(
             endorser_did=endorser_id,
@@ -329,10 +331,16 @@ def endorsement_utxo(endorser_id: bytes, target_id: bytes, endorser_key_hash: by
             stake_amount=amount,
             endorsed_capabilities=IndefiniteList([c.encode() for c in capabilities]),
             created_at=created_at,
+            slashed_by=IndefiniteList(list(slashed_by)),
         )
     )
     token = bytes.fromhex(derive_endorsement_token_name(endorser_id.hex(), target_id.hex()))
     return utxo_at(address(END_HASH), Value(amount, tokens(END_HASH, token)), datum=RawCBOR(datum.to_cbor()))
+
+
+def challenge_token(challenger_id: bytes, target_id: bytes, capability: str = "code_review") -> bytes:
+    """The challenge token name (also the name of its stake lock)."""
+    return bytes.fromhex(derive_challenge_token_name(challenger_id.hex(), target_id.hex(), capability))
 
 
 def challenge_utxo(challenger_id: bytes, target_id: bytes, challenger_key_hash: bytes,
@@ -451,12 +459,21 @@ class World:
         return vi.did_from_id(self.ids[name])
 
     def record(self, name: str, **changes):
-        """Put the record of an agent at the identity address."""
+        """Put the record of an agent at the identity address. The record
+        lists the wallet key with the transaction purpose (unless `keys` is
+        given), so the wallet key is a declared credential of the record."""
         if name in self.records:
             self.context.remove(self.records[name])
+        changes.setdefault("keys", (
+            vi.Key(vi.KeyType.ED25519, public_key(self.wallet), vi.PURPOSE_TRANSACTION),
+        ))
         datum = identity_record(public_key(self.ctrl[name]), **changes)
         self.records[name] = self.context.add(record_utxo(self.ids[name], datum))
         return self.records[name]
+
+    def lock_b(self, capability: str = "code_review") -> bytes:
+        """The lock (challenge token name) of B's challenge against A."""
+        return challenge_token(self.ids["B"], self.ids["A"], capability)
 
     def client(self, wallet=None, **kwargs) -> OfflineClient:
         return OfflineClient(self.context, wallet or self.wallet, self.state, **kwargs)
@@ -477,6 +494,7 @@ class World:
             staked_capabilities=IndefiniteList([b"code_review"]),
             last_updated=0,
             history_points=0,
+            challenge_locks=IndefiniteList([]),
         )
         return self.context.add(
             utxo_at(address(REP_HASH), Value(2 * AP3X), datum=RawCBOR(datum.to_cbor()))

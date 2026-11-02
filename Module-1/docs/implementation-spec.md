@@ -7,6 +7,15 @@
 **Phase**: 1 (Traction — requires ~10 active agents)
 **Target**: Vector eUTXO L2
 
+> **Note (identity registry).** The agent registry of this draft is now the
+> identity registry (Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in
+> agents-marketplace). Where this document names an Agent Registry UTxO, a
+> DID check or a registry NFT, the current contracts read the agent's
+> identity record (did:vector) and its ancestors as reference inputs, need
+> the effective status Active over a validity range of at most one hour, and
+> accept only a declared credential. The current rules are in `README.md`,
+> `deploy/DEPLOY.md` and `contracts/tests/identity-party.md`.
+
 ---
 
 ## 1. Executive Summary

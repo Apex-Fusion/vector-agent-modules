@@ -219,6 +219,25 @@ def test_cross_refs_must_name_the_deployment(world):
         gi.find_cross_refs([stale, world.oracle], world.deployment)
 
 
+def test_cross_refs_have_five_fields_with_the_endorsement_hash_last(world):
+    """GovernanceCrossRefs: proposal_validator_hash, critique_validator_hash,
+    proposal_mint_hash, critique_mint_hash, endorsement_validator_hash."""
+    refs = world.deployment.cross_refs
+    tree = refs.to_data()
+    assert tree.tag == 121 and len(tree.value) == 5
+    assert tree.value[4] == world.deployment.endorsement_spend.hash
+    assert gi.CrossRefs.from_data(gi.inline_datum(tree)) == refs
+    # The 4-field datum of an older deployment does not decode and never
+    # counts as the CrossRefs output of this deployment.
+    old = gi.inline_datum(gi.vid.constr(0, tree.value[:4]))
+    with pytest.raises(gi.GovernanceDatumError):
+        gi.CrossRefs.from_data(old)
+    stale = dataclasses.replace(world.cross_refs, output=dataclasses.replace(
+        world.cross_refs.output, datum=old))
+    with pytest.raises(gi.MissingReferenceError, match="endorsement_spend"):
+        gi.find_cross_refs([stale], world.deployment)
+
+
 def test_oracle_record_needs_the_record_token(world):
     assert gi.find_oracle(world.chain.utxos(world.deployment.oracle_address), world.deployment) == world.oracle
     with pytest.raises(gi.MissingReferenceError, match="no oracle record"):

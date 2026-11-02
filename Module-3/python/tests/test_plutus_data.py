@@ -9,6 +9,9 @@ from pycardano.serialization import IndefiniteList, RawCBOR
 
 from reputation_staking.models import ProtocolParamsInfo
 from reputation_staking.plutus_data import (
+    AuditAuditorWins,
+    AuditChallengeDatum,
+    AuditResolved,
     BurnChallengeTokenRedeemer,
     ChallengeSpendRedeemer,
     CreateStakeRedeemer,
@@ -20,17 +23,24 @@ from reputation_staking.plutus_data import (
     ExpireChallengeRedeemer,
     HistoryBonusDatum,
     HistoryBonusSourceChallengeWon,
+    InlineStakeCredential,
+    LockForChallengeRedeemer,
     MintChallengeTokenRedeemer,
     MintEndorsementTokenRedeemer,
     MintHistoryBonusRedeemer,
     MintStakeTokenRedeemer,
+    NoStakeCredential,
     OutputReference,
+    PlutusAddress,
+    ReleaseChallengeRedeemer,
     RepChallengeOutcomeVerified,
+    RepChallengeStateEscalated,
     RepChallengeStateOpen,
     RepChallengeStateResolved,
     ReputationChallengeDatum,
     ReputationConfig,
     ResolveChallengeRedeemer,
+    SomeStakeCredential,
     StakeDatum,
     VerificationKeyCredential,
     WithdrawEndorsementRedeemer,
@@ -46,6 +56,49 @@ import deploy_common  # noqa: E402
 VKEY_HASH = bytes.fromhex("2ef77ec4340057363c3824919a61db70ee9683ee9b7d15283aa91931")
 AGENT_A_DID = bytes.fromhex("036dc41f85740d155904b4dff933c592ed3874bdea3b888724ed936ec6a08358")
 AGENT_B_DID = bytes.fromhex("72f261c505ca9be49d7ba4bd38184bb97923fe3247862642e1ddc25fccd784b3")
+
+
+class TestWave4Codecs:
+    """The W4 contract changes: stake lock redeemers, Escalated with the
+    claim token name, and the Module 1 Resolved state with refund_to."""
+
+    def test_lock_redeemers(self):
+        ref = OutputReference(transaction_id=b"\xaa" * 32, output_index=2)
+        assert cbor2.loads(LockForChallengeRedeemer().to_cbor()) == cbor2.CBORTag(127, [])
+        release = cbor2.loads(ReleaseChallengeRedeemer(challenge_ref=ref).to_cbor())
+        assert release.tag == 1280 and release.value[0].value == [b"\xaa" * 32, 2]
+
+    def test_escalated_holds_the_claim_token_name(self):
+        state = RepChallengeStateEscalated(audit_claim_token=b"\x0c" * 32)
+        assert cbor2.loads(state.to_cbor()) == cbor2.CBORTag(122, [b"\x0c" * 32])
+
+    def test_module1_resolved_state_with_refund_to(self):
+        refund_to = PlutusAddress(
+            payment_credential=VerificationKeyCredential(VKEY_HASH),
+            stake_credential=SomeStakeCredential(
+                InlineStakeCredential(VerificationKeyCredential(b"\x05" * 28))),
+        )
+        datum = AuditChallengeDatum(
+            claim_ref=OutputReference(transaction_id=b"\xaa" * 32, output_index=0),
+            auditor_did=AGENT_B_DID,
+            auditor_credential=VerificationKeyCredential(VKEY_HASH),
+            stake_amount=50_000_000,
+            evidence_hash=b"\x01" * 32,
+            evidence_uri=b"ipfs://e",
+            challenged_at=1000,
+            resolution_deadline=2000,
+            eligible_jurors=IndefiniteList([b"\x02" * 32]),
+            state=AuditResolved(verdict=AuditAuditorWins(), refund_to=refund_to),
+            claim_token=b"\x0c" * 32,
+        )
+        decoded = cbor2.loads(datum.to_cbor())
+        assert len(decoded.value) == 11 and decoded.value[10] == b"\x0c" * 32
+        state = decoded.value[9]
+        assert state.tag == 124 and len(state.value) == 2  # Resolved { verdict, refund_to }
+        assert state.value[0] == cbor2.CBORTag(122, [])
+        assert AuditChallengeDatum.from_cbor(datum.to_cbor()) == datum
+        enterprise = PlutusAddress(VerificationKeyCredential(VKEY_HASH), NoStakeCredential())
+        assert cbor2.loads(enterprise.to_cbor()).value[1] == cbor2.CBORTag(122, [])
 
 
 class TestOutputReference:
@@ -82,12 +135,14 @@ class TestStakeDatum:
             staked_capabilities=IndefiniteList([b"code_review"]),
             last_updated=1775799692000,
             history_points=0,
+            challenge_locks=IndefiniteList([b"\x0c" * 32]),
         )
         cbor_bytes = datum.to_cbor()
         restored = StakeDatum.from_cbor(cbor_bytes)
         assert restored.agent_did == AGENT_A_DID
         assert restored.stake_amount == 10_000_000
         assert restored.history_points == 0
+        assert list(restored.challenge_locks) == [b"\x0c" * 32]
 
     def test_field_count(self):
         datum = StakeDatum(
@@ -97,16 +152,19 @@ class TestStakeDatum:
             staked_capabilities=IndefiniteList([]),
             last_updated=0,
             history_points=0,
+            challenge_locks=IndefiniteList([]),
         )
         decoded = cbor2.loads(datum.to_cbor())
-        assert len(decoded.value) == 6
+        # challenge_locks is the last of 7 fields
+        assert len(decoded.value) == 7
+        assert list(decoded.value[6]) == []
 
 
 class TestEndorsementValidatorDatumNesting:
     """Critical test: Aiken sum types use NESTED Constr encoding."""
 
     def test_endorsement_variant_nested(self):
-        """Endorsement(datum) = Constr(0, [Constr(0, [6 fields])])."""
+        """Endorsement(datum) = Constr(0, [Constr(0, [7 fields])])."""
         inner = EndorsementDatum(
             endorser_did=AGENT_B_DID,
             endorser_credential=VerificationKeyCredential(VKEY_HASH),
@@ -114,6 +172,7 @@ class TestEndorsementValidatorDatumNesting:
             stake_amount=5_000_000,
             endorsed_capabilities=IndefiniteList([b"code_review"]),
             created_at=1000,
+            slashed_by=IndefiniteList([b"\x0c" * 32]),
         )
         wrapper = EndorsementValidatorDatumEndorsement(datum=inner)
         decoded = cbor2.loads(wrapper.to_cbor())
@@ -121,10 +180,12 @@ class TestEndorsementValidatorDatumNesting:
         assert decoded.tag == 121
         outer_fields = decoded.value
         assert len(outer_fields) == 1
-        # Inner: tag 121 (constructor 0) with 6 fields
+        # Inner: tag 121 (constructor 0) with 7 fields, slashed_by last
         inner_decoded = outer_fields[0]
         assert inner_decoded.tag == 121
-        assert len(inner_decoded.value) == 6
+        assert len(inner_decoded.value) == 7
+        assert list(inner_decoded.value[6]) == [b"\x0c" * 32]
+        assert EndorsementValidatorDatumEndorsement.from_cbor(wrapper.to_cbor()) == wrapper
 
     def test_challenge_variant_nested(self):
         """Challenge(datum) = Constr(1, [Constr(0, [13 fields])])."""
@@ -306,6 +367,7 @@ class TestProtocolParamsRecord:
             staked_capabilities=IndefiniteList([b"x"]),
             last_updated=2,
             history_points=0,
+            challenge_locks=IndefiniteList([]),
         )
         assert datum_cbor(datum) == datum.to_cbor()
         assert datum_cbor(RawCBOR(datum.to_cbor())) == datum.to_cbor()

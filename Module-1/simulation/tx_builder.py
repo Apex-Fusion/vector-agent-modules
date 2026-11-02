@@ -7,10 +7,12 @@ Extracted from testnet/deploy_and_run_v10.py and generalized for simulation use.
 Identity registry (Part 2 §3.8, §7): claim submission, challenge opening and
 juror registration read the agent's identity record and its ancestors as
 reference inputs. Identity records are created with ``build_register_identity``.
-``build_consent_update`` makes Module-1 a party of a record, and
-``build_apply_verdict`` applies a verdict that a challenge resolution minted.
-The verdict datum and the ``identity_party`` redeemers are in
-``simulation.identity_party``; the record format is in
+``build_consent_update`` makes Module-1 a party of a record.
+``build_apply_verdict`` applies a verdict that an oracle resolution
+(OracleResolve) minted, and ``build_reclaim_verdict`` returns the AP3X of a
+verdict output after its ``expires_at``. A jury resolution (ResolveJury)
+mints no verdict. The verdict datum and the ``identity_party`` redeemers are
+in ``simulation.identity_party``; the record format is in
 ``simulation.vector_identity``.
 """
 import cbor2
@@ -24,7 +26,9 @@ from pycardano import (
     UTxO, RawCBOR, Redeemer,
     MultiAsset, Asset, AssetName, ScriptHash, Value,
     ExecutionUnits, PaymentVerificationKey, Withdrawals,
+    VerificationKeyHash,
 )
+from pycardano.address import PointerAddress
 from pycardano.utils import min_lovelace_post_alonzo
 
 from simulation import identity_party
@@ -498,6 +502,26 @@ def challenge_datum_fields(challenge_utxo) -> list:
     return list(fields)
 
 
+def resolved_refund_to(state) -> "identity_party.PlutusAddress":
+    """The ``refund_to`` of a ``Resolved { verdict, refund_to }`` state
+    (field 9 of a ChallengeDatum, CBORTag 124). Raises ValueError for
+    another shape, for example the one-field ``Resolved { verdict }`` of a
+    Module-1 deployment before the refund rule."""
+    payload = getattr(state, "value", None)
+    if getattr(state, "tag", None) != 124 or not isinstance(payload, list):
+        raise ValueError(f"the challenge state is not Resolved: {state!r}")
+    if len(payload) != 2:
+        raise ValueError(
+            f"Resolved must hold {{verdict, refund_to}}; got {len(payload)} "
+            f"field(s). A Resolved state without refund_to comes from a "
+            f"Module-1 deployment before the refund rule."
+        )
+    try:
+        return identity_party.decode_address(payload[1], "Resolved.refund_to")
+    except vector_identity.IdentityDecodeError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 def _single_token(utxo, policy: bytes) -> bytes:
     """The asset name of the only token of ``policy`` in ``utxo``, with
     quantity 1. Raises ValueError otherwise."""
@@ -594,18 +618,45 @@ def record_output(context, deployment: DeploymentState, agent_id: bytes,
     return _output_with_min_ada(context, deployment.identity_addr, ma, datum, floor)
 
 
-def _verdict_output(context, deployment: DeploymentState,
-                    verdict: identity_party.IdentityVerdict) -> TransactionOutput:
-    """The verdict output (Part 2 §3.8): at the exact enterprise address of
-    ``identity_party``, with AP3X and the verdict token only, the verdict as
-    inline datum and no reference script. The AP3X is the ledger minimum of
-    the output."""
-    ma = MultiAsset()
-    asset = Asset()
-    asset[AssetName(verdict.token_name())] = 1
-    ma[ScriptHash(deployment.identity.identity_party_hash)] = asset
-    datum = RawCBOR(verdict.datum_cbor())
-    return _output_with_min_ada(context, deployment.identity_party_addr, ma, datum, 0)
+def plutus_address(address: Address) -> identity_party.PlutusAddress:
+    """The Plutus ``Address`` of a pycardano address: its payment part and
+    its stake part (none, a credential or a pointer). Raises ValueError for
+    an address without a payment part (a reward address)."""
+    payment, stake = address.payment_part, address.staking_part
+    if payment is None:
+        raise ValueError(f"{address} has no payment part")
+
+    def credential(part) -> identity_party.PlutusCredential:
+        return identity_party.PlutusCredential(
+            bytes(part.payload), script=isinstance(part, ScriptHash),
+        )
+
+    if stake is None:
+        stake_part = None
+    elif isinstance(stake, PointerAddress):
+        stake_part = identity_party.StakePointer(stake.slot, stake.tx_index, stake.cert_index)
+    else:
+        stake_part = credential(stake)
+    return identity_party.PlutusAddress(credential(payment), stake_part)
+
+
+def address_from_plutus(address: identity_party.PlutusAddress) -> Address:
+    """The pycardano address of a Plutus ``Address`` (network tag
+    ``NETWORK``)."""
+    def part(credential: identity_party.PlutusCredential):
+        return (ScriptHash(credential.hash) if credential.script
+                else VerificationKeyHash(credential.hash))
+
+    stake = address.stake
+    if stake is None:
+        staking = None
+    elif isinstance(stake, identity_party.StakePointer):
+        staking = PointerAddress(
+            stake.slot_number, stake.transaction_index, stake.certificate_index,
+        )
+    else:
+        staking = part(stake)
+    return Address(part(address.payment), staking, network=NETWORK)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2482,8 +2533,10 @@ def build_resolve_jury(
       5. Exactly 1 output at challenge script addr (single_challenge_output
          guard, L624-627). Fields [0..8] and [10] (claim_token) preserved
          byte-identically from input; field[9] flips from Voting →
-         Resolved { verdict } = CBORTag(124, [verdict_cbor]). Challenge NFT
-         preserved (qty=1); coin == auditor stake (ch.stake_amount).
+         Resolved { verdict, refund_to } = CBORTag(124, [verdict_cbor,
+         address]). Challenge NFT preserved (qty=1); coin == auditor stake
+         (ch.stake_amount). The wallet funds that coin, so ``refund_to`` is
+         ``wallet_addr``: CleanupResolved pays the coin back to it.
       6. Path B EXACT EQUALITY: validator uses `==` not `>=` on output
          amounts. NO PADDING. The payout and fee outputs must match the
          computed amounts to the byte.
@@ -2502,18 +2555,11 @@ def build_resolve_jury(
              claimer_out    = claim_stake - half_fee
              auditor_out    = auditor_stake - half_fee
              (2 payout outputs + 1 jury_pool output with TOTAL fee)
-      8. Verdict (Part 2 §3.8; identity_party.ak MintVerdict): when the
-         deployment's verdict policy gives a rule for the outcome
-         (AuditorWins names the claimer, ClaimerWins names the auditor;
-         Inconclusive never), the transaction also mints exactly one
-         verdict token under M1 (redeemer MintVerdict, reference script
-         identity_party), named ``blake2b_256(serialise(verdict))``, to a
-         verdict output at the exact enterprise identity_party address
-         (AP3X + the token only, inline datum = verdict, no reference
-         script; it is the last explicit output). The identity
-         configuration record is a reference input (the challenge
-         validator reads M1 there), and CrossValidatorRefs is one too
-         (identity_party reads the claim hash there).
+      8. No verdict (Part 2 §3.8): only an oracle resolution mints a
+         verdict. ResolveJury mints no token under M1 and needs no identity
+         configuration record.
+      9. The claim input is the claim that holds the challenge's
+         claim_token (``bound_claim``); its token is burned.
 
     ───────────────────────────────────────────────────────────────────
     Client-side guards (fail FAST with ValueError before submit):
@@ -2530,8 +2576,6 @@ def build_resolve_jury(
       - any juror's revealed_verdict is None → "revealed_verdict" error
       - duplicate juror_did across the 5 refs → "duplicate did" error
       - juror_did not in challenge's selected_jurors → "not selected"
-      - a verdict without the identity configuration record, or with a
-        record that names another hash → ``IdentityError``
 
     Returns (all keys present):
         {
@@ -2541,9 +2585,7 @@ def build_resolve_jury(
           "jury_fee": int,
           "claimer_payout": int | None,   # None when AuditorWins
           "auditor_payout": int | None,   # None when ClaimerWins
-          "verdict_minted": bool,
-          "identity_verdict": dict | None,   # IdentityVerdict.to_json()
-          "verdict_ref": str | None,         # f"{tx_hash}#<index>"
+          "refund_to": str,               # bech32 of wallet_addr
         }
 
     Reference: testnet/deploy_and_run_v13.py::step7_resolve_jury (L1431-
@@ -2798,23 +2840,8 @@ def build_resolve_jury(
     validity_start = current_slot - 60
     ttl = current_slot + 3600
 
-    # ── Verdict (Part 2 §3.8): the verdict policy rule for the outcome.
-    # AuditorWins names the claimer (claim datum field[0]), ClaimerWins
-    # names the auditor (challenge datum field[1]); the challenge is the
-    # output reference of the spent challenge input.
-    identity_verdict = identity_party.resolution_verdict(
-        deployment.verdict_policy, verdict_name,
-        claimer_did=bytes(clm_fields[0]),
-        auditor_did=bytes(chal_fields[1]),
-        challenge_tx_id=bytes.fromhex(chal_txid_hex),
-        challenge_index=chal_idx,
-    )
-    config_utxo = None
-    if identity_verdict is not None:
-        # The challenge validator reads M1 from the configuration record;
-        # refuse before any side effect when the record is missing.
-        config_utxo = find_config_record(context, deployment)
-
+    # No verdict: a jury resolution never mints a verdict (Part 2 §3.8;
+    # only OracleResolve does).
     ensure_collateral(context, skey, vkey, wallet_addr)
 
     # Resolve the claimer credential (field[1] in claim datum) and the
@@ -2837,7 +2864,6 @@ def build_resolve_jury(
         )
     auditor_vkh = bytes(auditor_cred_field.value[0])
 
-    from pycardano import VerificationKeyHash
     claimer_addr = Address(
         payment_part=VerificationKeyHash(claimer_vkh),
         network=NETWORK,
@@ -2848,13 +2874,16 @@ def build_resolve_jury(
     )
 
     # ── Resolved continuing-challenge datum: preserve [0..8] and [10]
-    # (claim_token), flip [9].
+    # (claim_token), flip [9] to Resolved { verdict, refund_to }. The
+    # wallet funds the AP3X that the Resolved output keeps (the payouts use
+    # both stakes), so CleanupResolved pays that AP3X back to wallet_addr.
+    refund_to = plutus_address(wallet_addr)
     verdict_inner_cbor = cbor2.CBORTag(verdict_tag, [])
-    resolved_state = cbor2.CBORTag(124, [verdict_inner_cbor])
+    resolved_state = cbor2.CBORTag(124, [verdict_inner_cbor, refund_to.data()])
     resolved_fields = list(chal_fields)
     resolved_fields[9] = resolved_state
     resolved_datum = RawCBOR(
-        cbor2.dumps(cbor2.CBORTag(121, resolved_fields))
+        vector_identity.serialise_data(cbor2.CBORTag(121, resolved_fields))
     )
 
     # Continuing value: Path B — coin == auditor_stake, multi_asset =
@@ -2865,20 +2894,11 @@ def build_resolve_jury(
     chl_nft_ma[challenge_policy_sh] = chl_nft_asset
     resolved_value = Value(coin=auditor_stake, multi_asset=chl_nft_ma)
 
-    # Mint: the claim NFT burn (qty = -1 under claim policy) and, with a
-    # verdict, the verdict token (qty = +1 under M1).
+    # Mint: only the claim NFT burn (qty = -1 under claim policy).
     mint_ma = MultiAsset()
     clm_burn_asset = Asset()
     clm_burn_asset[clm_token_an] = -1
     mint_ma[claim_policy_sh] = clm_burn_asset
-    mint_policies = [bytes(claim_policy_sh)]
-    if identity_verdict is not None:
-        m1_policy = ScriptHash(deployment.identity.identity_party_hash)
-        verdict_asset = Asset()
-        verdict_asset[AssetName(identity_verdict.token_name())] = 1
-        mint_ma[m1_policy] = verdict_asset
-        mint_policies.append(bytes(m1_policy))
-    mint_policies.sort()
 
     # Redeemer payloads (byte-identical reuse across spend+mint for
     # ForfeitClaim; ChallengeAction::ResolveJury stands alone).
@@ -2895,7 +2915,7 @@ def build_resolve_jury(
         resolved_challenge_ref uses #0) is the continuing Resolved
         challenge UTxO. The payout outputs are pure-lovelace (Path B, NO
         padding): the validator uses `==` so any min-UTxO absorber would
-        fail. The verdict output comes last."""
+        fail."""
         outs = [TransactionOutput(challenge_addr, resolved_value, datum=resolved_datum)]
         if verdict_name == "ClaimerWins":
             outs.append(TransactionOutput(claimer_addr, Value(coin=claimer_payout_amt)))
@@ -2907,13 +2927,9 @@ def build_resolve_jury(
             outs.append(TransactionOutput(claimer_addr, Value(coin=claimer_payout_amt)))
             outs.append(TransactionOutput(auditor_addr, Value(coin=auditor_payout_amt)))
             outs.append(TransactionOutput(jury_pool_addr, Value(coin=jury_fee)))
-        if identity_verdict is not None:
-            outs.append(_verdict_output(context, deployment, identity_verdict))
         return outs
 
-    verdict_index = None if identity_verdict is None else len(make_outputs()) - 1
-
-    def build_tx(resolve_r, forfeit_r, claim_mint_r, verdict_mint_r):
+    def build_tx(resolve_r, forfeit_r, claim_mint_r):
         b = TransactionBuilder(context)
         b.fee_buffer = 500_000
         # Script spend: challenge UTxO under the challenge spend
@@ -2929,10 +2945,9 @@ def build_resolve_jury(
         # Fee / change inputs.
         for u in wallet_utxos:
             b.add_input(u)
-        # Reference inputs: cross_refs (validator-hash lookup; identity_party
-        # reads the claim hash there), params (shared-builder consistency),
-        # and every revealed juror UTxO (validator iterates
-        # tx.reference_inputs to tally votes).
+        # Reference inputs: cross_refs (validator-hash lookup), params
+        # (shared-builder consistency), and every revealed juror UTxO
+        # (validator iterates tx.reference_inputs to tally votes).
         b.reference_inputs.add(deployment.cross_refs_utxo)
         b.reference_inputs.add(deployment.params_utxo)
         for j_utxo in juror_utxos:
@@ -2941,10 +2956,6 @@ def build_resolve_jury(
         # as the claim spend).
         b.mint = mint_ma
         b.add_minting_script(deployment.claim_ref_utxo, claim_mint_r)
-        if identity_verdict is not None:
-            # Verdict mint under M1 and the configuration record (M1).
-            b.reference_inputs.add(config_utxo)
-            b.add_minting_script(deployment.identity_party_ref_utxo, verdict_mint_r)
 
         for out in make_outputs():
             b.add_output(out)
@@ -2955,17 +2966,13 @@ def build_resolve_jury(
         return b
 
     def redeemers(units=None):
-        """The four redeemers; ``units`` maps a name to ExecutionUnits."""
+        """The three redeemers; ``units`` maps a name to ExecutionUnits."""
         units = units or {}
         default = ExecutionUnits(mem=500_000, steps=200_000_000)
         return (
             Redeemer(resolve_red_cbor, units.get("resolve", default)),
             Redeemer(forfeit_red_cbor, units.get("forfeit", default)),
             Redeemer(forfeit_red_cbor, units.get("claim_mint", default)),
-            _identity_redeemer(
-                identity_party.mint_verdict_redeemer(),
-                units.get("verdict_mint", default),
-            ),
         )
 
     builder = build_tx(*redeemers())
@@ -2983,18 +2990,13 @@ def build_resolve_jury(
         )
 
     # Match budgets back by redeemer pointer: spend indices follow the
-    # sorted inputs, mint indices the sorted policy IDs.
+    # sorted inputs; the claim policy is the only mint policy.
     all_inputs = [challenge_utxo, claim_utxo] + list(wallet_utxos)
     units = {
         "resolve": _units(budgets, "spend", _input_index(all_inputs, challenge_utxo)),
         "forfeit": _units(budgets, "spend", _input_index(all_inputs, claim_utxo)),
-        "claim_mint": _units(budgets, "mint", mint_policies.index(bytes(claim_policy_sh))),
+        "claim_mint": _units(budgets, "mint", 0),
     }
-    if identity_verdict is not None:
-        units["verdict_mint"] = _units(
-            budgets, "mint",
-            mint_policies.index(deployment.identity.identity_party_hash),
-        )
 
     builder2 = build_tx(*redeemers(units))
     tx = builder2.build_and_sign([skey], change_address=wallet_addr)
@@ -3008,13 +3010,7 @@ def build_resolve_jury(
         "jury_fee": int(jury_fee),
         "claimer_payout": result_claimer_payout,
         "auditor_payout": result_auditor_payout,
-        "verdict_minted": identity_verdict is not None,
-        "identity_verdict": (
-            None if identity_verdict is None else identity_verdict.to_json()
-        ),
-        "verdict_ref": (
-            None if verdict_index is None else f"{tx_hash}#{verdict_index}"
-        ),
+        "refund_to": str(wallet_addr),
     }
 
 
@@ -3050,14 +3046,16 @@ def build_apply_verdict(
         reason 64, or the tombstone with ``Revoked { Script { M1 }, 64, lo }``)
         and the AP3X of the input, raised to the floor of ``record_output``
         when needed (the value is kept).
-    The validity range is at most one hour.
+    The validity range is at most one hour and ends at ``expires_at`` of the
+    verdict at the latest (an application needs ``hi <= expires_at``).
 
     Refusals before any side effect (``IdentityError`` or ``ValueError``):
     the output is not at the identity_party address or does not hold
     exactly one verdict token; the verdict datum does not hash to the token
-    name; the agent has no record; the record is a tombstone or has no
-    Module-1 party with the right; a hold would end before the upper
-    bound; the configuration record is missing or names another hash.
+    name; the verdict expired (use ``build_reclaim_verdict``); the agent has
+    no record; the record is a tombstone or has no Module-1 party with the
+    right; a hold would end before the upper bound; the configuration
+    record is missing or names another hash.
 
     Returns: {tx_hash, record_ref, agent_id, agent_did, action, until,
               party_index, verdict_token_hex, module1_withdrawal}
@@ -3074,7 +3072,15 @@ def build_apply_verdict(
     verdict = identity_party.verdict_from_output(verdict_utxo.output.datum, token_name)
 
     current_slot = context.last_block_slot
-    validity_start, ttl, lo, hi = identity_window(current_slot, window_slots)
+    expiry_slot = posix_ms_to_slot(verdict.expires_at)
+    if expiry_slot <= current_slot - VALIDITY_LAG_SLOTS:
+        raise vector_identity.IdentityError(
+            f"the verdict of {verdict_utxo_ref} expired at {verdict.expires_at}; "
+            f"it cannot apply any more. Reclaim its AP3X with build_reclaim_verdict."
+        )
+    validity_start, ttl, lo, hi = identity_window(
+        current_slot, window_slots, ttl_cap=expiry_slot,
+    )
     record = identity_record(context, deployment, verdict.agent)
     application = identity_party.verdict_application(verdict, record, m1, lo, hi)
     config_utxo = find_config_record(context, deployment)
@@ -3145,6 +3151,113 @@ def build_apply_verdict(
         "party_index": application.party_index,
         "verdict_token_hex": token_name.hex(),
         "module1_withdrawal": withdrawal_amount,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# ACTION: RECLAIM VERDICT (identity_party BurnVerdict after expires_at)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def build_reclaim_verdict(
+    context: OgmiosContext, deployment: DeploymentState,
+    skey, vkey, wallet_addr,
+    verdict_utxo_ref: str,
+    *,
+    window_slots: int = IDENTITY_WINDOW_SLOTS,
+) -> dict:
+    """Build and submit the reclaim of an expired verdict output (Part 2
+    §3.8; ``reclaim_ok`` of identity_party.ak). Anybody can submit it after
+    the ``expires_at`` of the verdict; the wallet pays the fees.
+
+    The transaction:
+      - spends the verdict output (spend redeemer Constr 0) and burns its
+        token (-1 under M1, redeemer ``VerdictMint.BurnVerdict``), with no
+        withdrawal of ``Script(M1)``;
+      - pays all AP3X of the verdict output to its ``deposit_to``, in one
+        output without datum;
+      - spends no other script input (the other inputs are wallet inputs);
+      - has a validity range of at most one hour whose lower bound is after
+        ``expires_at``.
+
+    Refusals before any side effect (``IdentityError``): the output is not
+    at the identity_party address or does not hold exactly one verdict
+    token; the verdict datum does not hash to the token name; the verdict
+    has not expired.
+
+    Returns: {tx_hash, deposit_to, amount, verdict_token_hex}
+    """
+    m1 = deployment.identity.identity_party_hash
+    txid_hex, idx_str = verdict_utxo_ref.split("#")
+    verdict_utxo = resolve_utxo(txid_hex, int(idx_str))
+    if verdict_utxo.output.address != deployment.identity_party_addr:
+        raise vector_identity.IdentityError(
+            f"{verdict_utxo_ref} is not at the identity_party address "
+            f"{deployment.identity_party_addr}"
+        )
+    token_name = _single_token(verdict_utxo, m1)
+    verdict = identity_party.verdict_from_output(verdict_utxo.output.datum, token_name)
+
+    # The lower bound must be after expires_at and not after the tip.
+    current_slot = context.last_block_slot
+    validity_start = max(
+        current_slot - VALIDITY_LAG_SLOTS, posix_ms_to_slot(verdict.expires_at) + 1,
+    )
+    if validity_start > current_slot:
+        raise vector_identity.IdentityError(
+            f"the verdict of {verdict_utxo_ref} expires at {verdict.expires_at}; "
+            f"a reclaim is possible only after that time"
+        )
+    ttl = validity_start + int(window_slots)
+    identity_party.check_reclaim(verdict, slot_to_posix_ms(validity_start), slot_to_posix_ms(ttl))
+
+    amount = _coin_of(verdict_utxo)
+    deposit_to = address_from_plutus(verdict.deposit_to)
+
+    ensure_collateral(context, skey, vkey, wallet_addr)
+    wallet_utxos = get_wallet_utxos_no_collateral(context, wallet_addr)
+
+    burn_ma = MultiAsset()
+    burn_asset = Asset()
+    burn_asset[AssetName(token_name)] = -1
+    burn_ma[ScriptHash(m1)] = burn_asset
+
+    def build_tx(units):
+        b = TransactionBuilder(context)
+        b.fee_buffer = 500_000
+        _add_script_input_with_fallback(
+            b, verdict_utxo, deployment.identity_party_ref_utxo,
+            _identity_redeemer(identity_party.verdict_spend_redeemer(), units.get("verdict")),
+        )
+        for u in wallet_utxos:
+            b.add_input(u)
+        b.mint = burn_ma
+        b.add_minting_script(
+            deployment.identity_party_ref_utxo,
+            _identity_redeemer(identity_party.burn_verdict_redeemer(), units.get("burn")),
+        )
+        # All AP3X of the verdict output to deposit_to, without datum.
+        b.add_output(TransactionOutput(deposit_to, Value(amount)))
+        b.required_signers = [vkey.hash()]
+        b.validity_start = validity_start
+        b.ttl = ttl
+        return b
+
+    builder = build_tx({})
+    _, budgets = evaluate_and_rebuild(builder, skey, vkey, wallet_addr, context)
+    all_inputs = [verdict_utxo] + list(wallet_utxos)
+    builder2 = build_tx({
+        "verdict": _units(budgets, "spend", _input_index(all_inputs, verdict_utxo)),
+        "burn": _units(budgets, "mint", 0),
+    })
+    tx = builder2.build_and_sign([skey], change_address=wallet_addr)
+    tx_hash = submit_tx(tx_to_bytes(tx))
+
+    return {
+        "tx_hash": tx_hash,
+        "deposit_to": str(deposit_to),
+        "amount": amount,
+        "verdict_token_hex": token_name.hex(),
     }
 
 
@@ -3467,19 +3580,20 @@ def build_cleanup_resolved(
 ) -> dict:
     """Build and submit a CleanupResolved transaction (v13 step9).
 
-    Consumes the Resolved challenge UTxO, burns the challenge NFT, and
-    lets the preserved auditor-stake lovelace flow back to the wallet as
-    change. No continuing output at the challenge script address — the
-    challenge is permanently removed from chain state.
+    Consumes the Resolved challenge UTxO, burns the challenge NFT, and pays
+    all AP3X of the Resolved output to the ``refund_to`` address of its
+    ``Resolved { verdict, refund_to }`` state (the funder of that AP3X in
+    ResolveJury), in one output without datum. No continuing output at the
+    challenge script address — the challenge is permanently removed from
+    chain state.
 
     ───────────────────────────────────────────────────────────────────
-    Validator ground truth (challenge.ak :: validate_cleanup_resolved,
-    L837-883):
+    Validator ground truth (challenge.ak :: validate_cleanup_resolved):
 
       1. PERMISSIONLESS (Phase 1.1, L857) — no oracle / auditor sig.
          required_signers contains ONLY the fee-payer's vkh.
-      2. Challenge state MUST be Resolved (CBORTag 124). Voting state
-         is rejected by the `state_ok` predicate (L846-850).
+      2. Challenge state MUST be Resolved { verdict, refund_to }
+         (CBORTag 124). Voting state is rejected.
       3. Time gate: tx_started_after(tx, challenged_at
                                           + resolution_deadline
                                           + cleanup_buffer).
@@ -3487,23 +3601,29 @@ def build_cleanup_resolved(
       4. Challenge NFT (qty=1) under the challenge policy MUST be burned
          (qty=-1) in the SAME tx. Redeemer bytes are IDENTICAL for the
          spend and the mint — both CBORTag(126, []).
-      5. NO continuing output at the challenge script address (L873-875,
-         `no_challenge_outputs`).
-      6. Challenge UTxO is SPENT (script input), NOT a reference input.
+      5. NO continuing output at the challenge script address
+         (`no_challenge_outputs`).
+      6. Challenge UTxO is SPENT (script input), NOT a reference input,
+         and it is the only script input.
+      7. An output at exactly ``refund_to``, without datum, holds at least
+         the AP3X of the Resolved output.
 
     ───────────────────────────────────────────────────────────────────
     Client-side guards (fail FAST with ValueError before submit):
 
       - resolved_challenge_utxo_ref malformed        → ValueError
       - challenge state != Resolved                  → "resolved" regex
+      - Resolved state without refund_to (an older deployment)
+                                                     → "refund_to"
       - current_slot <= cleanup_after_slot           → "cleanup"/"time"
       - challenge UTxO missing qty=1 NFT under chal  → "token"/"nft"
 
     Returns:
         {
           "tx_hash": str,
-          "recovered_coin": int,  # auditor stake preserved through
-                                  # ResolveJury; flows to wallet as change.
+          "recovered_coin": int,  # AP3X of the Resolved output, paid to
+                                  # refund_to.
+          "refund_to": str,       # bech32 of refund_to
         }
 
     Reference: testnet/deploy_and_run_v13.py::step9_cleanup_resolved
@@ -3555,6 +3675,7 @@ def build_cleanup_resolved(
             f"124 = Resolved; 127 = Voting). CleanupResolved requires "
             f"a Resolved challenge (challenge.ak L846-850)."
         )
+    refund_to = address_from_plutus(resolved_refund_to(state_field))
 
     # Extract time-gate fields from the datum.
     challenged_at_ms = int(chal_fields[6])
@@ -3645,12 +3766,15 @@ def build_cleanup_resolved(
         # spend script and the mint script (v13 L1690+L1694).
         b.mint = burn_ma
         b.add_minting_script(deployment.challenge_ref_utxo, mint_r)
+        # All AP3X of the Resolved output to refund_to, without datum
+        # (validate_cleanup_resolved `refund_paid`).
+        b.add_output(TransactionOutput(refund_to, Value(coin=recovered_coin)))
         # Permissionless — only the fee payer signs.
         b.required_signers = [vkey.hash()]
         b.validity_start = validity_start
         b.ttl = ttl
         # NOTE: NO continuing output at challenge_addr. The Resolved UTxO
-        # is consumed and the lovelace flows back to wallet as change.
+        # is consumed.
         return b
 
     default_units = ExecutionUnits(mem=500_000, steps=200_000_000)
@@ -3691,6 +3815,7 @@ def build_cleanup_resolved(
     return {
         "tx_hash": tx_hash,
         "recovered_coin": recovered_coin,
+        "refund_to": str(refund_to),
     }
 
 
@@ -5062,13 +5187,15 @@ def build_timeout_resolve(
         - state ∈ {PendingOracle, PendingJury, Voting{..}}
         - challenge NFT burned (qty=-1)
         - claim NFT burned (qty=-1) — ForfeitClaim runs atomically
+        - the claim input is the claim that holds the challenge's
+          claim_token (``bound_claim``)
         - claimer output coin == claim_stake (exact)
         - auditor output coin == ch.stake_amount (exact)
 
-      claim.ak :: validate_forfeit_claim (L419-495):
+      claim.ak :: validate_forfeit_claim:
         - state == Challenged
         - claim token burned
-        - challenge is resolving this tx (token_burned counts)
+        - the resolution of its own challenge runs in this tx
 
     Redeemer (both spend and claim burn use ForfeitClaim CBORTag(124)):
       - ChallengeAction::TimeoutResolve = Constr4 = CBORTag(125, [])
@@ -5171,6 +5298,16 @@ def build_timeout_resolve(
     if clm_token_an is None:
         raise ValueError(
             f"Claim UTxO {claim_utxo_ref} missing claim NFT."
+        )
+    # The claim input must hold the claim token that the challenge names
+    # (ChallengeDatum.claim_token): the contract accepts only that claim.
+    claim_token = bytes(chal_fields[CHALLENGE_CLAIM_TOKEN])
+    if bytes(clm_token_an) != claim_token:
+        raise ValueError(
+            f"Claim UTxO {claim_utxo_ref} holds the claim token "
+            f"{bytes(clm_token_an).hex()}, but the challenge names the "
+            f"claim_token {claim_token.hex()}. Pass the claim of this "
+            f"challenge."
         )
 
     # ── Burn multi-asset: -1 challenge token AND -1 claim token.

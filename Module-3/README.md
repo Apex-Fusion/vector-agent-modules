@@ -194,25 +194,34 @@ R(agent) = self_stake + endorsements - challenges + history_bonus - decay
 
 ## Contract Hashes
 
-**Mainnet:**
+The hashes below belong to the old deployment, which uses the legacy agent
+registry and the old holders. The current contracts do not accept them: they
+read the identity registry (`identity_hash`), and the deploy scripts apply a
+12-field `ReputationConfig`. A new deployment gets its hashes from the
+deployment inputs in `scripts/deploy_common.py` (`VECTOR_IDENTITY_HASH` and
+the `VECTOR_MODULE1_*` values of the new Module-1 deployment), in this order:
+identity registry, Module-1, Module-3, Module-6. The client reads the new
+values from the deploy state that the deploy scripts write.
+
+**Old deployment, mainnet:**
 ```
 reputation_validator:  5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093
 endorsement_validator: 77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf
 refs_token_policy:     09dce01a3c2f2fddeda34a547bb4a5ef9f156feae6c4f45d6d74af84
 ```
 
-**Testnet:**
+**Old deployment, testnet:**
 ```
 reputation_validator:  7e0d53b6797cd7707eb923b0ab044d4e03ef54cf115a6c14fadfb38e
 endorsement_validator: 715726f3670743b145b92d859cc5025128a99de88cd5ac42120258b4
 refs_token_policy:     b07ad1a1244a388d54463fce3c68aa8d4ddc5a3297159d20590d574f
 ```
 
-**Shared (both networks):**
+**Old deployment, shared (both networks):**
 ```
-agent_registry:        be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01
-treasury (stub):       ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6
-params_holder:         f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867
+agent_registry (legacy): be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01
+treasury (stub):         ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6
+params_holder:           f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867
 ```
 
 ## Folder Structure

@@ -1,9 +1,10 @@
 """Offline tests of the identity registry clients of the Module-1 simulation
 (Part 2 §3.4, §3.8, §7): identity Register (with and without Module-1
 consent), Consent Update, the identity checks of SubmitClaim, OpenChallenge
-and RegisterJuror, the verdict mint of ResolveJury, ApplyVerdict (suspend
-and revoke), the verdict datum and token name, the deployment values and
-the client-side refusals.
+and RegisterJuror, ResolveJury without a verdict, ApplyVerdict (suspend and
+revoke, until expires_at), the reclaim of an expired verdict, the verdict
+datum and token name, the Plutus address codec, the identity_party
+parameters, the deployment values and the client-side refusals.
 
 The tests build transactions against a fake chain context and inspect the
 TransactionBuilder; nothing is signed with real keys or submitted.
@@ -21,7 +22,9 @@ from pycardano import (
     Address, Asset, AssetName, MultiAsset, Network, PaymentSigningKey,
     PaymentVerificationKey, RawCBOR, ScriptHash, TransactionBuilder,
     TransactionId, TransactionInput, TransactionOutput, UTxO, Value,
+    VerificationKeyHash,
 )
+from pycardano.address import PointerAddress
 from pycardano.utils import min_lovelace_post_alonzo
 
 import simulation.tx_builder as txb
@@ -41,6 +44,27 @@ from simulation.tests.conftest import (
 LO = slot_to_posix_ms(CANNED_SLOT - txb.VALIDITY_LAG_SLOTS)
 HI = slot_to_posix_ms(CANNED_SLOT - txb.VALIDITY_LAG_SLOTS + txb.IDENTITY_WINDOW_SLOTS)
 M1 = IDENTITY_PARTY_HASH
+
+#: The deposit_to of the test verdicts: the address of the wallet that
+#: funded the verdict output in the oracle resolution.
+DEPOSIT_TO = ip.PlutusAddress(ip.PlutusCredential(b"\x5d" * 28), ip.PlutusCredential(b"\x5e" * 28))
+
+
+def _verdict(agent: bytes, action, duration: int, *, expires_at: int = HI + vi.DAY_MS,
+             challenge: bytes = b"\x77" * 32, index: int = 0) -> ip.IdentityVerdict:
+    """A verdict that has not expired over the window [LO, HI] by default."""
+    return ip.IdentityVerdict(agent, action, duration, challenge, index, DEPOSIT_TO, expires_at)
+
+
+def _deploy_script():
+    """scripts/identity_deploy.py as a module."""
+    spec = importlib.util.spec_from_file_location(
+        "identity_deploy",
+        Path(__file__).resolve().parents[2] / "scripts" / "identity_deploy.py",
+    )
+    deploy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deploy)
+    return deploy
 
 
 def _key(tag: bytes):
@@ -141,12 +165,7 @@ def test_placeholder_hash_is_refused():
 
 
 def test_auditing_config_matches_the_deploy_script_encoding():
-    spec = importlib.util.spec_from_file_location(
-        "identity_deploy",
-        Path(__file__).resolve().parents[2] / "scripts" / "identity_deploy.py",
-    )
-    deploy = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(deploy)
+    deploy = _deploy_script()
     config = {
         "identity": dict(V13_DEPLOYMENT["identity"]),
         "module1": dict(V13_DEPLOYMENT["module1"]),
@@ -155,6 +174,39 @@ def test_auditing_config_matches_the_deploy_script_encoding():
     expected = deploy.encode(deploy.auditing_config(config))
     dep = txb.DeploymentState(V13_DEPLOYMENT)
     assert dep.auditing_config.cbor() == expected
+
+
+def test_identity_party_parameters_follow_the_deploy_plan():
+    """identity_party takes (AuditingConfig, challenge hash, claim hash), as
+    scripts/identity_deploy.py plan applies them; a plan.json "parameters"
+    object in the manifest must name the same three values."""
+    deploy = _deploy_script()
+    ident = load_identity_deployment(V13_DEPLOYMENT)
+    challenge = bytes.fromhex(V13_DEPLOYMENT["hashes"]["challenge"])
+    claim = bytes.fromhex(V13_DEPLOYMENT["hashes"]["claim"])
+    params = ident.identity_party_parameters(challenge, claim)
+    assert params == (ident.auditing_config.cbor(), deploy.encode(challenge), deploy.encode(claim))
+    with pytest.raises(ValueError, match="claim hash"):
+        ip.identity_party_parameters(ident.auditing_config, challenge, claim[:27])
+
+    plan = dict(zip(
+        ("auditing_config_cbor", "identity_party_challenge_hash_cbor",
+         "identity_party_claim_hash_cbor"),
+        (p.hex() for p in params),
+    ))
+    manifest = __import__("copy").deepcopy(V13_DEPLOYMENT)
+    manifest["parameters"] = dict(plan)
+    assert load_identity_deployment(manifest) == ident
+    # A plan for an identity_party with two parameters (no claim hash).
+    del manifest["parameters"]["identity_party_claim_hash_cbor"]
+    with pytest.raises(IdentityConfigError, match="claim hash"):
+        load_identity_deployment(manifest)
+    # The claim hash in the place of the challenge hash.
+    manifest["parameters"] = dict(
+        plan, identity_party_challenge_hash_cbor=plan["identity_party_claim_hash_cbor"],
+    )
+    with pytest.raises(IdentityConfigError, match="identity_party_challenge_hash_cbor"):
+        load_identity_deployment(manifest)
 
 
 def test_reward_balance_parser_reads_both_ogmios_formats():
@@ -172,10 +224,19 @@ def test_reward_balance_parser_reads_both_ogmios_formats():
 
 
 def test_verdict_token_name_is_blake2b_256_of_the_serialised_verdict():
-    v = ip.IdentityVerdict(b"\xa0" * 32, ip.VerdictAction.SUSPEND, 604_800_000, b"\x78" * 32, 1)
+    v = ip.IdentityVerdict(
+        b"\xa0" * 32, ip.VerdictAction.SUSPEND, 604_800_000, b"\x78" * 32, 1,
+        DEPOSIT_TO, 1_800_000_000_000,
+    )
     data = cbor2.CBORTag(121, [
         b"\xa0" * 32, cbor2.CBORTag(121, []), 604_800_000,
         cbor2.CBORTag(121, [b"\x78" * 32, 1]),
+        # Address { VerificationKey(..), Some(Inline(VerificationKey(..))) }
+        cbor2.CBORTag(121, [
+            cbor2.CBORTag(121, [b"\x5d" * 28]),
+            cbor2.CBORTag(121, [cbor2.CBORTag(121, [cbor2.CBORTag(121, [b"\x5e" * 28])])]),
+        ]),
+        1_800_000_000_000,
     ])
     assert v.token_name() == hashlib.blake2b(vi.serialise_data(data), digest_size=32).digest()
     assert v.token_name() == hashlib.blake2b(v.datum_cbor(), digest_size=32).digest()
@@ -183,6 +244,38 @@ def test_verdict_token_name_is_blake2b_256_of_the_serialised_verdict():
     assert ip.verdict_from_output(RawCBOR(v.datum_cbor()), v.token_name()) == v
     with pytest.raises(vi.IdentityError, match="token name"):
         ip.verdict_from_output(RawCBOR(v.datum_cbor()), b"\x00" * 32)
+    # The token name covers every field, also deposit_to and expires_at.
+    other_deposit = ip.PlutusAddress(ip.PlutusCredential(b"\x5d" * 28))
+    assert dataclasses.replace(v, deposit_to=other_deposit).token_name() != v.token_name()
+    assert dataclasses.replace(v, expires_at=v.expires_at + 1).token_name() != v.token_name()
+    # The four-field verdict of an older deployment does not decode.
+    old = vi.serialise_data(cbor2.CBORTag(121, data.value[:4]))
+    with pytest.raises(vi.IdentityDecodeError, match="6 fields"):
+        ip.decode_verdict(old)
+
+
+@pytest.mark.parametrize("address", [
+    Address(VerificationKeyHash(b"\x01" * 28), network=Network.MAINNET),
+    Address(ScriptHash(b"\x02" * 28), VerificationKeyHash(b"\x03" * 28), network=Network.MAINNET),
+    Address(VerificationKeyHash(b"\x04" * 28), ScriptHash(b"\x05" * 28), network=Network.MAINNET),
+    Address(VerificationKeyHash(b"\x06" * 28), PointerAddress(7, 8, 9), network=Network.MAINNET),
+])
+def test_plutus_address_round_trip(address):
+    plutus = txb.plutus_address(address)
+    assert ip.decode_address(vi.data_from(vi.serialise_data(plutus.data()))) == plutus
+    assert txb.address_from_plutus(plutus) == address
+    # Address { payment_credential, stake_credential: Option<StakeCredential> }
+    payment, stake = plutus.data().value
+    assert payment.tag == (122 if isinstance(address.payment_part, ScriptHash) else 121)
+    if address.staking_part is None:
+        assert stake == cbor2.CBORTag(122, [])
+    elif isinstance(address.staking_part, PointerAddress):
+        assert stake == cbor2.CBORTag(121, [cbor2.CBORTag(122, [7, 8, 9])])
+    else:
+        assert stake.value[0].tag == 121  # Inline
+    with pytest.raises(ValueError, match="payment part"):
+        txb.plutus_address(Address(staking_part=VerificationKeyHash(b"\x01" * 28),
+                                   network=Network.MAINNET))
 
 
 def test_policy_gives_the_losing_side_or_no_verdict():
@@ -190,13 +283,24 @@ def test_policy_gives_the_losing_side_or_no_verdict():
         auditor_wins=ip.VerdictRule(ip.VerdictAction.REVOKE, 0),
         claimer_wins=ip.VerdictRule(ip.VerdictAction.SUSPEND, vi.DAY_MS),
     )
-    kw = dict(claimer_did=b"\x01" * 32, auditor_did=b"\x02" * 32,
-              challenge_tx_id=b"\x03" * 32, challenge_index=0)
-    assert ip.resolution_verdict(policy, ip.AUDITOR_WINS, **kw).agent == b"\x01" * 32
+    kw = dict(resolution=ip.ORACLE_RESOLVE, claimer_did=b"\x01" * 32,
+              auditor_did=b"\x02" * 32, challenge_tx_id=b"\x03" * 32,
+              challenge_index=0, deposit_to=DEPOSIT_TO, hi=HI)
+    verdict = ip.resolution_verdict(policy, ip.AUDITOR_WINS, **kw)
+    assert verdict.agent == b"\x01" * 32
+    assert verdict.deposit_to == DEPOSIT_TO
+    assert verdict.expires_at == HI + 2_592_000_000
     assert ip.resolution_verdict(policy, ip.CLAIMER_WINS, **kw).agent == b"\x02" * 32
     assert ip.resolution_verdict(policy, ip.INCONCLUSIVE, **kw) is None
     empty = ip.VerdictPolicy(None, None)
     assert ip.resolution_verdict(empty, ip.AUDITOR_WINS, **kw) is None
+    # Only an oracle resolution gives a verdict.
+    for resolution in (ip.RESOLVE_JURY, ip.TIMEOUT_RESOLVE):
+        for outcome in ip.OUTCOMES:
+            assert ip.resolution_verdict(
+                policy, outcome, **dict(kw, resolution=resolution)) is None
+    with pytest.raises(ValueError, match="resolution"):
+        ip.resolution_verdict(policy, ip.AUDITOR_WINS, **dict(kw, resolution="Jury"))
     with pytest.raises(ValueError):
         ip.VerdictRule(ip.VerdictAction.SUSPEND, vi.DAYS_30_MS + 1)
     with pytest.raises(ValueError):
@@ -429,7 +533,7 @@ def test_juror_bond_declares_the_listed_master_key(env):
                              25_000_000, juror_did_hex="cc" * 32)
 
 
-# ── ResolveJury verdict mint ───────────────────────────────────────────────
+# ── ResolveJury gives no verdict ───────────────────────────────────────────
 
 
 def _resolve(monkeypatch, ctx, dep, wallet, challenge, claim, jurors):
@@ -445,67 +549,73 @@ def _resolve(monkeypatch, ctx, dep, wallet, challenge, claim, jurors):
     )
 
 
-def test_resolve_jury_mints_the_verdict_for_auditor_wins(
-    monkeypatch, patched_network_for_resolve_jury, captured_builder,
+@pytest.mark.parametrize("jurors", [
+    "sample_revealed_juror_utxos_auditor_wins",   # the policy has a rule
+    "sample_revealed_juror_utxos_claimer_wins",   # the policy has no rule
+])
+def test_resolve_jury_mints_no_verdict_and_names_the_funder(
+    request, monkeypatch, patched_network_for_resolve_jury, captured_builder,
     mock_ogmios_context, sample_deployment_with_all_refs, sample_auditor_wallet,
-    sample_challenge_utxo_voting, sample_claim_utxo_challenged,
-    sample_revealed_juror_utxos_auditor_wins, sample_cross_refs_utxo, sample_did_hex,
+    sample_challenge_utxo_voting, sample_claim_utxo_challenged, sample_cross_refs_utxo,
+    jurors,
 ):
+    """A jury outcome never gives a verdict (only OracleResolve does), so
+    the transaction mints nothing under M1, has no verdict output and needs
+    no configuration record. The Resolved state names the wallet as
+    refund_to."""
+    mock_ogmios_context.register_utxos(CONFIG_HOLDER_ADDR, [])
     result = _resolve(monkeypatch, mock_ogmios_context, sample_deployment_with_all_refs,
                       sample_auditor_wallet, sample_challenge_utxo_voting,
-                      sample_claim_utxo_challenged, sample_revealed_juror_utxos_auditor_wins)
+                      sample_claim_utxo_challenged, request.getfixturevalue(jurors))
     b = captured_builder[-1]
-    verdict = ip.IdentityVerdict(
-        bytes.fromhex(sample_did_hex), ip.VerdictAction.SUSPEND, 604_800_000,
-        bytes(sample_challenge_utxo_voting.input.transaction_id),
-        sample_challenge_utxo_voting.input.index,
-    )
-    assert result["verdict_minted"] and result["identity_verdict"] == verdict.to_json()
-    assert dict(b.mint[ScriptHash(M1)]) == {AssetName(verdict.token_name()): 1}
     claim_policy = ScriptHash(bytes.fromhex(V13_DEPLOYMENT["hashes"]["claim"]))
+    assert list(b.mint) == [claim_policy]
     assert dict(b.mint[claim_policy]) == {AssetName(sample_claim_token()): -1}
-    reds = [_data(r) for _, r in b._minting_script_to_redeemers]
-    assert ip.mint_verdict_redeemer() in reds
-    out = b.outputs[-1]
-    assert result["verdict_ref"] == f"{result['tx_hash']}#{len(b.outputs) - 1}"
-    assert out.address == sample_deployment_with_all_refs.identity_party_addr
-    assert dict(out.amount.multi_asset) == {
-        ScriptHash(M1): Asset({AssetName(verdict.token_name()): 1})}
-    assert ip.decode_verdict(out.datum) == verdict and out.script is None
-    assert out.amount.coin == min_lovelace_post_alonzo(out, mock_ogmios_context)
-    refs = _ref_ids(b)
-    assert _uid(config_record_utxo()) in refs and _uid(sample_cross_refs_utxo) in refs
-    # The continuing challenge keeps claim_token.
-    assert cbor2.loads(b.outputs[0].datum.cbor).value[10] == sample_claim_token()
-
-
-def test_resolve_jury_without_a_rule_mints_no_verdict(
-    monkeypatch, patched_network_for_resolve_jury, captured_builder,
-    mock_ogmios_context, sample_deployment_with_all_refs, sample_auditor_wallet,
-    sample_challenge_utxo_voting, sample_claim_utxo_challenged,
-    sample_revealed_juror_utxos_claimer_wins,
-):
-    mock_ogmios_context.register_utxos(CONFIG_HOLDER_ADDR, [])
-    result = _resolve(monkeypatch, mock_ogmios_context, sample_deployment_with_all_refs,
-                      sample_auditor_wallet, sample_challenge_utxo_voting,
-                      sample_claim_utxo_challenged, sample_revealed_juror_utxos_claimer_wins)
-    b = captured_builder[-1]
-    assert not result["verdict_minted"] and result["verdict_ref"] is None
-    assert ScriptHash(M1) not in b.mint
     assert all(o.address != sample_deployment_with_all_refs.identity_party_addr for o in b.outputs)
+    refs = _ref_ids(b)
+    assert _uid(config_record_utxo()) not in refs and _uid(sample_cross_refs_utxo) in refs
+    assert set(result) == {
+        "tx_hash", "verdict", "resolved_challenge_ref", "jury_fee",
+        "claimer_payout", "auditor_payout", "refund_to",
+    }
+    wallet_addr = sample_auditor_wallet[2]
+    assert result["refund_to"] == str(wallet_addr)
+    fields = cbor2.loads(b.outputs[0].datum.cbor).value
+    assert fields[9].tag == 124
+    assert ip.decode_address(fields[9].value[1]) == txb.plutus_address(wallet_addr)
+    # The continuing challenge keeps claim_token.
+    assert fields[10] == sample_claim_token()
 
 
-def test_resolve_jury_with_a_rule_refuses_a_missing_config_record(
-    monkeypatch, patched_network_for_resolve_jury, captured_builder,
-    mock_ogmios_context, sample_deployment_with_all_refs, sample_auditor_wallet,
-    sample_challenge_utxo_voting, sample_claim_utxo_challenged,
-    sample_revealed_juror_utxos_auditor_wins,
+def test_timeout_resolve_refuses_the_claim_of_another_challenge(
+    env, monkeypatch, sample_challenge_utxo_voting, sample_claim_utxo_challenged,
 ):
-    mock_ogmios_context.register_utxos(CONFIG_HOLDER_ADDR, [])
-    with pytest.raises(vi.IdentityError, match="configuration record"):
-        _resolve(monkeypatch, mock_ogmios_context, sample_deployment_with_all_refs,
-                 sample_auditor_wallet, sample_challenge_utxo_voting,
-                 sample_claim_utxo_challenged, sample_revealed_juror_utxos_auditor_wins)
+    """TimeoutResolve accepts only the claim input that holds the
+    challenge's claim_token; the builder refuses another claim before any
+    side effect."""
+    voting = sample_challenge_utxo_voting
+    fields = list(cbor2.loads(voting.output.datum.cbor).value)
+    fields[6] = slot_to_posix_ms(CANNED_SLOT - 100_000)  # the deadline passed
+    challenge = UTxO(voting.input, TransactionOutput(
+        voting.output.address, voting.output.amount,
+        datum=RawCBOR(vi.serialise_data(cbor2.CBORTag(121, fields))),
+    ))
+    claim_policy = ScriptHash(bytes.fromhex(V13_DEPLOYMENT["hashes"]["claim"]))
+    other_token = MultiAsset({claim_policy: Asset({AssetName(b"\x0c" * 32): 1})})
+    claim_out = sample_claim_utxo_challenged.output
+    claim = UTxO(sample_claim_utxo_challenged.input, TransactionOutput(
+        claim_out.address, Value(claim_out.amount.coin, other_token), datum=claim_out.datum,
+    ))
+    by_txid = {bytes(u.input.transaction_id).hex(): u for u in (challenge, claim)}
+    monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: by_txid[txid])
+    with pytest.raises(ValueError, match="claim_token"):
+        txb.build_timeout_resolve(
+            env["ctx"], env["dep"], *_key(b"x"),
+            f"{bytes(challenge.input.transaction_id).hex()}#{challenge.input.index}",
+            f"{bytes(claim.input.transaction_id).hex()}#{claim.input.index}",
+            resolution_deadline_ms=int(fields[7]),
+        )
+    assert not env["builders"]
 
 
 # ── ApplyVerdict ───────────────────────────────────────────────────────────
@@ -530,7 +640,7 @@ def test_apply_verdict(env, monkeypatch, action, duration):
                                   module1_role=vi.Role.ACCOUNTABLE)
     env["ctx"].register_utxos(IDENTITY_ADDR, [record])
     env["ctx"].reward_balances[M1] = 1_000
-    verdict = ip.IdentityVerdict(b"\xdd" * 32, action, duration, b"\x77" * 32, 0)
+    verdict = _verdict(b"\xdd" * 32, action, duration)
     vutxo = _verdict_utxo(env["dep"], verdict)
     monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: vutxo)
     skey, vkey, addr = _key(b"anybody")
@@ -566,7 +676,7 @@ def test_apply_verdict_keeps_a_longer_module1_hold(env, monkeypatch):
                                   module1_role=vi.Role.ACCOUNTABLE,
                                   status=vi.Status.suspended([long_hold]))
     env["ctx"].register_utxos(IDENTITY_ADDR, [record])
-    verdict = ip.IdentityVerdict(b"\xdd" * 32, ip.VerdictAction.SUSPEND, vi.DAY_MS, b"\x77" * 32, 0)
+    verdict = _verdict(b"\xdd" * 32, ip.VerdictAction.SUSPEND, vi.DAY_MS)
     vutxo = _verdict_utxo(env["dep"], verdict)
     monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: vutxo)
     result = txb.build_apply_verdict(env["ctx"], env["dep"], *_key(b"x"), "ee" * 32 + "#3")
@@ -575,7 +685,7 @@ def test_apply_verdict_keeps_a_longer_module1_hold(env, monkeypatch):
 
 def test_apply_verdict_refusals(env, monkeypatch):
     agent_vkey = _key(b"agent")[1]
-    verdict = ip.IdentityVerdict(b"\xdd" * 32, ip.VerdictAction.REVOKE, 0, b"\x77" * 32, 0)
+    verdict = _verdict(b"\xdd" * 32, ip.VerdictAction.REVOKE, 0)
     vutxo = _verdict_utxo(env["dep"], verdict)
     monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: vutxo)
     payer = _key(b"x")
@@ -585,10 +695,85 @@ def test_apply_verdict_refusals(env, monkeypatch):
     with pytest.raises(vi.IdentityError, match="Module-1 party"):
         txb.build_apply_verdict(env["ctx"], env["dep"], *payer, "ee" * 32 + "#3")
     # A datum that does not hash to the token name.
-    other = ip.IdentityVerdict(b"\xdd" * 32, ip.VerdictAction.REVOKE, 0, b"\x76" * 32, 0)
+    other = _verdict(b"\xdd" * 32, ip.VerdictAction.REVOKE, 0, challenge=b"\x76" * 32)
     bad = UTxO(vutxo.input, TransactionOutput(
         vutxo.output.address, vutxo.output.amount, datum=RawCBOR(other.datum_cbor())))
     monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: bad)
     with pytest.raises(vi.IdentityError, match="token name"):
         txb.build_apply_verdict(env["ctx"], env["dep"], *payer, "ee" * 32 + "#3")
+    # An expired verdict (expires_at before the lower bound) cannot apply.
+    expired = _verdict(b"\xdd" * 32, ip.VerdictAction.REVOKE, 0, expires_at=LO - 1)
+    monkeypatch.setattr(txb, "resolve_utxo",
+                        lambda txid, idx: _verdict_utxo(env["dep"], expired))
+    with pytest.raises(vi.IdentityError, match="build_reclaim_verdict"):
+        txb.build_apply_verdict(env["ctx"], env["dep"], *payer, "ee" * 32 + "#3")
     assert not env["builders"]
+
+
+def test_apply_verdict_range_ends_at_expires_at(env, monkeypatch):
+    """An application needs hi <= expires_at: the range ends at expires_at
+    when the default range would end later."""
+    agent_vkey = _key(b"agent")[1]
+    env["ctx"].register_utxos(IDENTITY_ADDR, [identity_record_utxo(
+        b"arec", "dd" * 32, agent_vkey, module1_role=vi.Role.ACCOUNTABLE)])
+    expires_at = slot_to_posix_ms(CANNED_SLOT + 100) + 999
+    verdict = _verdict(b"\xdd" * 32, ip.VerdictAction.REVOKE, 0, expires_at=expires_at)
+    vutxo = _verdict_utxo(env["dep"], verdict)
+    monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: vutxo)
+    txb.build_apply_verdict(env["ctx"], env["dep"], *_key(b"x"), "ee" * 32 + "#3")
+    b = env["builders"][-1]
+    assert b.ttl == CANNED_SLOT + 100
+    assert slot_to_posix_ms(b.ttl) <= expires_at
+    # The pure rule: an upper bound after expires_at is refused.
+    record = txb.identity_record(env["ctx"], env["dep"], b"\xdd" * 32)
+    with pytest.raises(vi.IdentityError, match="expires at"):
+        ip.verdict_application(verdict, record, M1, LO, expires_at + 1)
+
+
+# ── Reclaim of an expired verdict ──────────────────────────────────────────
+
+
+def test_reclaim_verdict_pays_deposit_to(env, monkeypatch):
+    """After expires_at anybody can spend the verdict output: the token is
+    burned with BurnVerdict (no withdrawal of Script(M1)), all its AP3X goes
+    to deposit_to without datum, and the lower bound is after expires_at."""
+    expires_at = slot_to_posix_ms(CANNED_SLOT - 10)
+    verdict = _verdict(b"\xdd" * 32, ip.VerdictAction.SUSPEND, vi.DAY_MS, expires_at=expires_at)
+    vutxo = _verdict_utxo(env["dep"], verdict)
+    monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: vutxo)
+    skey, vkey, addr = _key(b"anybody")
+    result = txb.build_reclaim_verdict(env["ctx"], env["dep"], skey, vkey, addr, "ee" * 32 + "#3")
+    b = env["builders"][-1]
+    deposit = txb.address_from_plutus(DEPOSIT_TO)
+    assert result == {
+        "tx_hash": "cd" * 32, "deposit_to": str(deposit), "amount": 2_000_000,
+        "verdict_token_hex": verdict.token_name().hex(),
+    }
+    assert _data(b._inputs_to_redeemers[vutxo]) == ip.verdict_spend_redeemer()
+    assert dict(b.mint[ScriptHash(M1)]) == {AssetName(verdict.token_name()): -1}
+    assert [_data(r) for _, r in b._minting_script_to_redeemers] == [ip.burn_verdict_redeemer()]
+    assert b.withdrawals is None
+    (out,) = b.outputs
+    assert out.address == deposit and out.amount.coin == 2_000_000
+    assert not out.amount.multi_asset and out.datum is None and out.datum_hash is None
+    # Only the verdict output is a script input.
+    assert [u for u in b.inputs if u.output.address.payment_part == ScriptHash(M1)] == [vutxo]
+    assert all(isinstance(u.output.address.payment_part, VerificationKeyHash)
+               for u in b.inputs if u is not vutxo)
+    assert slot_to_posix_ms(b.validity_start) > expires_at
+    assert b.validity_start <= CANNED_SLOT
+    assert b.ttl - b.validity_start <= 3600
+    assert list(b.required_signers) == [vkey.hash()]
+
+
+def test_reclaim_verdict_refuses_a_verdict_that_has_not_expired(env, monkeypatch):
+    verdict = _verdict(b"\xdd" * 32, ip.VerdictAction.REVOKE, 0,
+                       expires_at=slot_to_posix_ms(CANNED_SLOT))
+    vutxo = _verdict_utxo(env["dep"], verdict)
+    monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: vutxo)
+    with pytest.raises(vi.IdentityError, match="only after"):
+        txb.build_reclaim_verdict(env["ctx"], env["dep"], *_key(b"x"), "ee" * 32 + "#3")
+    assert not env["builders"]
+    with pytest.raises(vi.IdentityError, match="lower bound after"):
+        ip.check_reclaim(verdict, verdict.expires_at, verdict.expires_at + 1000)
+    ip.check_reclaim(verdict, verdict.expires_at + 1, verdict.expires_at + 1000)
