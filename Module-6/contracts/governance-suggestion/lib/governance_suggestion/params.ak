@@ -44,6 +44,38 @@ pub fn is_governable_param(param_name: ByteArray) -> Bool {
   param_name == "GAME_ACTIVATION"
 }
 
+/// The value that the GovernanceParams record holds for a Module-6
+/// parameter name, or None. 17 names map to the first 17 fields of
+/// GovernanceParams. The other governable names (Module 1, Module 3, the
+/// treasury batch names, ADOPTION_REWARD_BASE and GAME_ACTIVATION) have no
+/// value in the record. ExpireStaleProposal compares this value with the
+/// current_value of a ParameterChange proposal.
+pub fn module6_param_value(
+  params: GovernanceParams,
+  param_name: ByteArray,
+) -> Option<Int> {
+  when param_name is {
+    "MIN_PROPOSAL_STAKE" -> Some(params.min_proposal_stake)
+    "MIN_CRITIQUE_STAKE" -> Some(params.min_critique_stake)
+    "MIN_GOVERNANCE_ENDORSEMENT" -> Some(params.min_governance_endorsement)
+    "MIN_REVIEW_WINDOW" -> Some(params.min_review_window)
+    "MAX_REVIEW_WINDOW" -> Some(params.max_review_window)
+    "MAX_AMENDMENTS" -> Some(params.max_amendments)
+    "MAX_ACTIVE_PROPOSALS" -> Some(params.max_active_proposals)
+    "COOLDOWN_BETWEEN_PROPOSALS" -> Some(params.proposal_cooldown)
+    "PROPOSER_REWARD_SHARE" -> Some(params.proposer_reward_share)
+    "CRITIC_REWARD_SHARE" -> Some(params.critic_reward_share)
+    "PROTOCOL_FEE_RATE" -> Some(params.protocol_fee_rate)
+    "MIN_ADOPTION_REWARD" -> Some(params.min_adoption_reward)
+    "MAX_ADOPTION_REWARD" -> Some(params.max_adoption_reward)
+    "MAX_INCORPORATED_CRITIQUES" -> Some(params.max_incorporated_critiques)
+    "MAX_TREASURY_REQUEST" -> Some(params.max_treasury_request)
+    "EMERGENCY_STAKE_MULTIPLIER" -> Some(params.emergency_stake_multiplier)
+    "EMERGENCY_REVIEW_WINDOW" -> Some(params.emergency_review_window)
+    _ -> None
+  }
+}
+
 // ============================================================================
 // Default Parameter Values (for testnet initialization)
 // ============================================================================

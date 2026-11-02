@@ -14,7 +14,9 @@
 //   - the exact tokens under the proposal policy;
 //   - a submission reads the new proposal output, and submitted_at is the
 //     lower bound of the validity range;
-//   - the emergency gate reads the proposer's own Module 3 stake.
+//   - the emergency gate reads the proposer's own Module 3 stake;
+//   - ExpireStaleProposal compares current_value with the value of a
+//     Module-6 parameter in the GovernanceParams record.
 
 use aiken/collection/list
 use aiken/crypto.{blake2b_256}
@@ -28,19 +30,20 @@ use governance_suggestion/tests/test_helpers.{
   activity_input, activity_output, activity_output_for, activity_token_mint,
   activity_utxo_ref, critic_cred, critique_mint_hash, critique_validator_hash,
   cross_refs_ref_input, default_proposal_datum, finalisation_outputs,
-  finalisation_tx, make_ref, oracle_key_hash, oracle_ref_input,
-  params_ref_input, payment_output, proposal_input, proposal_mint_hash,
-  proposal_output, proposal_own_ref, proposal_seed_input, proposal_token_mint,
-  proposal_utxo_ref, proposal_validator_hash, proposer_agent, proposer_cred,
-  proposer_did, proposer_key_hash, protocol_params_ref_input, spend_redeemer,
-  test_config,
+  finalisation_tx, head_input, head_output, head_utxo_ref, make_ref,
+  oracle_key_hash, oracle_ref_input, params_ref_input, payment_output,
+  proposal_input, proposal_mint_hash, proposal_output, proposal_own_ref,
+  proposal_seed_input, proposal_token_mint, proposal_utxo_ref,
+  proposal_validator_hash, proposer_agent, proposer_cred, proposer_did,
+  proposer_key_hash, spend_redeemer, test_config,
 }
+use governance_suggestion/params
 use governance_suggestion/types.{
   AdoptProposal, AmendProposal, Amended, BurnCritiqueToken, CritiqueDatum,
   Emergency, ExpireProposal, ExpireStaleProposal, ExtendReview,
-  GovernanceConfig, ParameterChange, ProposalAction, ProposalDatum,
-  ProposerActivityDatum, RejectProposal, SpendActivity, SubmitProposal,
-  WithdrawProposal,
+  GovernanceConfig, GovernanceParams, ParameterChange, ProposalAction,
+  ProposalDatum, ProposerActivityDatum, RejectProposal, SpendActivity,
+  SubmitProposal, WithdrawProposal,
 }
 use governance_suggestion/utils
 use proposal
@@ -157,6 +160,7 @@ fn activity_datum() -> Data {
       agent_credential: proposer_cred(),
       active_proposal_count: 1,
       last_proposal_slot: 1_000_000_000,
+      next_did: #"",
     }
   datum
 }
@@ -193,27 +197,42 @@ fn expire_tx() -> Transaction {
   )
 }
 
-fn stale_datum() -> ProposalDatum {
+/// A ParameterChange proposal of `param_name` that assumed `current_value`.
+fn parameter_change_datum(param_name: ByteArray, current_value: Int) -> ProposalDatum {
   ProposalDatum {
     ..proposal_datum(),
     proposal_type: ParameterChange {
-      param_name: "MIN_CLAIM_STAKE",
-      current_value: 50_000_000,
-      proposed_value: 25_000_000,
+      param_name,
+      current_value,
+      proposed_value: 30_000_000,
     },
   }
 }
 
-fn expire_stale_tx() -> Transaction {
+/// A stale proposal: the GovernanceParams record holds 25 AP3X for
+/// MIN_PROPOSAL_STAKE, and the proposal assumed 20 AP3X.
+fn stale_datum() -> ProposalDatum {
+  parameter_change_datum("MIN_PROPOSAL_STAKE", 20_000_000)
+}
+
+/// The stale expiry of `datum` with the reference inputs `reference_inputs`.
+fn expire_stale_with(
+  datum: ProposalDatum,
+  reference_inputs: List<Input>,
+) -> Transaction {
   let stale: Data = ExpireStaleProposal
   finalisation_tx(
     stale,
-    stale_datum(),
-    [cross_refs_ref_input(), params_ref_input(), protocol_params_ref_input()],
-    finalisation_outputs(stale_datum()),
+    datum,
+    reference_inputs,
+    finalisation_outputs(datum),
     [],
     ten_minutes(),
   )
+}
+
+fn expire_stale_tx() -> Transaction {
+  expire_stale_with(stale_datum(), [cross_refs_ref_input(), params_ref_input()])
 }
 
 fn adoption() -> ProposalAction {
@@ -337,26 +356,32 @@ fn new_proposal() -> ProposalDatum {
 }
 
 /// The first submission of agent 1: the seed holds `spent`, and the outputs
-/// are `outputs`, with the mint `mint`.
+/// are `outputs`, with the mint `mint`. The node of agent 1 goes after the
+/// head of the empty activity list: the transaction spends the head, and
+/// the head continues with next_did = agent 1 (the last output).
 fn submit_with(
   spent: ProposalDatum,
   outputs: List<Output>,
   mint: assets.Value,
 ) -> Transaction {
   let submit: Data = SubmitProposal
+  let spend_activity: Data = SpendActivity
   Transaction {
     ..transaction.placeholder,
-    inputs: [proposal_seed_input(spent)],
+    inputs: [proposal_seed_input(spent), head_input(#"")],
     reference_inputs: [
       cross_refs_ref_input(),
       params_ref_input(),
       proposer_record(),
     ],
-    outputs: outputs,
+    outputs: list.concat(outputs, [head_output(proposer_did)]),
     mint: mint,
     extra_signatories: [proposer_key_hash],
     validity_range: ten_minutes(),
-    redeemers: [spend_redeemer(proposal_own_ref(), submit)],
+    redeemers: [
+      spend_redeemer(proposal_own_ref(), submit),
+      spend_redeemer(head_utxo_ref(), spend_activity),
+    ],
   }
 }
 
@@ -388,6 +413,7 @@ fn submit(tx: Transaction) -> Bool {
 /// 1_000_000_000) continues with `activity` and the transaction mints `mint`.
 fn second_submit_with(activity: Output, mint: assets.Value) -> Transaction {
   let tx = submit_tx()
+  let submit: Data = SubmitProposal
   let spend_activity: Data = SpendActivity
   Transaction {
     ..tx,
@@ -399,7 +425,7 @@ fn second_submit_with(activity: Output, mint: assets.Value) -> Transaction {
     mint: mint,
     redeemers: [
       spend_redeemer(activity_utxo_ref(), spend_activity),
-      ..tx.redeemers
+      spend_redeemer(proposal_own_ref(), submit),
     ],
   }
 }
@@ -601,6 +627,7 @@ test spend_activity_of_other_agent_fails() fail {
       agent_credential: other_cred(),
       active_proposal_count: 1,
       last_proposal_slot: 1_000_000_000,
+      next_did: #"",
     }
   let spend_activity: Data = SpendActivity
   let tx = withdraw_tx()
@@ -1281,4 +1308,192 @@ test emergency_submit_with_own_token_and_other_datum_fails() fail {
 
 test emergency_submit_with_small_own_stake_fails() fail {
   submit_emergency(stake_input(proposer_did, proposer_did, 99_000_000))
+}
+
+// ============================================================================
+// ExpireStaleProposal: the value in the GovernanceParams record
+// ============================================================================
+
+/// The stale expiry of `datum` with the reference inputs `reference_inputs`
+/// (no protocol params input).
+fn expire_stale(datum: ProposalDatum, reference_inputs: List<Input>) -> Bool {
+  let raw: Data = datum
+  spend_proposal(
+    raw,
+    ExpireStaleProposal,
+    proposal_utxo_ref(),
+    expire_stale_with(datum, reference_inputs),
+  )
+}
+
+/// The stale expiry of `datum` with CrossRefs and the params record (the
+/// default parameters).
+fn expire_stale_with_record(datum: ProposalDatum) -> Bool {
+  expire_stale(datum, [cross_refs_ref_input(), params_ref_input()])
+}
+
+/// The names of the Module-6 parameters and the GovernanceParams field that
+/// holds each value, with the values of numbered_params.
+fn module6_fields() -> List<Pair<ByteArray, Int>> {
+  [
+    Pair("MIN_PROPOSAL_STAKE", 1),
+    Pair("MIN_CRITIQUE_STAKE", 2),
+    Pair("MIN_GOVERNANCE_ENDORSEMENT", 3),
+    Pair("MIN_REVIEW_WINDOW", 4),
+    Pair("MAX_REVIEW_WINDOW", 5),
+    Pair("MAX_AMENDMENTS", 6),
+    Pair("MAX_ACTIVE_PROPOSALS", 7),
+    Pair("COOLDOWN_BETWEEN_PROPOSALS", 8),
+    Pair("PROPOSER_REWARD_SHARE", 9),
+    Pair("CRITIC_REWARD_SHARE", 10),
+    Pair("PROTOCOL_FEE_RATE", 11),
+    Pair("MIN_ADOPTION_REWARD", 12),
+    Pair("MAX_ADOPTION_REWARD", 13),
+    Pair("MAX_INCORPORATED_CRITIQUES", 14),
+    Pair("MAX_TREASURY_REQUEST", 15),
+    Pair("EMERGENCY_STAKE_MULTIPLIER", 16),
+    Pair("EMERGENCY_REVIEW_WINDOW", 17),
+  ]
+}
+
+/// GovernanceParams with the value n in field n (1 to 21).
+fn numbered_params() -> GovernanceParams {
+  GovernanceParams {
+    min_proposal_stake: 1,
+    min_critique_stake: 2,
+    min_governance_endorsement: 3,
+    min_review_window: 4,
+    max_review_window: 5,
+    max_amendments: 6,
+    max_active_proposals: 7,
+    proposal_cooldown: 8,
+    proposer_reward_share: 9,
+    critic_reward_share: 10,
+    protocol_fee_rate: 11,
+    min_adoption_reward: 12,
+    max_adoption_reward: 13,
+    max_incorporated_critiques: 14,
+    max_treasury_request: 15,
+    emergency_stake_multiplier: 16,
+    emergency_review_window: 17,
+    param_execution_delay: 18,
+    min_prediction_pool: 19,
+    credibility_pool_low_threshold: 20,
+    credibility_pool_critical_threshold: 21,
+  }
+}
+
+test module6_param_values_are_the_record_fields() {
+  list.all(
+    module6_fields(),
+    fn(field) {
+      params.module6_param_value(numbered_params(), field.1st) == Some(field.2nd)
+    },
+  )
+}
+
+/// The governable names of Module 1, Module 3 and the system have no value
+/// in the GovernanceParams record.
+test module6_param_value_of_other_names_is_none() {
+  list.all(
+    [
+      "MIN_CLAIM_STAKE", "MIN_CHALLENGE_WINDOW", "JURY_SIZE", "JURY_FEE_RATE",
+      "MIN_SELF_STAKE", "MIN_ENDORSEMENT", "DECAY_RATE",
+      "MAX_ENDORSEMENT_MULTIPLIER", "TREASURY_BATCH_SIZE",
+      "MIN_TREASURY_BATCHES", "ADOPTION_REWARD_BASE", "GAME_ACTIVATION", "",
+      "min_proposal_stake",
+    ],
+    fn(name) { params.module6_param_value(numbered_params(), name) == None },
+  )
+}
+
+test expire_stale_of_changed_module6_parameter() {
+  expire_stale_with_record(stale_datum())
+}
+
+/// Each Module-6 parameter: a proposal that assumed another value than the
+/// record holds is stale.
+test expire_stale_of_each_module6_parameter() {
+  let current = params.default_governance_params()
+  list.all(
+    module6_fields(),
+    fn(field) {
+      expect Some(value) = params.module6_param_value(current, field.1st)
+      expire_stale_with_record(parameter_change_datum(field.1st, value + 1))
+    },
+  )
+}
+
+/// The record still holds the value that the proposal assumed.
+test expire_stale_with_current_value_fails() fail {
+  expire_stale_with_record(
+    parameter_change_datum("MIN_PROPOSAL_STAKE", 25_000_000),
+  )
+}
+
+/// MIN_CLAIM_STAKE is a Module 1 parameter: Module-6 cannot read its value.
+test expire_stale_of_other_module_parameter_fails() fail {
+  expire_stale_with_record(parameter_change_datum("MIN_CLAIM_STAKE", 1))
+}
+
+test expire_stale_of_system_parameter_fails() fail {
+  expire_stale_with_record(parameter_change_datum("GAME_ACTIVATION", 1))
+}
+
+test expire_stale_without_params_record_fails() fail {
+  expire_stale(stale_datum(), [cross_refs_ref_input()])
+}
+
+/// An output at the params holder without the `params` record token holds 30
+/// AP3X for MIN_PROPOSAL_STAKE. The record holds 25 AP3X, the value that the
+/// proposal assumed: the proposal is not stale.
+test expire_stale_reads_only_the_record_fails() fail {
+  let record = params_ref_input()
+  let other: Data =
+    GovernanceParams {
+      ..params.default_governance_params(),
+      min_proposal_stake: 30_000_000,
+    }
+  let unauthenticated =
+    Input {
+      output_reference: make_ref(
+        #"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0009",
+        0,
+      ),
+      output: Output {
+        ..record.output,
+        value: assets.from_lovelace(2_000_000),
+        datum: InlineDatum(other),
+      },
+    }
+  expire_stale(
+    parameter_change_datum("MIN_PROPOSAL_STAKE", 25_000_000),
+    [cross_refs_ref_input(), unauthenticated, record],
+  )
+}
+
+/// The same reference inputs with a proposal that assumed 20 AP3X: stale.
+test expire_stale_reads_the_record() {
+  let record = params_ref_input()
+  let other: Data =
+    GovernanceParams {
+      ..params.default_governance_params(),
+      min_proposal_stake: 20_000_000,
+    }
+  let unauthenticated =
+    Input {
+      output_reference: make_ref(
+        #"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0009",
+        0,
+      ),
+      output: Output {
+        ..record.output,
+        value: assets.from_lovelace(2_000_000),
+        datum: InlineDatum(other),
+      },
+    }
+  expire_stale(
+    parameter_change_datum("MIN_PROPOSAL_STAKE", 20_000_000),
+    [cross_refs_ref_input(), unauthenticated, record],
+  )
 }

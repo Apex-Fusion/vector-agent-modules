@@ -173,10 +173,17 @@ pub fn endorsement_token_name(
   token_naming.derive_token_name("gend_", combined, 27)
 }
 
-/// Derive activity tracking token asset name: "pact_" ++ blake2b_256(agent_did)[0..28]
+/// Derive activity tracking token asset name: "pact_" ++ blake2b_256(agent_did)[0..27].
+/// The node of the agent in the activity list holds it (§4.6).
 pub fn activity_token_name(agent_did: ByteArray) -> ByteArray {
   token_naming.derive_token_name("pact_", agent_did, 27)
 }
+
+/// Asset name of the record token of the head of the activity list (§4.6),
+/// under config.record_token_policy. The one-shot record token transaction
+/// of the deployment mints it together with the `params` and `oracle`
+/// tokens (shared/record_auth), so at most one output holds it.
+pub const activity_head_token: ByteArray = "activity"
 
 /// Derive prediction token asset name: "pred_" ++ blake2b_256(utxo_ref)[0..28]
 pub fn prediction_token_name(utxo_ref: OutputReference) -> ByteArray {

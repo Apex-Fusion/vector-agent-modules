@@ -24,8 +24,9 @@ use governance_suggestion/utils
 /// proposal spend validator runs for that input, and the action fixes the
 /// exact set of tokens that the transaction mints or burns under this policy:
 ///   - SubmitProposal: utils.proposal_token_name(seed) and, for the first
-///     proposal of the agent, utils.activity_token_name(proposer_did), each
-///     with quantity 1 (activity_tracking.validate_submit_activity);
+///     proposal of the agent (the insertion of its node in the activity
+///     list), utils.activity_token_name(proposer_did), each with quantity 1
+///     (activity_tracking.validate_submit_activity);
 ///   - a finalisation: the burn of the token of the finalised proposal, and
 ///     nothing else;
 ///   - AmendProposal and ExtendReview: nothing.
@@ -46,7 +47,8 @@ validator proposal_mint(config: GovernanceConfig) {
 // Multi-Validator: Spend Validator
 // ============================================================================
 
-/// Spend validator for proposal UTXOs and activity tracking UTXOs.
+/// Spend validator for proposal UTXOs and the entries of the activity list
+/// (the head and the nodes, activity_tracking).
 ///
 /// Every redeemer needs a finite lower bound of the validity range and
 /// exactly one proposal action in the transaction
@@ -148,8 +150,8 @@ validator proposal_spend(config: GovernanceConfig) {
         ExpireStaleProposal -> {
           expect datum: ProposalDatum = raw_datum
           proposal_validation.validate_expire_stale_proposal(
-            config,
             refs,
+            gov_params,
             datum,
             own_ref,
             tx,
@@ -171,6 +173,7 @@ validator proposal_spend(config: GovernanceConfig) {
 
         SpendActivity ->
           proposal_validation.validate_spend_activity(
+            config,
             refs,
             raw_datum,
             own_ref,

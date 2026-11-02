@@ -19,11 +19,12 @@ use governance_suggestion/tests/test_helpers.{
   activity_output, activity_token_mint, critic_agent, critic_cred, critic_did,
   critic_key_hash, critique_output, critique_own_ref, critique_seed_input,
   cross_refs_ref_input, default_proposal_datum, finalisation_outputs,
-  finalisation_tx, identity_ref_input, oracle_key_hash, oracle_ref_inputs,
-  params_ref_input, proposal_input, proposal_output, proposal_own_ref,
-  proposal_ref_input, proposal_seed_input, proposal_utxo_ref, proposer_agent,
-  proposer_cred, proposer_did, proposer_key_hash, protocol_params_ref_input,
-  standard_ref_inputs, test_config, test_cross_refs, validity_range_from,
+  finalisation_tx, head_input, head_output, identity_ref_input,
+  oracle_key_hash, oracle_ref_inputs, params_ref_input, proposal_input,
+  proposal_output, proposal_own_ref, proposal_ref_input, proposal_seed_input,
+  proposal_utxo_ref, proposer_agent, proposer_cred, proposer_did,
+  proposer_key_hash, standard_ref_inputs, test_config, test_cross_refs,
+  validity_range_from,
 }
 use governance_suggestion/types.{
   AdoptProposal, Amended, CritiqueDatum, ExpireProposal, ExpireStaleProposal,
@@ -45,7 +46,8 @@ fn submitted() -> ProposalDatum {
 }
 
 /// A first proposal submission of `datum` (the new datum; the seed holds the
-/// same datum), with the given reference inputs and signers.
+/// same datum), with the given reference inputs and signers. The node of the
+/// proposer goes after the head of the empty activity list.
 fn submit_with(
   datum: ProposalDatum,
   reference_inputs: List<Input>,
@@ -54,11 +56,12 @@ fn submit_with(
   let tx =
     Transaction {
       ..transaction.placeholder,
-      inputs: [proposal_seed_input(datum)],
+      inputs: [proposal_seed_input(datum), head_input(#"")],
       reference_inputs: reference_inputs,
       outputs: [
         proposal_output(datum),
         activity_output(proposer_did, 1, submit_lo),
+        head_output(proposer_did),
       ],
       mint: test_helpers.proposal_token_mint(proposal_own_ref(), 1)
         |> assets.merge(activity_token_mint(proposer_did, 1)),
@@ -292,35 +295,50 @@ test reject_proposal_no_oracle_sig() fail {
 
 // §5.6b ExpireStaleProposal
 
+/// The stale expiry of `datum`. The GovernanceParams record holds the
+/// default parameters (params.default_governance_params).
 fn expire_stale(datum: ProposalDatum) -> Bool {
   let action: Data = ExpireStaleProposal
   proposal_validation.validate_expire_stale_proposal(
-    test_config(),
     test_cross_refs(),
+    params.default_governance_params(),
     datum,
     proposal_utxo_ref(),
-    // Reference inputs must include ProtocolParams at protocol_params_hash
     finalise(
       action,
       datum,
-      [cross_refs_ref_input(), protocol_params_ref_input()],
+      [cross_refs_ref_input(), params_ref_input()],
       [],
       submit_lo,
     ),
   )
 }
 
-test expire_stale_proposal_valid() {
-  expire_stale(
-    ProposalDatum {
-      ..default_proposal_datum(),
-      proposal_type: ParameterChange {
-        param_name: "MIN_CLAIM_STAKE",
-        current_value: 50_000_000,
-        proposed_value: 25_000_000,
-      },
+/// A ParameterChange proposal of `param_name` with `current_value`.
+fn parameter_change(param_name: ByteArray, current_value: Int) -> ProposalDatum {
+  ProposalDatum {
+    ..default_proposal_datum(),
+    proposal_type: ParameterChange {
+      param_name,
+      current_value,
+      proposed_value: current_value + 1,
     },
-  )
+  }
+}
+
+test expire_stale_proposal_valid() {
+  // The record holds 25 AP3X; the proposal assumed 20 AP3X
+  expire_stale(parameter_change("MIN_PROPOSAL_STAKE", 20_000_000))
+}
+
+test expire_stale_proposal_current_value_fails() fail {
+  // The record still holds the value of the proposal: not stale
+  expire_stale(parameter_change("MIN_PROPOSAL_STAKE", 25_000_000))
+}
+
+test expire_stale_proposal_of_other_module_fails() fail {
+  // A Module 1 parameter: the GovernanceParams record holds no value for it
+  expire_stale(parameter_change("MIN_CLAIM_STAKE", 50_000_000))
 }
 
 test expire_stale_proposal_not_param_change() fail {

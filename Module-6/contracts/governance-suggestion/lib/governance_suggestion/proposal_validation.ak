@@ -40,25 +40,38 @@ pub fn one_proposal_action(refs: GovernanceCrossRefs, tx: Transaction) -> Bool {
 }
 
 // ============================================================================
-// Activity UTxO (SpendActivity)
+// Activity list entries (SpendActivity)
 // ============================================================================
 
-/// Validate the spend of an activity UTxO.
+/// Validate the spend of an entry of the activity list (§4.6,
+/// activity_tracking).
 ///
 /// MUST:
-///   1. The datum is a ProposerActivityDatum, and the input holds, under the
-///      proposal policy, exactly one token: the activity token of its agent
-///      (utils.activity_token_name(agent_did)), quantity 1.
+///   1. The datum is a ProposerActivityDatum, and the input is an entry of
+///      the list:
+///        - a node: it holds, under the proposal policy, exactly one token:
+///          the activity token of its agent
+///          (utils.activity_token_name(agent_did)), quantity 1; or
+///        - the head: agent_did = #"", no token of the proposal policy, and
+///          the record token (config.record_token_policy,
+///          utils.activity_head_token) with quantity 1.
 ///   2. The one proposal action of the transaction (one_proposal_action) is
-///      SubmitProposal or a finalisation, and the datum of its input names
-///      the same agent (proposer_did == agent_did).
-/// The owner authorises the move through that action: SubmitProposal needs
-/// the proposer's identity check and signature, WithdrawProposal the
+///      SubmitProposal; or it is a finalisation, the input is a node (never
+///      the head), and the datum of the action input names the agent of the
+///      node (proposer_did == agent_did).
+/// SubmitProposal spends exactly one entry and checks its continuing output
+/// (activity_tracking.validate_submit_activity): the node of the proposer
+/// with the new count, or the predecessor of the proposer with
+/// next_did = proposer_did. A finalisation checks the continuing node with
+/// the new count (activity_tracking.validate_finalize_activity). Both keep
+/// the address, the tokens and at least the AP3X of the entry. The owner of
+/// a node authorises a move through the proposal action: SubmitProposal
+/// needs the proposer's identity check and signature, WithdrawProposal the
 /// proposer's signature, AdoptProposal and RejectProposal the oracle, and
-/// ExpireProposal and ExpireStaleProposal only lower the count. That action
-/// checks the continuing activity output (activity_tracking): the same
-/// address, the same tokens, at least the same AP3X, and the new count.
+/// ExpireProposal and ExpireStaleProposal only lower the count. An insertion
+/// changes only next_did of the predecessor.
 pub fn validate_spend_activity(
+  config: GovernanceConfig,
   refs: GovernanceCrossRefs,
   raw_datum: Data,
   own_ref: OutputReference,
@@ -73,12 +86,26 @@ pub fn validate_spend_activity(
     )
   let index =
     settlement.constr_index(settlement.spend_redeemer(tx, action_input))
-  and {
-    dict.to_pairs(assets.tokens(own.output.value, refs.proposal_mint_hash)) == [
-      Pair(utils.activity_token_name(activity.agent_did), 1),
-    ],
-    index == settlement.submit_index || settlement.is_finalising(index),
-    settlement.did_field(settlement.input_datum(tx, action_input)) == activity.agent_did,
+  let tokens =
+    dict.to_pairs(assets.tokens(own.output.value, refs.proposal_mint_hash))
+  let is_node =
+    tokens == [Pair(utils.activity_token_name(activity.agent_did), 1)]
+  if index == settlement.submit_index {
+    is_node || and {
+      activity.agent_did == #"",
+      tokens == [],
+      assets.quantity_of(
+        own.output.value,
+        config.record_token_policy,
+        utils.activity_head_token,
+      ) == 1,
+    }
+  } else {
+    and {
+      is_node,
+      settlement.is_finalising(index),
+      settlement.did_field(settlement.input_datum(tx, action_input)) == activity.agent_did,
+    }
   }
 }
 
@@ -102,8 +129,11 @@ pub fn validate_spend_activity(
 ///   3. submitted_at is the lower bound of the validity range.
 ///   4. Stake, hash, type, URI, review window, state Open, no amendment and
 ///      no incorporated critique (§5.1, §5.1b).
-///   5. Rate limit and activity record, and the exact tokens under the
-///      proposal policy (activity_tracking.validate_submit_activity).
+///   5. Rate limit and activity list, and the exact tokens under the
+///      proposal policy (activity_tracking.validate_submit_activity): the
+///      transaction spends `own_ref` and exactly one entry of the activity
+///      list at the proposal validator (the node of the proposer, or for a
+///      first proposal its predecessor in the list).
 ///   6. The new proposal is at the address of `own_ref`, holds at least the
 ///      stake, and holds exactly one token: the new proposal token.
 pub fn validate_submit_proposal(
@@ -176,7 +206,7 @@ pub fn validate_submit_proposal(
         datum,
         token,
         w.lo,
-        own.output.address,
+        own,
         tx,
       ) {
         fail @"FAIL:rate_valid"
@@ -418,36 +448,38 @@ pub fn validate_expire_proposal(
 // §5.6b Expire Stale Proposal
 // ============================================================================
 
-/// Validate expiration of a stale ParameterChange proposal.
-/// A proposal is stale when its current_value no longer matches on-chain.
-/// Callable by anyone (permissionless).
+/// Validate expiration of a stale ParameterChange proposal. Callable by
+/// anyone (permissionless).
 ///
-/// MUST: the proposal is a ParameterChange; a reference input is at
-/// protocol_params_hash; validate_finalisation.
+/// `params` is the authenticated GovernanceParams record
+/// (params.read_governance_params: the reference input at the params holder
+/// with the `params` record token).
+///
+/// MUST:
+///   1. The proposal is ParameterChange { param_name, current_value, .. }.
+///   2. param_name is a Module-6 parameter whose value the GovernanceParams
+///      record holds (gov_params.module6_param_value), and that value differs
+///      from current_value: the proposal is stale.
+///   3. validate_finalisation.
+/// Other parameter names fail: Module-6 cannot read their current values.
+/// Such a proposal ends by withdrawal, by the oracle, or by ExpireProposal
+/// after the review window. No validator reads config.protocol_params_hash.
 pub fn validate_expire_stale_proposal(
-  config: GovernanceConfig,
   refs: GovernanceCrossRefs,
+  params: GovernanceParams,
   datum: ProposalDatum,
   own_ref: OutputReference,
   tx: Transaction,
 ) -> Bool {
-  // Verify the ProtocolParams reference input exists at protocol_params_hash.
-  // The staleness check requires the off-chain submitter to include the
-  // ProtocolParams UTXO as a reference input; the validator confirms it exists.
-  // Full value comparison would require knowing ProtocolParams datum structure;
-  // for Phase 1.0 we trust the permissionless caller to only trigger this
-  // when the value has actually changed (the Foundation can reject false claims).
   and {
     when datum.proposal_type is {
-      ParameterChange { .. } -> True
+      ParameterChange { param_name, current_value, .. } ->
+        when gov_params.module6_param_value(params, param_name) is {
+          Some(value) -> value != current_value
+          None -> False
+        }
       _ -> False
     },
-    list.any(
-      tx.reference_inputs,
-      fn(input) {
-        settlement.is_at_script(input, config.protocol_params_hash)
-      },
-    ),
     validate_finalisation(refs, datum, own_ref, tx),
   }
 }

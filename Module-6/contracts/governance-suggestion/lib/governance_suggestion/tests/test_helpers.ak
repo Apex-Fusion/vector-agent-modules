@@ -178,6 +178,14 @@ pub fn activity_utxo_ref() -> OutputReference {
   )
 }
 
+/// The UTxO of head_input (the head of the activity list)
+pub fn head_utxo_ref() -> OutputReference {
+  make_ref(
+    #"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0000",
+    0,
+  )
+}
+
 /// The spend redeemer of the input `ref`
 pub fn spend_redeemer(ref: OutputReference, action: Data) -> Pair<ScriptPurpose, Data> {
   Pair(Spend(ref), action)
@@ -263,26 +271,6 @@ pub fn identity_ref_input(n: Int) -> Input {
   record_input(agent_id(n), record(n, []))
 }
 
-/// Protocol params reference input (for stale proposal detection)
-pub fn protocol_params_ref_input() -> Input {
-  // Dummy datum — stale detection only checks address exists
-  Input {
-    output_reference: make_ref(
-      #"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0005",
-      0,
-    ),
-    output: Output {
-      address: Address {
-        payment_credential: Script(protocol_params_hash),
-        stake_credential: None,
-      },
-      value: assets.from_lovelace(2_000_000),
-      datum: InlineDatum(Void),
-      reference_script: None,
-    },
-  }
-}
-
 /// Proposal reference input (for critique/endorsement validation — active proposal at proposal validator)
 pub fn proposal_ref_input(proposal_datum: ProposalDatum) -> Input {
   Input {
@@ -324,35 +312,99 @@ pub fn oracle_ref_inputs(n: Int) -> List<Input> {
 }
 
 // ============================================================================
+// Activity list: the head and the nodes (§4.6)
+// ============================================================================
+
+/// The address of the proposal validator (no stake credential)
+pub fn proposal_address() -> Address {
+  Address {
+    payment_credential: Script(proposal_validator_hash),
+    stake_credential: None,
+  }
+}
+
+/// The datum of a node of the activity list
+pub fn node_datum(
+  agent_did: ByteArray,
+  agent_credential: Credential,
+  count: Int,
+  last_slot: Int,
+  next_did: ByteArray,
+) -> ProposerActivityDatum {
+  ProposerActivityDatum {
+    agent_did,
+    agent_credential,
+    active_proposal_count: count,
+    last_proposal_slot: last_slot,
+    next_did,
+  }
+}
+
+/// The value of a node: 2 AP3X and the activity token of its agent
+pub fn node_value(agent_did: ByteArray) -> assets.Value {
+  assets.from_asset(proposal_mint_hash, utils.activity_token_name(agent_did), 1)
+    |> assets.add(assets.ada_policy_id, assets.ada_asset_name, 2_000_000)
+}
+
+/// The node `datum` at the UTxO `ref`
+pub fn node_input(ref: OutputReference, datum: ProposerActivityDatum) -> Input {
+  Input { output_reference: ref, output: node_output(datum) }
+}
+
+/// The node `datum` as an output
+pub fn node_output(datum: ProposerActivityDatum) -> Output {
+  Output {
+    address: proposal_address(),
+    value: node_value(datum.agent_did),
+    datum: InlineDatum(datum),
+    reference_script: None,
+  }
+}
+
+/// The datum of the head of the activity list, with `next_did`
+pub fn head_datum(next_did: ByteArray) -> ProposerActivityDatum {
+  ProposerActivityDatum {
+    agent_did: #"",
+    agent_credential: oracle_cred(),
+    active_proposal_count: 0,
+    last_proposal_slot: 0,
+    next_did,
+  }
+}
+
+/// The value of the head: 3 AP3X and the `activity` record token
+pub fn head_value() -> assets.Value {
+  assets.from_lovelace(3_000_000)
+    |> assets.add(record_token_policy, utils.activity_head_token, 1)
+}
+
+/// The head with `next_did` at head_utxo_ref
+pub fn head_input(next_did: ByteArray) -> Input {
+  Input { output_reference: head_utxo_ref(), output: head_output(next_did) }
+}
+
+/// The head with `next_did` as an output
+pub fn head_output(next_did: ByteArray) -> Output {
+  Output {
+    address: proposal_address(),
+    value: head_value(),
+    datum: InlineDatum(head_datum(next_did)),
+    reference_script: None,
+  }
+}
+
+// ============================================================================
 // Transaction Input Builders
 // ============================================================================
 
-/// Activity UTXO input at proposal validator address with pact_ token
+/// Activity UTXO input at proposal validator address with pact_ token: the
+/// node of `agent_did` (the proposer's credential) as the last entry of the
+/// activity list
 pub fn activity_input(agent_did: ByteArray, count: Int, last_slot: Int) -> Input {
-  let activity_token = utils.activity_token_name(agent_did)
-  let activity_datum =
-    ProposerActivityDatum {
-      agent_did,
-      agent_credential: proposer_cred(),
-      active_proposal_count: count,
-      last_proposal_slot: last_slot,
-    }
-  Input {
-    output_reference: make_ref(
-      #"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001",
-      0,
-    ),
-    output: Output {
-      address: Address {
-        payment_credential: Script(proposal_validator_hash),
-        stake_credential: None,
-      },
-      value: assets.from_asset(proposal_mint_hash, activity_token, 1)
-        |> assets.add(assets.ada_policy_id, assets.ada_asset_name, 2_000_000),
-      datum: InlineDatum(activity_datum),
-      reference_script: None,
-    },
-  }
+  node_input(
+    activity_utxo_ref(),
+    node_datum(agent_did, proposer_cred(), count, last_slot, #""),
+  )
 }
 
 /// Proposal UTXO input at proposal validator address with prop_ token
@@ -381,7 +433,7 @@ pub fn proposal_input(datum: ProposalDatum, own_ref: OutputReference) -> Input {
 // ============================================================================
 
 /// Activity UTXO output at proposal validator address (the proposer's
-/// credential)
+/// credential): the node of `agent_did` as the last entry of the list
 pub fn activity_output(
   agent_did: ByteArray,
   count: Int,
@@ -391,31 +443,14 @@ pub fn activity_output(
 }
 
 /// Activity UTXO output at proposal validator address with the credential
-/// `agent_credential`
+/// `agent_credential`: the node of `agent_did` as the last entry of the list
 pub fn activity_output_for(
   agent_did: ByteArray,
   agent_credential: Credential,
   count: Int,
   last_slot: Int,
 ) -> Output {
-  let activity_token = utils.activity_token_name(agent_did)
-  let activity_datum =
-    ProposerActivityDatum {
-      agent_did,
-      agent_credential,
-      active_proposal_count: count,
-      last_proposal_slot: last_slot,
-    }
-  Output {
-    address: Address {
-      payment_credential: Script(proposal_validator_hash),
-      stake_credential: None,
-    },
-    value: assets.from_asset(proposal_mint_hash, activity_token, 1)
-      |> assets.add(assets.ada_policy_id, assets.ada_asset_name, 2_000_000),
-    datum: InlineDatum(activity_datum),
-    reference_script: None,
-  }
+  node_output(node_datum(agent_did, agent_credential, count, last_slot, #""))
 }
 
 /// Proposal UTXO output at proposal validator address

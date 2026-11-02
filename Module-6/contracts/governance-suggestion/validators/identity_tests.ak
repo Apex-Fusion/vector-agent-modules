@@ -32,10 +32,11 @@ use governance_suggestion/tests/test_helpers.{
   activity_utxo_ref, critic_agent, critic_cred, critic_key_hash,
   critique_mint_hash, critique_output, critique_own_ref, critique_validator_hash,
   cross_refs_ref_input, default_proposal_datum, endorsement_validator_hash,
-  make_ref, params_ref_input, payment_output, proposal_input, proposal_output,
-  proposal_own_ref, proposal_ref_input, proposal_token_mint,
-  proposal_validator_hash, proposer_agent, proposer_cred, proposer_did,
-  proposer_key_hash, spend_redeemer, test_config, test_cross_refs,
+  head_input, head_output, head_utxo_ref, make_ref, params_ref_input,
+  payment_output, proposal_input, proposal_output, proposal_own_ref,
+  proposal_ref_input, proposal_token_mint, proposal_validator_hash,
+  proposer_agent, proposer_cred, proposer_did, proposer_key_hash,
+  spend_redeemer, test_config, test_cross_refs,
 }
 use governance_suggestion/types.{
   AmendProposal, Amended, CritiqueDatum, GovernanceEndorsementDatum,
@@ -358,10 +359,13 @@ fn proposal_of(c: Case) -> ProposalDatum {
 }
 
 /// A SubmitProposal transaction for `c`: it spends the locked proposal UTxO
-/// (proposal_own_ref), mints the proposal token and the first activity token,
-/// and creates the proposal and the activity record.
+/// (proposal_own_ref) and the head of the empty activity list, mints the
+/// proposal token and the first activity token, and creates the proposal,
+/// the node of the agent and the head with next_did = the agent.
 fn submit_proposal_tx(c: Case) -> Transaction {
   let datum = proposal_of(c)
+  let submit: Data = SubmitProposal
+  let spend_activity: Data = SpendActivity
   Transaction {
     ..transaction.placeholder,
     inputs: [
@@ -371,16 +375,22 @@ fn submit_proposal_tx(c: Case) -> Transaction {
         datum.stake_amount,
         datum,
       ),
+      head_input(#""),
     ],
     reference_inputs: [cross_refs_ref_input(), params_ref_input(), ..c.records],
     outputs: [
       proposal_output(datum),
       activity_output_for(c.did, c.credential, 1, lo),
+      head_output(c.did),
     ],
     mint: proposal_token_mint(proposal_own_ref(), 1)
       |> assets.merge(activity_token_mint(c.did, 1)),
     extra_signatories: c.signers,
     validity_range: c.range,
+    redeemers: [
+      spend_redeemer(proposal_own_ref(), submit),
+      spend_redeemer(head_utxo_ref(), spend_activity),
+    ],
   }
 }
 

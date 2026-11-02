@@ -105,15 +105,19 @@ pub type ProposalAction {
   RejectProposal { reasoning_hash: ByteArray }
   /// Expire proposal after review window (callable by anyone)
   ExpireProposal
-  /// Expire a stale ParameterChange proposal whose current_value no longer matches
-  /// on-chain ProtocolParams (callable by anyone, permissionless)
+  /// Expire a stale ParameterChange proposal of a Module-6 parameter: the
+  /// GovernanceParams record holds a value for param_name that differs from
+  /// current_value (callable by anyone, permissionless;
+  /// proposal_validation.validate_expire_stale_proposal)
   ExpireStaleProposal
   /// Foundation signals "under review" — extends review window
   ExtendReview { additional_slots: Int }
-  /// Spend the activity UTxO of an agent. Only together with the one proposal
-  /// action of the transaction, when that action is SubmitProposal or a
-  /// finalisation of a proposal of the same agent. That action checks the
-  /// continuing activity output (validate_spend_activity).
+  /// Spend an entry of the activity list: the node of an agent or the head
+  /// (§4.6). Only together with the one proposal action of the transaction:
+  /// SubmitProposal (any entry; the submission checks the continuing entry),
+  /// or a finalisation of a proposal of the agent of the node (never the
+  /// head). That action checks the continuing output
+  /// (proposal_validation.validate_spend_activity).
   SpendActivity
 }
 
@@ -309,12 +313,15 @@ pub type GovernanceConfig {
   governance_treasury_hash: ByteArray,
   /// Script hash of governance credibility pool (Phase 1.2, zeroed until deployed)
   credibility_pool_hash: ByteArray,
-  /// Script hash of protocol params (for parameter proposals + stale detection)
+  /// Script hash of a protocol params holder. No validator reads it:
+  /// ExpireStaleProposal reads the GovernanceParams record. The field stays,
+  /// so the GovernanceConfig layout (11 fields) does not change.
   protocol_params_hash: ByteArray,
   /// Policy ID of the one-shot record token policy
   /// (shared/holder-scripts/validators/record_token.ak). The GovernanceParams
-  /// record holds its `params` token and the oracle record holds its `oracle`
-  /// token. Records without the token are ignored.
+  /// record holds its `params` token, the oracle record holds its `oracle`
+  /// token and the head of the activity list holds its `activity` token
+  /// (utils.activity_head_token). Records without the token are ignored.
   record_token_policy: ByteArray,
   /// Script hash (= policy ID) of the identity registry contract `identity`
   /// (did:vector, Part 2 §2 of docs/IDENTITY_REGISTRY.md in agents-marketplace).
@@ -347,16 +354,33 @@ pub type GovernanceCrossRefs {
 // ============================================================================
 
 /// Tracks a proposer's activity for rate limiting and cooldown enforcement.
-/// One ActivityUTXO per agent, consumed and re-created on every proposal lifecycle event.
+///
+/// The activity records form one list at the proposal validator, sorted by
+/// agent_did in ascending byte order (builtin.less_than_bytearray):
+///   - The head: the UTxO that holds the record token
+///     (config.record_token_policy, utils.activity_head_token) and no token
+///     of the proposal policy. Its datum has agent_did = #"",
+///     active_proposal_count = 0 and last_proposal_slot = 0. The deploy
+///     transaction of the records creates it.
+///   - A node: the UTxO of one agent. It holds exactly one token of the
+///     proposal policy: the activity token
+///     utils.activity_token_name(agent_did), quantity 1.
+/// next_did links each entry to the next node. The first submission of an
+/// agent inserts its node after its predecessor
+/// (activity_tracking.validate_submit_activity), so each agent has at most
+/// one node.
 pub type ProposerActivityDatum {
-  /// DID of the agent
+  /// DID of the agent (#"" for the head)
   agent_did: ByteArray,
   /// Payment credential of the agent
   agent_credential: Credential,
   /// Number of currently active (Open/Amended) proposals
   active_proposal_count: Int,
-  /// Slot of most recent proposal submission
+  /// Time of the most recent proposal submission (POSIX ms): the lower bound
+  /// of the validity range of that submission
   last_proposal_slot: Int,
+  /// agent_did of the next node of the list, or #"" for the last entry
+  next_did: ByteArray,
 }
 
 /// Activity tracking actions

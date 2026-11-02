@@ -430,6 +430,20 @@ pub type ProposerActivityAction {
 }
 ```
 
+Contract rule (activity list, W4-MODFIX2): the activity records form one list
+at the proposal validator, sorted by agent_did in ascending byte order. The
+head holds the `activity` record token (record_token_policy) and has
+agent_did = #"", count 0 and last_proposal_slot 0; the deploy record
+transaction creates it with the `params` and `oracle` records. A node holds
+exactly the activity token of its agent. ProposerActivityDatum has a fifth
+field, next_did: the agent_did of the next node, or #"" for the last entry.
+The first submission of agent X spends its predecessor P (the head or a
+node, P.agent_did < X and P.next_did == #"" or X < P.next_did), continues P
+with only next_did = X, and creates the node of X with next_did =
+P.next_did. An agent with a node cannot be inserted again: its predecessor
+names it, every entry before it has a smaller next_did, and every entry
+after it has a greater or equal agent_did.
+
 Contract rule (SpendActivity): the activity UTxO moves only in a transaction
 whose one proposal action is SubmitProposal or a finalisation of a proposal of
 the same agent. That action checks the continuing activity output: the same
@@ -510,7 +524,9 @@ MUST:
   11. submitted_at == the lower bound of the validity range
 
 RATE LIMITING (enforced via ProposerActivity UTXO):
-  12. ProposerActivity UTXO consumed as input (or InitActivity if first proposal)
+  12. The submission spends the lock and exactly one entry of the activity
+      list: the node of the proposer, or for a first proposal its
+      predecessor in the list (see §4.6)
   13. active_proposal_count < MAX_ACTIVE_PROPOSALS_PER_AGENT (initially 3)
   14. current_slot >= last_proposal_slot + COOLDOWN_BETWEEN_PROPOSALS (initially 21,600 slots)
   15. Continuing ProposerActivity UTXO with:
@@ -676,8 +692,10 @@ CALLABLE BY: Any agent (permissionless — Phase 1.1+)
 MUST:
   1. Proposal state == Open OR Amended
   2. proposal_type == ParameterChange { param_name, current_value, proposed_value }
-  3. ProtocolParams UTXO referenced as reference input
-  4. Current on-chain value of param_name != current_value
+  3. param_name is one of the 17 Module-6 parameters, and the authenticated
+     GovernanceParams record (the `params` record token) holds its value
+  4. That value != current_value (other parameter names fail; no validator
+     reads protocol_params_hash)
      (the parameter was changed by another adopted proposal)
   5. Stake returned to proposer (no penalty — reality changed)
   6. All critic and endorsement stakes returned
