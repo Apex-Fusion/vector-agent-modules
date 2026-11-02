@@ -224,8 +224,18 @@ fn resolved_challenge_datum() -> ChallengeDatum {
     challenged_at: 5_000_000,
     resolution_deadline: 5_400_000,
     eligible_jurors: [],
-    state: Resolved { verdict: ClaimerWins },
+    state: Resolved { verdict: ClaimerWins, refund_to: test_refund_address() },
     claim_token: test_claim_token,
+  }
+}
+
+/// The address that funds the AP3X kept in a Resolved output (refund_to).
+fn test_refund_address() -> Address {
+  Address {
+    payment_credential: VerificationKey(
+      #"3333333333333333333333333333333333333333333333333333333333333333",
+    ),
+    stake_credential: None,
   }
 }
 
@@ -1452,7 +1462,7 @@ test test_commit_vote_fail_pending_jury_state() {
 test test_commit_vote_fail_resolved_state() {
   let ch = ChallengeDatum {
     ..voting_challenge_datum(),
-    state: Resolved { verdict: ClaimerWins },
+    state: Resolved { verdict: ClaimerWins, refund_to: test_refund_address() },
   }
   let state_ok =
     when ch.state is {

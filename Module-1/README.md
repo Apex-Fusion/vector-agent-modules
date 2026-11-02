@@ -44,10 +44,10 @@ Four Aiken (Plutus V3) multi-validators:
 
 | Validator | Purpose |
 |-----------|---------|
-| `challenge.ak` | Challenge lifecycle, jury resolution, commit-reveal; each resolution that the verdict policy turns into a verdict mints one verdict token |
+| `challenge.ak` | Challenge lifecycle, jury resolution, commit-reveal; each oracle resolution that the verdict policy turns into a verdict mints one verdict token (jury resolutions give no verdict) |
 | `claim.ak` | Claim submission, withdrawal, state transitions |
 | `jury_pool.ak` | Juror registration, PRNG selection, voting, rewards |
-| `identity_party.ak` | Module-1 as a party of identity records: verdict tokens, Consent and verdict applications (identity registry, Part 2 §3.8) |
+| `identity_party.ak` | Module-1 as a party of identity records: verdict tokens (oracle resolutions only, 30-day expiry with reclaim), Consent and verdict applications (identity registry, Part 2 §3.8) |
 
 Claim submission, challenge opening and juror registration need an identity
 registry record with effective status Active and a declared key that is the

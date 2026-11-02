@@ -15,7 +15,7 @@
 ///
 /// All datums use inline datum pattern (CIP-32). Tokens track lifecycle.
 
-use cardano/address.{Credential}
+use cardano/address.{Address, Credential}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{OutputReference}
 
@@ -133,8 +133,13 @@ pub type ChallengeState {
   PendingJury
   /// Jury selected, awaiting votes — holds the selected juror DIDs
   Voting { selected_jurors: List<PolicyId> }
-  /// Resolved — verdict rendered, stakes distributed
-  Resolved { verdict: Verdict }
+  /// Resolved — verdict rendered, stakes distributed. ResolveJury writes
+  /// this state. The Resolved output keeps AP3X equal to the auditor stake;
+  /// the ResolveJury transaction funds it, because the payouts of that
+  /// transaction already use both stakes. `refund_to` is the address that
+  /// gets this AP3X back when CleanupResolved removes the output. The
+  /// ResolveJury transaction sets it to the address of its funder.
+  Resolved { verdict: Verdict, refund_to: Address }
 }
 
 /// Outcome of a challenge resolution.
@@ -166,7 +171,9 @@ pub type ChallengeAction {
   /// Timeout: deadline passed without full jury resolution; both stakes returned.
   TimeoutResolve
   /// Phase 1.0+: Burn the challenge UTxO after resolution.
-  /// Requires state == Resolved. Oracle must sign (Phase 1.0 simplicity).
+  /// Requires state == Resolved. Anybody can submit it after the cleanup
+  /// time. The AP3X of the Resolved output goes to its `refund_to`; the
+  /// transaction spends no other script input.
   /// The challenge token is burned here (deferred from ResolveJury to allow
   /// DistributeRewards to reference the Resolved challenge UTxO).
   CleanupResolved
@@ -316,8 +323,9 @@ pub type AuditingConfig {
   /// Script hash of `config_holder`. The configuration record is the output
   /// at its exact address that holds the token `identity-config`.
   config_holder: ByteArray,
-  /// Verdict policy, fixed at deployment (Part 2 §3.8). The values are an
-  /// open item (Part 2 §13.4).
+  /// Verdict policy, fixed at deployment (Part 2 §3.8). It applies only to
+  /// oracle resolutions (OracleResolve). The values are an open item (Part 2
+  /// §13.4).
   verdict_policy: VerdictPolicy,
 }
 
@@ -347,16 +355,18 @@ pub type VerdictAction {
 }
 
 /// The action and the duration that the verdict policy gives for one
-/// challenge outcome.
+/// oracle outcome.
 pub type VerdictRule {
   action: VerdictAction,
   /// Milliseconds: 1 to 30 days for VerdictSuspend, 0 for VerdictRevoke.
   duration: Int,
 }
 
-/// Which challenge outcome gives which verdict. The agent of a verdict is
-/// the side that loses the challenge. Inconclusive outcomes and timeouts give
-/// no verdict.
+/// Which oracle outcome (OracleResolve) gives which verdict. The agent of a
+/// verdict is the side that loses the challenge. Inconclusive outcomes, jury
+/// resolutions (ResolveJury) and timeouts give no verdict: the auditor names
+/// the eligible jurors of a challenge, so a jury outcome is not safe for an
+/// identity verdict.
 pub type VerdictPolicy {
   /// The rule for AuditorWins. The verdict names the claimer.
   auditor_wins: Option<VerdictRule>,
@@ -365,7 +375,8 @@ pub type VerdictPolicy {
 }
 
 /// The inline datum of a verdict output. The verdict token name is
-/// blake2b_256 of the CBOR serialisation (serialiseData) of this value.
+/// blake2b_256 of the CBOR serialisation (serialiseData) of this value, with
+/// all fields.
 pub type IdentityVerdict {
   /// Identity registry identifier of the agent.
   agent: ByteArray,
@@ -374,6 +385,16 @@ pub type IdentityVerdict {
   duration: Int,
   /// The challenge UTxO that the resolution transaction spends.
   challenge: OutputReference,
+  /// The address that gets the AP3X of the verdict output when the verdict
+  /// expires without an application. The resolution transaction names it in
+  /// the verdict output; its funder pays that AP3X.
+  deposit_to: Address,
+  /// POSIX milliseconds: the upper bound of the resolution transaction plus
+  /// 30 days. A verdict application needs `hi <= expires_at`. After
+  /// `expires_at` (`expires_at < lo`), anybody can spend the verdict output
+  /// without an application: its token is burned and its AP3X goes to
+  /// `deposit_to`.
+  expires_at: Int,
 }
 
 /// Mint redeemer of `identity_party`.

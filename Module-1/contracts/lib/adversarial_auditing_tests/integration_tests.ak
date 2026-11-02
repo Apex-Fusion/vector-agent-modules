@@ -722,7 +722,13 @@ test adversarial_distribute_rewards_ref_spoofing() {
         challenged_at: 5_000_000,
         resolution_deadline: 5_400_000,
         eligible_jurors: [],
-        state: Resolved { verdict: ClaimerWins },
+        state: Resolved {
+          verdict: ClaimerWins,
+          refund_to: Address {
+            payment_credential: auditor_cred(),
+            stake_credential: None,
+          },
+        },
         claim_token: claim_tok_name(),
       }),
       reference_script: None,

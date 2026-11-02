@@ -61,7 +61,7 @@ check() {
   fi
   paths=$(listed_paths "$dir")
   for vdir in $(vendored_dirs "$dir"); do
-    for file in $(cd "$dir" && find "$vdir" -type f | sort); do
+    for file in $(cd "$dir" && find "$vdir" \( -type f -o -type l \) | sort); do
       if ! printf '%s\n' "$paths" | grep -qx -- "$file"; then
         echo "check-vendored: $file is not listed in VENDORED.md" >&2
         status=1
@@ -120,6 +120,10 @@ self_test() {
     printf 'pub const extra: Int = 1\n' >"$tmp/$vdir/extra.ak"
     expect fail "unlisted file $vdir/extra.ak"
     rm "$tmp/$vdir/extra.ak"
+    printf 'pub const extra: Int = 1\n' >"$tmp/extra-target.ak"
+    ln -s "$tmp/extra-target.ak" "$tmp/$vdir/extra-link.ak"
+    expect fail "unlisted symbolic link $vdir/extra-link.ak"
+    rm "$tmp/$vdir/extra-link.ak" "$tmp/extra-target.ak"
   fi
   expect pass "final copy"
 

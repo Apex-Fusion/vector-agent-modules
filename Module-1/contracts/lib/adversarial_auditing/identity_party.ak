@@ -3,13 +3,20 @@
 //// The validator `identity_party` only wires the handlers of this module:
 ////
 //// - mint: verdict tokens. A token is minted only in the resolution of one
-////   challenge, and burned only in a verdict application.
+////   challenge. It is burned only in a verdict application or, after the
+////   verdict's `expires_at`, in a reclaim of the verdict output.
 //// - spend: a verdict output is spent only in the transaction that burns its
-////   token.
+////   token: a verdict application (with the own withdrawal), or a reclaim
+////   after `expires_at` that pays its AP3X to `deposit_to`.
 //// - withdraw: Module-1 approves only a Consent (it becomes a new party) and a
-////   verdict application (a Suspend or a Revoke by its party).
+////   verdict application (a Suspend or a Revoke by its party) until
+////   `expires_at`.
 ////
-//// The challenge validator calls `resolution_verdict_ok` in each resolution.
+//// The challenge validator calls `resolution_verdict_ok` in each oracle
+//// resolution (OracleResolve). Only oracle resolutions give verdicts: the
+//// auditor names the eligible jurors of a challenge, so a jury outcome does
+//// not give an identity verdict. ResolveJury, TimeoutResolve and
+//// CleanupResolved neither mint nor require a verdict.
 
 use adversarial_auditing/identity_checks.{
   Window, at_script_address, config_record_hash, mints_one_token,
@@ -18,20 +25,19 @@ use adversarial_auditing/identity_checks.{
 use adversarial_auditing/types.{
   ApplyVerdict, AuditingConfig, AuditorWins, BurnVerdict, ChallengeAction,
   ChallengeDatum, ClaimDatum, ClaimerWins, Consent, IdentityVerdict,
-  Inconclusive, MintVerdict, OracleResolve, PartyApproval, ResolveJury, Resolved,
-  Verdict, VerdictMint, VerdictPolicy, VerdictRevoke, VerdictRule,
-  VerdictSuspend,
+  Inconclusive, MintVerdict, OracleResolve, PartyApproval, Verdict, VerdictMint,
+  VerdictPolicy, VerdictRevoke, VerdictRule, VerdictSuspend,
 }
-use adversarial_auditing/utils.{get_cross_refs}
 use aiken/cbor
 use aiken/collection/dict
 use aiken/collection/list
 use aiken/collection/pairs
 use aiken/crypto.{blake2b_256}
-use cardano/address.{Credential, Script}
+use cardano/address.{Address, Credential, Script, VerificationKey}
 use cardano/assets
 use cardano/transaction.{
-  InlineDatum, Input, Mint, Output, OutputReference, Spend, Transaction,
+  InlineDatum, Input, Mint, NoDatum, Output, OutputReference, Spend,
+  Transaction,
 }
 use vector_identity.{days_30_ms, right_revoke, right_suspend}
 use vector_identity/redeemers.{
@@ -67,20 +73,29 @@ pub fn rule_ok(rule: VerdictRule) -> Bool {
   }
 }
 
-/// The verdict of the resolution in `tx`. The transaction spends exactly one
-/// input of the challenge validator `c`, which holds one challenge token and
-/// has the redeemer OracleResolve (outcome from the redeemer) or ResolveJury
-/// (outcome from the single continuing challenge output, state Resolved). The
-/// verdict policy must give a well-formed rule for the outcome. The claim of
-/// `c` is the input at the claim address that holds the claim token named in
-/// `c`. The agent is the losing side: the claimer for AuditorWins, the auditor
-/// for ClaimerWins. `challenge` is the output reference of `c`. The function
-/// fails when one of these conditions is false.
+/// The verdict of the oracle resolution in `tx`, with `deposit_to` from the
+/// verdict output. The transaction spends exactly one input of the challenge
+/// validator `c`, which holds one challenge token and has the redeemer
+/// OracleResolve; the outcome comes from that redeemer. Every other
+/// redeemer (ResolveJury included) gives no verdict, so the function fails.
+/// The verdict policy must give a well-formed rule for the outcome. The
+/// claim of `c` is the input at the claim validator `claim_hash` (a
+/// parameter of identity_party, not a value of the CrossValidatorRefs
+/// reference input) that holds the claim token named in `c`. The agent is the
+/// losing side: the claimer for AuditorWins, the auditor for ClaimerWins.
+/// `challenge` is the output reference of `c`. The validity range has finite
+/// bounds and lasts at most one hour (`window`), and `expires_at` is its
+/// upper bound plus 30 days. The function fails when one of these conditions
+/// is false.
 pub fn resolution_verdict(
   config: AuditingConfig,
   challenge_hash: ByteArray,
+  claim_hash: ByteArray,
+  deposit_to: Address,
   tx: Transaction,
 ) -> IdentityVerdict {
+  let Window { lo, hi } = window(tx.validity_range)
+  expect lo <= hi
   expect [challenge_input] =
     list.filter(
       tx.inputs,
@@ -98,25 +113,17 @@ pub fn resolution_verdict(
   let outcome =
     when action is {
       OracleResolve { verdict, .. } -> verdict
-      ResolveJury -> resolved_outcome(tx.outputs, challenge_hash)
-      _ -> fail @"identity_party: the challenge input is not resolved"
+      _ -> fail @"identity_party: the challenge input is not an oracle resolution"
     }
   expect Some(rule) = verdict_rule(config.verdict_policy, outcome)
   expect rule_ok(rule)
-  let refs = get_cross_refs(config, tx.reference_inputs)
   expect Some(claim_input) =
     list.find(
       tx.inputs,
       fn(input) {
         and {
-          input.output.address.payment_credential == Script(
-            refs.claim_validator_hash,
-          ),
-          assets.quantity_of(
-            input.output.value,
-            refs.claim_validator_hash,
-            challenge.claim_token,
-          ) == 1,
+          input.output.address.payment_credential == Script(claim_hash),
+          assets.quantity_of(input.output.value, claim_hash, challenge.claim_token) == 1,
         }
       },
     )
@@ -132,31 +139,20 @@ pub fn resolution_verdict(
     action: rule.action,
     duration: rule.duration,
     challenge: challenge_input.output_reference,
+    deposit_to,
+    expires_at: hi + days_30_ms,
   }
-}
-
-/// The outcome of a ResolveJury: the state Resolved of the single output at
-/// the challenge validator.
-fn resolved_outcome(outputs: List<Output>, challenge_hash: ByteArray) -> Verdict {
-  expect [output] =
-    list.filter(
-      outputs,
-      fn(output) { output.address.payment_credential == Script(challenge_hash) },
-    )
-  expect InlineDatum(data) = output.datum
-  expect challenge: ChallengeDatum = data
-  expect Resolved { verdict } = challenge.state
-  verdict
 }
 
 // ## Challenge side
 
-/// The verdict requirement of each challenge resolution (Part 2 §3.8). When
+/// The verdict requirement of each oracle resolution (Part 2 §3.8). When
 /// the verdict policy gives a verdict for `outcome`, the transaction mints
 /// exactly one token, with quantity 1, under `M1`. `M1` comes from the
 /// configuration record, so the challenge validator needs no compile-time
 /// hash of `identity_party`. `identity_party` checks the token name and the
-/// verdict output.
+/// verdict output. Only OracleResolve calls it; jury resolutions give no
+/// verdict.
 pub fn resolution_verdict_ok(
   config: AuditingConfig,
   outcome: Verdict,
@@ -178,16 +174,25 @@ pub fn resolution_verdict_ok(
 
 // ## Handlers
 
-/// Mint handler. MintVerdict: exactly one token under the own policy, named
+/// Mint handler.
+///
+/// MintVerdict: exactly one token under the own policy, named
 /// `verdict_token_name(v)` for the verdict `v` of the resolution (see
-/// `resolution_verdict`). The token goes to the exact enterprise address of
-/// the own script with `v` as its inline datum, AP3X and no other asset, and
-/// no reference script. BurnVerdict: exactly one token of the own policy is
-/// burned, in a transaction with the own withdrawal (`ApplyVerdict` is the
-/// only withdrawal approval that accepts a burn).
+/// `resolution_verdict`). `v.deposit_to` is the `deposit_to` of the inline
+/// datum of the output that holds the token; all other fields come from the
+/// resolution. The token goes to the exact enterprise address of the own
+/// script with `v` as its inline datum, AP3X and no other asset, and no
+/// reference script.
+///
+/// BurnVerdict: exactly one token of the own policy is burned, in a
+/// transaction with the own withdrawal (`ApplyVerdict` is the only withdrawal
+/// approval that accepts a burn), or in a transaction that spends the
+/// verdict output of that token after its `expires_at` (a reclaim; the spend
+/// handler checks the payout).
 pub fn mint_handler(
   config: AuditingConfig,
   challenge_hash: ByteArray,
+  claim_hash: ByteArray,
   redeemer: VerdictMint,
   own_policy: ByteArray,
   tx: Transaction,
@@ -195,31 +200,49 @@ pub fn mint_handler(
   when redeemer is {
     MintVerdict -> {
       expect [Pair(name, 1)] = dict.to_pairs(assets.tokens(tx.mint, own_policy))
-      let verdict = resolution_verdict(config, challenge_hash, tx)
-      and {
-        name == verdict_token_name(verdict),
-        verdict_output_ok(tx.outputs, own_policy, name, verdict),
+      expect Some(output) =
+        list.find(
+          tx.outputs,
+          fn(output) { assets.quantity_of(output.value, own_policy, name) != 0 },
+        )
+      when output.datum is {
+        InlineDatum(data) -> {
+          expect written: IdentityVerdict = data
+          let verdict =
+            resolution_verdict(
+              config,
+              challenge_hash,
+              claim_hash,
+              written.deposit_to,
+              tx,
+            )
+          and {
+            name == verdict_token_name(verdict),
+            verdict_output_ok(output, own_policy, name, verdict),
+          }
+        }
+        _ -> False
       }
     }
     BurnVerdict ->
       when dict.to_pairs(assets.tokens(tx.mint, own_policy)) is {
-        [Pair(_, -1)] -> pairs.has_key(tx.withdrawals, Script(own_policy))
+        [Pair(name, -1)] ->
+          pairs.has_key(tx.withdrawals, Script(own_policy)) || expired_verdict_spent(
+            own_policy,
+            name,
+            tx,
+          )
         _ -> False
       }
   }
 }
 
 fn verdict_output_ok(
-  outputs: List<Output>,
+  output: Output,
   own_policy: ByteArray,
   name: ByteArray,
   verdict: IdentityVerdict,
 ) -> Bool {
-  expect Some(output) =
-    list.find(
-      outputs,
-      fn(output) { assets.quantity_of(output.value, own_policy, name) != 0 },
-    )
   let verdict_data: Data = verdict
   and {
     at_script_address(output, own_policy),
@@ -233,9 +256,34 @@ fn verdict_output_ok(
   }
 }
 
+/// The transaction spends the verdict output that holds the token `name`,
+/// and that verdict expired before the lower bound of the validity range
+/// (`expires_at < lo`). The range has finite bounds and lasts at most one
+/// hour.
+fn expired_verdict_spent(
+  own_policy: ByteArray,
+  name: ByteArray,
+  tx: Transaction,
+) -> Bool {
+  let Window { lo, hi } = window(tx.validity_range)
+  expect Some(input) =
+    list.find(
+      tx.inputs,
+      fn(input) { assets.quantity_of(input.output.value, own_policy, name) == 1 },
+    )
+  expect InlineDatum(data) = input.output.datum
+  expect verdict: IdentityVerdict = data
+  lo <= hi && verdict.expires_at < lo
+}
+
 /// Spend handler: the spent input holds exactly one token of the own policy,
-/// the transaction burns that token (and no other token of the own policy),
-/// and it has the own withdrawal.
+/// and the transaction burns that token (and no other token of the own
+/// policy). Then either:
+///
+/// - the transaction has the own withdrawal: a verdict application, which
+///   the withdraw handler checks (`ApplyVerdict`); or
+/// - it has no own withdrawal: a reclaim (`reclaim_ok`), allowed only after
+///   the verdict's `expires_at`.
 pub fn spend_handler(own_ref: OutputReference, tx: Transaction) -> Bool {
   expect Some(own_input) =
     list.find(tx.inputs, fn(input) { input.output_reference == own_ref })
@@ -243,11 +291,59 @@ pub fn spend_handler(own_ref: OutputReference, tx: Transaction) -> Bool {
   when dict.to_pairs(assets.tokens(own_input.output.value, own_hash)) is {
     [Pair(name, 1)] ->
       when dict.to_pairs(assets.tokens(tx.mint, own_hash)) is {
-        [Pair(burned, -1)] ->
-          burned == name && pairs.has_key(tx.withdrawals, Script(own_hash))
+        [Pair(burned, -1)] -> and {
+            burned == name,
+            if pairs.has_key(tx.withdrawals, Script(own_hash)) {
+              True
+            } else {
+              reclaim_ok(own_input, name, tx)
+            },
+          }
         _ -> False
       }
     _ -> False
+  }
+}
+
+/// A reclaim of an expired verdict output (no verdict application):
+///
+/// - the validity range has finite bounds and lasts at most one hour;
+/// - the inline datum is a verdict `v` with `verdict_token_name(v)` = the
+///   token name, and `v.expires_at < lo`;
+/// - the transaction spends no other script input, so no other script can
+///   count the payout output;
+/// - an output at exactly `v.deposit_to`, without datum, holds at least the
+///   AP3X of the verdict output.
+fn reclaim_ok(own_input: Input, name: ByteArray, tx: Transaction) -> Bool {
+  let Window { lo, hi } = window(tx.validity_range)
+  expect InlineDatum(data) = own_input.output.datum
+  expect verdict: IdentityVerdict = data
+  let deposit = assets.lovelace_of(own_input.output.value)
+  and {
+    lo <= hi,
+    verdict_token_name(verdict) == name,
+    verdict.expires_at < lo,
+    list.all(
+      tx.inputs,
+      fn(input) {
+        input.output_reference == own_input.output_reference || when
+          input.output.address.payment_credential
+        is {
+          VerificationKey(_) -> True
+          Script(_) -> False
+        }
+      },
+    ),
+    list.any(
+      tx.outputs,
+      fn(output) {
+        and {
+          output.address == verdict.deposit_to,
+          output.datum == NoDatum,
+          assets.lovelace_of(output.value) >= deposit,
+        }
+      },
+    ),
   }
 }
 
@@ -390,6 +486,8 @@ fn consent_terms_ok(party: Party, lo: Int) -> Bool {
 /// - the transaction burns exactly one token of the own policy, held by an
 ///   input at the own script, whose inline datum is a verdict `v` with
 ///   `verdict_token_name(v)` = the token name;
+/// - the validity range ends at or before `v.expires_at` (`hi <= expires_at`),
+///   so an application and a reclaim never overlap in time;
 /// - its single identity input holds the token `(identity_hash, v.agent)`;
 /// - suspend: the identity redeemer is `Suspend { ByParty { index } }` for a
 ///   Module-1 party, and the new record holds the Module-1 hold
@@ -438,6 +536,7 @@ pub fn apply_verdict_ok(
   // on every path.
   and {
     lo <= hi,
+    hi <= verdict.expires_at,
     verdict_input.output.address.payment_credential == Script(own_hash),
     verdict_token_name(verdict) == name,
     assets.quantity_of(record_input.output.value, identity_hash, verdict.agent) == 1,

@@ -21,7 +21,7 @@
     "refs_token_policy": "00000000000000000000000000000000000000000000000000000000"
   },
   "verdict_policy": {
-    "_comment": "PLACEHOLDER: the verdict policy is an open item (Part 2 §13.4, owners David and the module owners). The agent of a verdict is the losing side: auditor_wins names the claimer, claimer_wins names the auditor. action: suspend (duration_ms 1..2592000000) or revoke (duration_ms 0). null means no verdict.",
+    "_comment": "PLACEHOLDER: the verdict policy is an open item (Part 2 §13.4, owners David and the module owners). It applies only to oracle resolutions (OracleResolve, oracle mode): jury resolutions, Inconclusive outcomes and timeouts give no verdict. The agent of a verdict is the losing side: auditor_wins names the claimer, claimer_wins names the auditor. action: suspend (duration_ms 1..2592000000) or revoke (duration_ms 0). null means no verdict.",
     "auditor_wins": {
       "action": "suspend",
       "duration_ms": 604800000

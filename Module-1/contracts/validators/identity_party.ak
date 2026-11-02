@@ -16,18 +16,27 @@ use cardano/transaction.{OutputReference, Transaction}
 ///   config          — the Module-1 AuditingConfig (identity hash, refs token
 ///                     policy, configuration record keys, verdict policy)
 ///   challenge_hash  — hash of the Module-1 challenge validator
+///   claim_hash      — hash of the Module-1 claim validator. The verdict mint
+///                     reads the claim of the resolved challenge at this
+///                     script, not at a hash from the CrossValidatorRefs
+///                     reference input.
 ///
-/// Mint handler:   verdict tokens (MintVerdict in a resolution, BurnVerdict
-///                 in a verdict application)
+/// Mint handler:   verdict tokens (MintVerdict in an oracle resolution,
+///                 BurnVerdict in a verdict application or a reclaim after
+///                 the verdict's expiry)
 /// Spend handler:  verdict outputs, only with the burn of their token
 /// Withdraw:       Consent and ApplyVerdict
 /// Other purposes fail (publish, vote, propose), so the stake credential
 /// cannot be deregistered or delegated.
 ///
 /// The rules are in adversarial_auditing/identity_party.ak.
-validator identity_party(config: AuditingConfig, challenge_hash: ByteArray) {
+validator identity_party(
+  config: AuditingConfig,
+  challenge_hash: ByteArray,
+  claim_hash: ByteArray,
+) {
   mint(redeemer: VerdictMint, policy_id: PolicyId, tx: Transaction) {
-    mint_handler(config, challenge_hash, redeemer, policy_id, tx)
+    mint_handler(config, challenge_hash, claim_hash, redeemer, policy_id, tx)
   }
 
   spend(

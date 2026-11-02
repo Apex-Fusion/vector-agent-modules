@@ -9,22 +9,24 @@ use adversarial_auditing/identity_party.{
   withdraw_handler,
 }
 use adversarial_auditing/types.{
-  ApplyVerdict, AuditingConfig, AuditorWins, BurnVerdict, ChallengeDatum,
-  ClaimerWins, CleanupResolved, Consent, IdentityVerdict, Inconclusive,
-  MintVerdict, PartyApproval, PendingOracle, Resolved, SubmitEvidence,
-  TimeoutResolve, VerdictPolicy, VerdictRevoke, VerdictRule, VerdictSuspend,
+  ApplyVerdict, AuditingConfig, AuditorWins, BurnVerdict, ClaimDatum,
+  ClaimerWins, CleanupResolved, Consent, CrossValidatorRefs, IdentityVerdict,
+  Inconclusive, MintVerdict, PartyApproval, PendingOracle, SubmitEvidence,
+  TimeoutResolve, VerdictAction, VerdictPolicy, VerdictRevoke, VerdictRule,
+  VerdictSuspend,
 }
 use adversarial_auditing_tests/identity_fixtures.{
   accountable_key_party, agent_a, agent_b, apply_tx, auditing_config,
   base_verdict, challenge_datum, challenge_input, challenge_ref,
   challenged_claim_datum, claim_hash, claim_input, config_input,
-  consent_register_tx, consent_update_tx, controller_a, hash_32, identity_hash,
-  identity_spend_tx, jury_resolution_tx, largest_record, lo, module1_hash,
-  module1_party, module1_signer, oracle_resolution_tx, other_claim_token,
-  other_script_hash, out_ref, placeholder_verdict_policy, record_a, record_b,
-  record_input, record_output, revoke_verdict_policy, script_address, ten_holds,
-  to_data, verdict, verdict_hold, verdict_input, verdict_output, verdict_ref,
-  with_holds,
+  consent_register_tx, consent_update_tx, controller_a, cross_refs, hash_32, hi,
+  identity_hash, identity_spend_tx, jury_resolution_with_verdict_tx,
+  largest_record, lo, module1_hash, module1_party, module1_signer,
+  oracle_resolution_tx, other_claim_token, other_script_hash, out_ref,
+  placeholder_verdict_policy, record_a, record_b, record_input, record_output,
+  refs_input, revoke_verdict_policy, script_address, ten_holds, to_data,
+  verdict, verdict_hold, verdict_input, verdict_output, verdict_ref,
+  wallet_input, with_holds,
 }
 use aiken/cbor
 use aiken/collection/list
@@ -33,7 +35,8 @@ use aiken/interval
 use cardano/address.{Address, Inline, Script, VerificationKey}
 use cardano/assets
 use cardano/transaction.{
-  DatumHash, InlineDatum, Input, Mint, Output, Spend, Transaction,
+  DatumHash, InlineDatum, Input, Mint, NoDatum, Output, OutputReference, Spend,
+  Transaction, placeholder,
 }
 use vector_identity.{day_ms, days_30_ms, days_7_ms}
 use vector_identity/redeemers.{
@@ -57,7 +60,7 @@ fn revoke_cfg() -> AuditingConfig {
 }
 
 fn mint_ok(config: AuditingConfig, tx: Transaction) -> Bool {
-  mint_handler(config, challenge_hash(), MintVerdict, module1_hash, tx)
+  mint_handler(config, challenge_hash(), claim_hash, MintVerdict, module1_hash, tx)
 }
 
 fn challenge_hash() -> ByteArray {
@@ -65,7 +68,7 @@ fn challenge_hash() -> ByteArray {
 }
 
 fn burn_ok(tx: Transaction) -> Bool {
-  mint_handler(cfg(), challenge_hash(), BurnVerdict, module1_hash, tx)
+  mint_handler(cfg(), challenge_hash(), claim_hash, BurnVerdict, module1_hash, tx)
 }
 
 fn approve(approval: PartyApproval, tx: Transaction) -> Bool {
@@ -207,8 +210,9 @@ test mint_oracle_auditor_wins_suspend() {
   mint_ok(cfg(), oracle_tx())
 }
 
-test mint_jury_auditor_wins_suspend() {
-  mint_ok(cfg(), jury_resolution_tx(AuditorWins, base_verdict()))
+test mint_fails_for_jury_resolution() fail {
+  // Only oracle resolutions give verdicts; a jury outcome gives none.
+  mint_ok(cfg(), jury_resolution_with_verdict_tx(AuditorWins, base_verdict()))
 }
 
 test mint_revoke_policy_names_claimer() {
@@ -222,10 +226,13 @@ test mint_claimer_wins_names_auditor() {
   )
 }
 
-test mint_jury_claimer_wins_names_auditor() {
+test mint_fails_for_jury_resolution_with_claimer_wins() fail {
   mint_ok(
     revoke_cfg(),
-    jury_resolution_tx(ClaimerWins, verdict(agent_b, VerdictSuspend, day_ms)),
+    jury_resolution_with_verdict_tx(
+      ClaimerWins,
+      verdict(agent_b, VerdictSuspend, day_ms),
+    ),
   )
 }
 
@@ -235,6 +242,12 @@ test verdict_token_name_is_hash_of_serialised_verdict() {
     verdict_token_name(v) == blake2b_256(cbor.serialise(v)),
     verdict_token_name(v) != verdict_token_name(
       IdentityVerdict { ..v, duration: v.duration + 1 },
+    ),
+    verdict_token_name(v) != verdict_token_name(
+      IdentityVerdict { ..v, deposit_to: script_address(other_script_hash) },
+    ),
+    verdict_token_name(v) != verdict_token_name(
+      IdentityVerdict { ..v, expires_at: v.expires_at + 1 },
     ),
   }
 }
@@ -346,29 +359,6 @@ test mint_fails_for_outcome_without_rule() fail {
       verdict(agent_b, VerdictSuspend, days_7_ms),
     ),
   )
-}
-
-test mint_fails_when_jury_output_has_other_outcome() fail {
-  let tx = jury_resolution_tx(AuditorWins, base_verdict())
-  expect [_challenge_output, ..rest] = tx.outputs
-  let other =
-    Output {
-      address: script_address(identity_fixtures.challenge_hash),
-      value: assets.from_lovelace(100_000_000)
-        |> assets.add(
-            identity_fixtures.challenge_hash,
-            identity_fixtures.challenge_token,
-            1,
-          ),
-      datum: InlineDatum(
-        ChallengeDatum {
-          ..challenge_datum(PendingOracle),
-          state: Resolved { verdict: ClaimerWins },
-        },
-      ),
-      reference_script: None,
-    }
-  mint_ok(cfg(), Transaction { ..tx, outputs: [other, ..rest] })
 }
 
 test mint_fails_when_claim_is_not_bound() fail {
@@ -598,18 +588,6 @@ test resolution_with_verdict_mint() {
 
 test resolution_without_verdict_mint_fails() {
   !resolution_verdict_ok(cfg(), AuditorWins, without_verdict_mint(oracle_tx()))
-}
-
-test resolution_jury_without_verdict_mint_fails() {
-  let tx = jury_resolution_tx(AuditorWins, base_verdict())
-  !resolution_verdict_ok(
-    cfg(),
-    AuditorWins,
-    Transaction {
-      ..tx,
-      mint: assets.from_asset(claim_hash, identity_fixtures.claim_token, -1),
-    },
-  )
 }
 
 test resolution_with_two_verdict_tokens_fails() {
@@ -1726,11 +1704,10 @@ const bench_revoke_tx: Transaction =
 
 const bench_consent_tx: Transaction = largest_consent_tx()
 
-const bench_jury_tx: Transaction =
-  jury_resolution_tx(AuditorWins, base_verdict())
-
 const bench_oracle_tx: Transaction =
   oracle_resolution_tx(AuditorWins, base_verdict())
+
+const bench_reclaim_tx: Transaction = reclaim_tx(base_verdict())
 
 const bench_config: AuditingConfig =
   auditing_config(placeholder_verdict_policy())
@@ -1752,6 +1729,7 @@ test bench_apply_suspend_largest_record_burn() {
   mint_handler(
     bench_config,
     identity_fixtures.challenge_hash,
+    claim_hash,
     BurnVerdict,
     module1_hash,
     bench_suspend_tx,
@@ -1776,20 +1754,11 @@ test bench_consent_update_largest_record_withdraw() {
   )
 }
 
-test bench_mint_verdict_jury_resolution() {
-  mint_handler(
-    bench_config,
-    identity_fixtures.challenge_hash,
-    MintVerdict,
-    module1_hash,
-    bench_jury_tx,
-  )
-}
-
 test bench_mint_verdict_oracle_resolution() {
   mint_handler(
     bench_config,
     identity_fixtures.challenge_hash,
+    claim_hash,
     MintVerdict,
     module1_hash,
     bench_oracle_tx,
@@ -1797,7 +1766,22 @@ test bench_mint_verdict_oracle_resolution() {
 }
 
 test bench_resolution_verdict_requirement() {
-  resolution_verdict_ok(bench_config, AuditorWins, bench_jury_tx)
+  resolution_verdict_ok(bench_config, AuditorWins, bench_oracle_tx)
+}
+
+test bench_reclaim_spend() {
+  spend_handler(verdict_ref(), bench_reclaim_tx)
+}
+
+test bench_reclaim_burn() {
+  mint_handler(
+    bench_config,
+    identity_fixtures.challenge_hash,
+    claim_hash,
+    BurnVerdict,
+    module1_hash,
+    bench_reclaim_tx,
+  )
 }
 
 // ## Cross-cutting rules also run when the result would be False
@@ -1844,6 +1828,330 @@ test apply_range_rule_runs_when_result_is_false() fail {
     Transaction {
       ..suspend_tx(record_a(Active), record_a(Active)),
       validity_range: two_hour_range(),
+    },
+  )
+}
+
+// ## Verdict expiry: mint, application and reclaim
+
+/// The payout of a reclaim of `v`: all AP3X of the verdict output to
+/// `v.deposit_to`, without datum.
+fn reclaim_payout(v: IdentityVerdict) -> Output {
+  Output {
+    address: v.deposit_to,
+    value: assets.from_lovelace(2_000_000),
+    datum: NoDatum,
+    reference_script: None,
+  }
+}
+
+/// A reclaim of the verdict output of `v`: no withdrawal, the token is
+/// burned, the AP3X goes to `v.deposit_to`, and the range starts 1 ms after
+/// `v.expires_at`.
+fn reclaim_tx(v: IdentityVerdict) -> Transaction {
+  Transaction {
+    ..placeholder,
+    inputs: [verdict_input(v), wallet_input()],
+    outputs: [reclaim_payout(v)],
+    mint: assets.from_asset(module1_hash, verdict_token_name(v), -1),
+    validity_range: interval.between(v.expires_at + 1, v.expires_at + 600_000),
+    redeemers: [
+      Pair(Spend(verdict_ref()), to_data(Void)),
+      Pair(Mint(module1_hash), to_data(BurnVerdict)),
+    ],
+  }
+}
+
+fn reclaim_with_payout(payout: Output) -> Transaction {
+  Transaction { ..reclaim_tx(base_verdict()), outputs: [payout] }
+}
+
+test mint_sets_expiry_30_days_after_upper_bound() {
+  and {
+    base_verdict().expires_at == hi + days_30_ms,
+    mint_ok(cfg(), oracle_tx()),
+  }
+}
+
+test mint_fails_with_other_expiry() {
+  !mint_ok(
+    cfg(),
+    oracle_resolution_tx(
+      AuditorWins,
+      IdentityVerdict { ..base_verdict(), expires_at: hi + days_30_ms + 1 },
+    ),
+  )
+}
+
+test mint_fails_with_expiry_from_lower_bound() {
+  !mint_ok(
+    cfg(),
+    oracle_resolution_tx(
+      AuditorWins,
+      IdentityVerdict { ..base_verdict(), expires_at: lo + days_30_ms },
+    ),
+  )
+}
+
+test mint_takes_deposit_address_from_verdict_output() {
+  mint_ok(
+    cfg(),
+    oracle_resolution_tx(
+      AuditorWins,
+      IdentityVerdict {
+        ..base_verdict(),
+        deposit_to: script_address(other_script_hash),
+      },
+    ),
+  )
+}
+
+test mint_fails_with_unbounded_range() fail {
+  mint_ok(cfg(), Transaction { ..oracle_tx(), validity_range: interval.after(lo) })
+}
+
+test mint_fails_with_range_over_one_hour() fail {
+  mint_ok(cfg(), Transaction { ..oracle_tx(), validity_range: two_hour_range() })
+}
+
+/// The verdict layout without `deposit_to` and `expires_at`.
+type VerdictWithoutExpiry {
+  agent: ByteArray,
+  action: VerdictAction,
+  duration: Int,
+  challenge: OutputReference,
+}
+
+test mint_fails_with_verdict_without_expiry() fail {
+  let v = base_verdict()
+  let short =
+    VerdictWithoutExpiry {
+      agent: v.agent,
+      action: v.action,
+      duration: v.duration,
+      challenge: v.challenge,
+    }
+  let name = blake2b_256(cbor.serialise(short))
+  let tx = oracle_tx()
+  mint_ok(
+    cfg(),
+    Transaction {
+      ..with_last_output(
+        tx,
+        Output {
+          address: script_address(module1_hash),
+          value: assets.from_lovelace(2_000_000)
+            |> assets.add(module1_hash, name, 1),
+          datum: InlineDatum(short),
+          reference_script: None,
+        },
+      ),
+      mint: assets.zero
+        |> assets.add(identity_fixtures.challenge_hash, identity_fixtures.challenge_token, -1)
+        |> assets.add(claim_hash, identity_fixtures.claim_token, -1)
+        |> assets.add(module1_hash, name, 1),
+    },
+  )
+}
+
+test apply_until_expiry() {
+  let v = IdentityVerdict { ..base_verdict(), expires_at: hi }
+  approve(
+    ApplyVerdict,
+    apply_tx(
+      v,
+      agent_a,
+      record_a(Active),
+      suspended(record_a(Active), [], lo + days_7_ms),
+      suspend_by_module1(),
+    ),
+  )
+}
+
+test apply_fails_after_expiry() {
+  let v = IdentityVerdict { ..base_verdict(), expires_at: hi - 1 }
+  !approve(
+    ApplyVerdict,
+    apply_tx(
+      v,
+      agent_a,
+      record_a(Active),
+      suspended(record_a(Active), [], lo + days_7_ms),
+      suspend_by_module1(),
+    ),
+  )
+}
+
+test reclaim_after_expiry() {
+  let tx = reclaim_tx(base_verdict())
+  and {
+    spend_ok(tx),
+    burn_ok(tx),
+  }
+}
+
+test reclaim_with_more_ap3x_than_the_deposit() {
+  spend_ok(
+    reclaim_with_payout(
+      Output {
+        ..reclaim_payout(base_verdict()),
+        value: assets.from_lovelace(5_000_000),
+      },
+    ),
+  )
+}
+
+test reclaim_at_expiry_fails() {
+  let v = base_verdict()
+  let tx =
+    Transaction {
+      ..reclaim_tx(v),
+      validity_range: interval.between(v.expires_at, v.expires_at + 600_000),
+    }
+  and {
+    !spend_ok(tx),
+    !burn_ok(tx),
+  }
+}
+
+test reclaim_before_expiry_fails() {
+  let tx = Transaction { ..reclaim_tx(base_verdict()), validity_range: interval.between(lo, hi) }
+  and {
+    !spend_ok(tx),
+    !burn_ok(tx),
+  }
+}
+
+test reclaim_fails_with_payout_to_other_address() {
+  !spend_ok(
+    reclaim_with_payout(
+      Output {
+        ..reclaim_payout(base_verdict()),
+        address: script_address(other_script_hash),
+      },
+    ),
+  )
+}
+
+test reclaim_fails_with_less_ap3x() {
+  !spend_ok(
+    reclaim_with_payout(
+      Output {
+        ..reclaim_payout(base_verdict()),
+        value: assets.from_lovelace(1_999_999),
+      },
+    ),
+  )
+}
+
+test reclaim_fails_with_datum_on_payout() {
+  !spend_ok(
+    reclaim_with_payout(
+      Output { ..reclaim_payout(base_verdict()), datum: InlineDatum(base_verdict()) },
+    ),
+  )
+}
+
+test reclaim_fails_with_other_script_input() {
+  let tx = reclaim_tx(base_verdict())
+  !spend_ok(
+    Transaction {
+      ..tx,
+      inputs: [
+        claim_input(identity_fixtures.claim_token, challenged_claim_datum()),
+        ..tx.inputs
+      ],
+    },
+  )
+}
+
+test reclaim_fails_without_burn() {
+  !spend_ok(Transaction { ..reclaim_tx(base_verdict()), mint: assets.zero })
+}
+
+test reclaim_fails_with_unbounded_range() fail {
+  let v = base_verdict()
+  spend_ok(
+    Transaction {
+      ..reclaim_tx(v),
+      validity_range: interval.after(v.expires_at + 1),
+    },
+  )
+}
+
+test reclaim_fails_when_verdict_data_does_not_match_name() {
+  let v = base_verdict()
+  let tx = reclaim_tx(v)
+  let input = verdict_input(v)
+  let other = IdentityVerdict { ..v, expires_at: lo - 1 }
+  !spend_ok(
+    Transaction {
+      ..tx,
+      inputs: [
+        Input {
+          ..input,
+          output: Output { ..input.output, datum: InlineDatum(other) },
+        },
+        wallet_input(),
+      ],
+      validity_range: window_range_of(lo),
+    },
+  )
+}
+
+/// A range of 10 minutes from `start`.
+fn window_range_of(start: Int) -> interval.Interval {
+  interval.between(start, start + 600_000)
+}
+
+// ## The claim validator is a parameter of identity_party
+
+test mint_ignores_claim_validator_of_refs_record() fail {
+  // The CrossValidatorRefs reference input names another claim validator,
+  // and the claim input at that script names another claimer. The verdict
+  // mint reads the claim only at the claim validator of its parameters.
+  let named = other_script_hash
+  let tx =
+    oracle_resolution_tx(AuditorWins, verdict(agent_b, VerdictSuspend, days_7_ms))
+  let refs = refs_input()
+  let other_refs =
+    Input {
+      ..refs,
+      output: Output {
+        ..refs.output,
+        datum: InlineDatum(
+          CrossValidatorRefs { ..cross_refs(), claim_validator_hash: named },
+        ),
+      },
+    }
+  let other_claim =
+    Input {
+      output_reference: identity_fixtures.claim_ref(),
+      output: Output {
+        address: script_address(named),
+        value: assets.from_lovelace(100_000_000)
+          |> assets.add(named, identity_fixtures.claim_token, 1),
+        datum: InlineDatum(
+          ClaimDatum { ..challenged_claim_datum(), claimer_did: agent_b },
+        ),
+        reference_script: None,
+      },
+    }
+  mint_ok(
+    cfg(),
+    Transaction {
+      ..tx,
+      inputs: list.map(
+        tx.inputs,
+        fn(input) {
+          if input.output_reference == identity_fixtures.claim_ref() {
+            other_claim
+          } else {
+            input
+          }
+        },
+      ),
+      reference_inputs: [other_refs, config_input(module1_hash)],
     },
   )
 }

@@ -10,11 +10,13 @@ use adversarial_auditing/identity_party.{verdict_token_name}
 use adversarial_auditing/params.{ProtocolParams}
 use adversarial_auditing/types.{
   ApplyVerdict, AuditingConfig, AuditorWins, BurnVerdict, ChallengeDatum,
-  ChallengeState, Challenged, ClaimDatum, Consent, CrossValidatorRefs,
-  ForfeitClaim, IdentityVerdict, Inconclusive, JurorDatum, MintVerdict,
-  OracleResolve, PendingOracle, ResolveJury, Resolved, Verdict, VerdictAction,
-  VerdictPolicy, VerdictRevoke, VerdictRule, VerdictSuspend, Voting,
+  ChallengeState, Challenged, ClaimDatum, CleanupResolved, Consent,
+  CrossValidatorRefs, ForfeitClaim, IdentityVerdict, Inconclusive, JurorDatum,
+  MintVerdict, OracleResolve, PendingOracle, ResolveJury, Resolved,
+  TimeoutResolve, Verdict, VerdictAction, VerdictPolicy, VerdictRevoke,
+  VerdictRule, VerdictSuspend, Voting,
 }
+use aiken/collection/list
 use aiken/crypto.{blake2b_224}
 use aiken/interval.{Interval}
 use aiken/primitive/bytearray
@@ -24,7 +26,7 @@ use cardano/transaction.{
   InlineDatum, Input, Mint, NoDatum, Output, OutputReference, Spend, Transaction,
   Withdraw, placeholder,
 }
-use vector_identity.{day_ms, days_7_ms, right_revoke, right_suspend}
+use vector_identity.{day_ms, days_30_ms, days_7_ms, right_revoke, right_suspend}
 use vector_identity/redeemers.{IdentitySpend, Register, Update}
 use vector_identity/types.{
   Accountable, Active, ControllerSet, Distributor, Ed25519, Guardian, Hold,
@@ -238,12 +240,19 @@ pub fn wallet_input() -> Input {
   Input {
     output_reference: out_ref(0xf, 0),
     output: Output {
-      address: key_address(blake2b_224(controller_b)),
+      address: funder_address(),
       value: assets.from_lovelace(500_000_000),
       datum: NoDatum,
       reference_script: None,
     },
   }
+}
+
+/// The address of the wallet input: the funder of the verdict output
+/// deposit (`deposit_to`) and of the AP3X that a Resolved output keeps
+/// (`refund_to`) in these tests.
+pub fn funder_address() -> Address {
+  key_address(blake2b_224(controller_b))
 }
 
 /// The configuration record: at the exact config_holder address, with the
@@ -595,7 +604,14 @@ pub fn verdict(
   action: VerdictAction,
   duration: Int,
 ) -> IdentityVerdict {
-  IdentityVerdict { agent, action, duration, challenge: challenge_ref() }
+  IdentityVerdict {
+    agent,
+    action,
+    duration,
+    challenge: challenge_ref(),
+    deposit_to: funder_address(),
+    expires_at: hi + days_30_ms,
+  }
 }
 
 /// The verdict of the base resolution under the placeholder policy.
@@ -731,11 +747,12 @@ pub fn juror_inputs(outcome: Verdict) -> List<Input> {
 }
 
 /// ResolveJury of the base challenge (state Voting) with `outcome` (tally
-/// of `juror_inputs(outcome)`): the challenge continues with Resolved, the
-/// claim token is burned, the winner gets both stakes minus the jury fee, the
-/// jury pool gets the fee, and the token of `v` is minted to its verdict
-/// output.
-pub fn jury_resolution_tx(outcome: Verdict, v: IdentityVerdict) -> Transaction {
+/// of `juror_inputs(outcome)`): the challenge continues with Resolved (the
+/// wallet funds the kept AP3X, refund_to = `funder_address()`), the claim
+/// token is burned, the winner gets both stakes minus the jury fee, and the
+/// jury pool gets the fee. A jury resolution gives no verdict, so the
+/// transaction mints none.
+pub fn jury_resolution_tx(outcome: Verdict) -> Transaction {
   let voting = challenge_datum(Voting { selected_jurors: juror_dids() })
   let (winner, payout) =
     when outcome is {
@@ -749,18 +766,17 @@ pub fn jury_resolution_tx(outcome: Verdict, v: IdentityVerdict) -> Transaction {
       claim_input(claim_token, challenged_claim_datum()),
       wallet_input(),
     ],
-    reference_inputs: [
-      refs_input(),
-      config_input(module1_hash),
-      ..juror_inputs(outcome)
-    ],
+    reference_inputs: [refs_input(), ..juror_inputs(outcome)],
     outputs: [
       Output {
         address: script_address(challenge_hash),
         value: assets.from_lovelace(100_000_000)
           |> assets.add(challenge_hash, challenge_token, 1),
         datum: InlineDatum(
-          ChallengeDatum { ..voting, state: Resolved { verdict: outcome } },
+          ChallengeDatum {
+            ..voting,
+            state: Resolved { verdict: outcome, refund_to: funder_address() },
+          },
         ),
         reference_script: None,
       },
@@ -776,18 +792,148 @@ pub fn jury_resolution_tx(outcome: Verdict, v: IdentityVerdict) -> Transaction {
         datum: NoDatum,
         reference_script: None,
       },
-      verdict_output(v),
     ],
-    mint: assets.zero
-      |> assets.add(claim_hash, claim_token, -1)
-      |> assets.add(module1_hash, verdict_token_name(v), 1),
+    mint: assets.from_asset(claim_hash, claim_token, -1),
     extra_signatories: [],
     validity_range: window_range(),
     redeemers: [
       Pair(Spend(challenge_ref()), data(ResolveJury)),
       Pair(Spend(claim_ref()), data(ForfeitClaim)),
-      Pair(Mint(module1_hash), data(MintVerdict)),
     ],
+  }
+}
+
+/// `jury_resolution_tx(outcome)` that also tries to mint the verdict `v`
+/// (verdict output, MintVerdict redeemer and the configuration record).
+/// identity_party must reject it: jury resolutions give no verdict.
+pub fn jury_resolution_with_verdict_tx(
+  outcome: Verdict,
+  v: IdentityVerdict,
+) -> Transaction {
+  let tx = jury_resolution_tx(outcome)
+  Transaction {
+    ..tx,
+    reference_inputs: [config_input(module1_hash), ..tx.reference_inputs],
+    outputs: list.concat(tx.outputs, [verdict_output(v)]),
+    mint: assets.add(tx.mint, module1_hash, verdict_token_name(v), 1),
+    redeemers: list.concat(
+      tx.redeemers,
+      [Pair(Mint(module1_hash), data(MintVerdict))],
+    ),
+  }
+}
+
+/// The base challenge in state Resolved with `outcome`; refund_to is
+/// `funder_address()`.
+pub fn resolved_challenge_datum(outcome: Verdict) -> ChallengeDatum {
+  challenge_datum(Resolved { verdict: outcome, refund_to: funder_address() })
+}
+
+/// The payout of the AP3X that a Resolved output keeps: to
+/// `funder_address()`, without datum.
+pub fn refund_output(amount: Int) -> Output {
+  Output {
+    address: funder_address(),
+    value: assets.from_lovelace(amount),
+    datum: NoDatum,
+    reference_script: None,
+  }
+}
+
+/// CleanupResolved of the challenge `datum` (state Resolved, refund_to =
+/// `funder_address()`) after the cleanup time: the challenge token is burned
+/// and all AP3X of the Resolved output goes to refund_to.
+pub fn cleanup_tx(datum: ChallengeDatum) -> Transaction {
+  let start =
+    datum.challenged_at + datum.resolution_deadline + protocol_params().cleanup_buffer + 1
+  Transaction {
+    ..placeholder,
+    inputs: [challenge_input(datum), wallet_input()],
+    outputs: [refund_output(datum.stake_amount)],
+    mint: assets.from_asset(challenge_hash, challenge_token, -1),
+    validity_range: interval.between(start, start + 600_000),
+    redeemers: [Pair(Spend(challenge_ref()), data(CleanupResolved))],
+  }
+}
+
+/// TimeoutResolve of the base challenge (state PendingOracle) after its
+/// resolution deadline: the challenge and claim tokens are burned, and each
+/// side gets its stake back.
+pub fn timeout_resolution_tx() -> Transaction {
+  let datum = challenge_datum(PendingOracle)
+  let start = datum.challenged_at + datum.resolution_deadline + 1
+  Transaction {
+    ..placeholder,
+    inputs: [
+      challenge_input(datum),
+      claim_input(claim_token, challenged_claim_datum()),
+      wallet_input(),
+    ],
+    outputs: [
+      Output {
+        address: key_address(blake2b_224(tx_key_a)),
+        value: assets.from_lovelace(100_000_000),
+        datum: NoDatum,
+        reference_script: None,
+      },
+      Output {
+        address: key_address(blake2b_224(controller_b)),
+        value: assets.from_lovelace(100_000_000),
+        datum: NoDatum,
+        reference_script: None,
+      },
+    ],
+    mint: assets.from_asset(challenge_hash, challenge_token, -1)
+      |> assets.add(claim_hash, claim_token, -1),
+    validity_range: interval.between(start, start + 600_000),
+    redeemers: [
+      Pair(Spend(challenge_ref()), data(TimeoutResolve)),
+      Pair(Spend(claim_ref()), data(ForfeitClaim)),
+    ],
+  }
+}
+
+/// `tx` with its claim input replaced by a claim at the same output
+/// reference that holds `other_claim_token`, and with the burn of
+/// `other_claim_token` instead of `claim_token`.
+pub fn with_claim_of_other_challenge(tx: Transaction) -> Transaction {
+  Transaction {
+    ..tx,
+    inputs: list.map(
+      tx.inputs,
+      fn(input) {
+        if input.output_reference == claim_ref() {
+          claim_input(other_claim_token, challenged_claim_datum())
+        } else {
+          input
+        }
+      },
+    ),
+    mint: tx.mint
+      |> assets.add(claim_hash, claim_token, 1)
+      |> assets.add(claim_hash, other_claim_token, -1),
+  }
+}
+
+/// `tx` with the datum of its challenge input naming `other_claim_token`:
+/// the challenge of another claim.
+pub fn with_challenge_of_other_claim(tx: Transaction) -> Transaction {
+  Transaction {
+    ..tx,
+    inputs: list.map(
+      tx.inputs,
+      fn(input) {
+        if input.output_reference == challenge_ref() {
+          expect InlineDatum(data) = input.output.datum
+          expect datum: ChallengeDatum = data
+          challenge_input(
+            ChallengeDatum { ..datum, claim_token: other_claim_token },
+          )
+        } else {
+          input
+        }
+      },
+    ),
   }
 }
 

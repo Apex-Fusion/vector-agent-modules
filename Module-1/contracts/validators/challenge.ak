@@ -24,9 +24,12 @@
 ///   - Auditor DID != Claimer DID (anti-self-audit, spec §4.3)
 ///   - Auditor stake >= Claim stake (economic deterrent)
 ///   - Auditor identity checked in the identity registry (Part 2 §7)
-///   - The challenge names the claim token of its claim (claim_token)
-///   - Each resolution that the verdict policy turns into a verdict mints one
-///     verdict token of identity_party (M1 from the configuration record)
+///   - The challenge names the claim token of its claim (claim_token); each
+///     resolution accepts only the claim input that holds it
+///   - Each OracleResolve that the verdict policy turns into a verdict mints
+///     one verdict token of identity_party (M1 from the configuration
+///     record). Jury resolutions give no verdict.
+///   - CleanupResolved pays the AP3X of the Resolved output to its refund_to
 
 use aiken/collection/dict
 use aiken/crypto.{blake2b_224}
@@ -57,11 +60,14 @@ use adversarial_auditing/utils.{
 use vector_identity/types.{Active, IdentityDatum, Party} as vi
 use adversarial_auditing_tests/identity_fixtures.{
   accountable_key_party, agent_b, agent_record, auditing_config, base_verdict,
-  challenge_datum, challenge_input, challenge_ref, challenge_token, claim_token,
-  controller_b, cross_refs, ed25519_key, hash_32, juror_dids,
-  jury_resolution_tx, key_credential, oracle_resolution_tx, out_ref,
-  placeholder_verdict_policy, protocol_params, record_input,
-  revoke_verdict_policy, stranger_key, tx_key_a, verdict,
+  challenge_datum, challenge_input, challenge_ref, challenge_token,
+  challenged_claim_datum, claim_input, claim_token, cleanup_tx, controller_b,
+  cross_refs, ed25519_key, funder_address, hash_32, hi, juror_dids,
+  jury_resolution_tx, key_address, key_credential, lo, oracle_resolution_tx,
+  other_claim_token, other_script_hash, out_ref, placeholder_verdict_policy,
+  protocol_params, record_input, refund_output, resolved_challenge_datum,
+  revoke_verdict_policy, script_address, stranger_key, timeout_resolution_tx,
+  tx_key_a, verdict, with_claim_of_other_challenge,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -451,16 +457,13 @@ fn validate_oracle_resolve(
       None -> False
     }
 
-  // Claim token burned in same tx (claim.ak ForfeitClaim runs atomically).
+  // The claim of this challenge: the claim input that holds the claim token
+  // named in the challenge (claim_token). Its token is burned in the same
+  // tx (claim.ak ForfeitClaim runs atomically).
+  let (claim_stake, claimer_cred) =
+    bound_claim(tx.inputs, refs.claim_validator_hash, ch.claim_token)
   let claim_token_burned =
-    list.any(
-      dict.to_pairs(assets.tokens(tx.mint, refs.claim_validator_hash)),
-      fn(p) { p.2nd == -1 },
-    )
-
-  // Read claimer info from the consumed claim input.
-  let claim_stake = find_claim_stake(tx.inputs, refs.claim_validator_hash, config)
-  let claimer_cred = find_claimer_cred(tx.inputs, refs.claim_validator_hash)
+    assets.quantity_of(tx.mint, refs.claim_validator_hash, ch.claim_token) == -1
 
   // Stake distribution: no jury fee in oracle mode.
   let distribution_ok =
@@ -601,8 +604,13 @@ fn validate_resolve_jury(
                   InlineDatum(raw) -> {
                     expect updated: ChallengeDatum = raw
                     and {
-                      // State transitions to Resolved{verdict}.
-                      updated.state == Resolved { verdict },
+                      // State transitions to Resolved{verdict, refund_to}.
+                      // refund_to is free: it names the funder of the AP3X
+                      // that this output keeps (CleanupResolved pays it back).
+                      when updated.state is {
+                        Resolved { verdict: written, .. } -> written == verdict
+                        _ -> False
+                      },
                       // All other fields immutable.
                       updated.claim_ref == ch.claim_ref,
                       updated.auditor_did == ch.auditor_did,
@@ -620,9 +628,10 @@ fn validate_resolve_jury(
                         refs.challenge_validator_hash,
                         token_name,
                       ) == 1,
-                      // AP3X stake preserved (stakes distributed separately to winners).
-                      // Note: the AP3X in the continuing output holds the auditor's stake.
-                      // Winner payouts and jury fee are separate outputs.
+                      // The output keeps AP3X equal to the auditor stake. The
+                      // winner payouts and the jury fee are separate outputs
+                      // that use both stakes, so the transaction funds this
+                      // AP3X; CleanupResolved pays it to refund_to.
                       assets.lovelace_of(out.value) == ch.stake_amount,
                     }
                   }
@@ -636,17 +645,14 @@ fn validate_resolve_jury(
       None -> False
     }
 
-  // Claim token still burned (claim.ak ForfeitClaim runs atomically).
+  // The claim of this challenge (claim_token) is spent, and its token is
+  // burned (claim.ak ForfeitClaim runs atomically).
+  let (claim_stake, claimer_cred) =
+    bound_claim(tx.inputs, refs.claim_validator_hash, ch.claim_token)
   let claim_burned =
-    list.any(
-      dict.to_pairs(assets.tokens(tx.mint, refs.claim_validator_hash)),
-      fn(p) { p.2nd == -1 },
-    )
+    assets.quantity_of(tx.mint, refs.claim_validator_hash, ch.claim_token) == -1
 
   // Stake distribution (jury fee to jury_pool, winner payout).
-  let claim_stake = find_claim_stake(tx.inputs, refs.claim_validator_hash, config)
-  let claimer_cred = find_claimer_cred(tx.inputs, refs.claim_validator_hash)
-
   let distribution_ok =
     verify_jury_distribution(
       config,
@@ -668,9 +674,9 @@ fn validate_resolve_jury(
   // Phase 1.1: No oracle signature needed — votes are authenticated on-chain
   // via commit-reveal. ResolveJury is fully permissionless.
 
-  // Identity verdict: when the verdict policy turns the tally into a
-  // verdict, the transaction mints exactly one verdict token of M1.
-  let verdict_minted = resolution_verdict_ok(config, verdict, tx)
+  // No identity verdict: the auditor names the eligible jurors, so a jury
+  // outcome never becomes a verdict (identity_party mints verdicts only in
+  // OracleResolve). The jury outcome moves the stakes only.
 
   and {
     votes_not_empty,
@@ -681,7 +687,6 @@ fn validate_resolve_jury(
     claim_burned,
     distribution_ok,
     single_challenge_output,
-    verdict_minted,
   }
 }
 
@@ -692,7 +697,7 @@ fn validate_resolve_jury(
 // Spec §4.8: resolution deadline expired. Return both stakes in full.
 
 fn validate_timeout_resolve(
-  config: AuditingConfig,
+  _config: AuditingConfig,
   refs: CrossValidatorRefs,
   ch: ChallengeDatum,
   own_ref: OutputReference,
@@ -722,14 +727,12 @@ fn validate_timeout_resolve(
       None -> False
     }
 
+  // The claim of this challenge (claim_token) is spent, and its token is
+  // burned.
+  let (claim_stake, claimer_cred) =
+    bound_claim(tx.inputs, refs.claim_validator_hash, ch.claim_token)
   let claim_burned =
-    list.any(
-      dict.to_pairs(assets.tokens(tx.mint, refs.claim_validator_hash)),
-      fn(p) { p.2nd == -1 },
-    )
-
-  let claim_stake = find_claim_stake(tx.inputs, refs.claim_validator_hash, config)
-  let claimer_cred = find_claimer_cred(tx.inputs, refs.claim_validator_hash)
+    assets.quantity_of(tx.mint, refs.claim_validator_hash, ch.claim_token) == -1
 
   // Exact refund amounts — use == not >= to prevent AP3X draining.
   let claimer_refunded =
@@ -874,10 +877,14 @@ fn validate_transition_to_voting(
 // fix: Finding-002 Option A — deferred burn of the challenge token.
 // After DistributeRewards has used the Resolved challenge UTxO as a
 // reference input for all jurors, CleanupResolved burns the challenge
-// token to reclaim the min-ADA and remove the UTxO from the ledger.
+// token and removes the UTxO from the ledger.
 //
-// Phase 1.0: oracle signature required (simple and safe).
-// Phase 1.1+: could verify no juror UTxOs still reference this challenge.
+// Payout rule: the Resolved output keeps AP3X equal to the auditor stake,
+// which the ResolveJury transaction funded (its payouts already use both
+// stakes). CleanupResolved pays all AP3X of the Resolved output to the
+// `refund_to` address of the Resolved state, without datum. Anybody can
+// submit it. The transaction spends no other script input, so it cannot
+// forfeit a claim, and no other script can count the refund output.
 
 fn validate_cleanup_resolved(
   config: AuditingConfig,
@@ -887,31 +894,41 @@ fn validate_cleanup_resolved(
   own_ref: OutputReference,
   tx: Transaction,
 ) -> Bool {
-  // State must be Resolved (any verdict).
-  let state_ok =
-    when ch.state is {
-      Resolved { .. } -> True
-      _ -> False
-    }
-
   // fix: Finding-P11-04 + Finding-V5 — Time lock with buffer for DistributeRewards.
   // Must be after resolution_deadline + cleanup_buffer to give jurors time to claim fees.
   let after_cleanup_allowed =
     tx_started_after(tx, ch.challenged_at + ch.resolution_deadline + params.cleanup_buffer)
 
   // Phase 1.1: permissionless — no oracle needed.
-  // Guards: state_ok + after_resolution + challenge_burned + no_challenge_outputs.
+
+  expect Some(inp) = find_input(tx.inputs, own_ref)
+
+  // State must be Resolved (any verdict). Its refund_to gets all AP3X of the
+  // Resolved output.
+  let refund_paid =
+    when ch.state is {
+      Resolved { refund_to, .. } -> {
+        let kept = assets.lovelace_of(inp.output.value)
+        list.any(
+          tx.outputs,
+          fn(o) {
+            and {
+              o.address == refund_to,
+              o.datum == NoDatum,
+              assets.lovelace_of(o.value) >= kept,
+            }
+          },
+        )
+      }
+      _ -> False
+    }
 
   // Challenge token burned.
   let challenge_burned =
-    when find_input(tx.inputs, own_ref) is {
-      Some(inp) ->
-        when dict.to_pairs(assets.tokens(inp.output.value, refs.challenge_validator_hash)) is {
-          [Pair(token_name, 1)] ->
-            exactly_one_burned(tx, refs.challenge_validator_hash, token_name)
-          _ -> False
-        }
-      None -> False
+    when dict.to_pairs(assets.tokens(inp.output.value, refs.challenge_validator_hash)) is {
+      [Pair(token_name, 1)] ->
+        exactly_one_burned(tx, refs.challenge_validator_hash, token_name)
+      _ -> False
     }
 
   // fix: Finding-002-F4 — verify no outputs remain at challenge script address after burn.
@@ -919,11 +936,25 @@ fn validate_cleanup_resolved(
   let no_challenge_outputs =
     list.length(outputs_at_script(tx.outputs, refs.challenge_validator_hash)) == 0
 
+  // The only script input is this challenge: no claim input (so no
+  // ForfeitClaim), and no other script that could count the refund output.
+  let only_script_input =
+    list.all(
+      tx.inputs,
+      fn(i) {
+        i.output_reference == own_ref || when i.output.address.payment_credential is {
+          VerificationKey(_) -> True
+          Script(_) -> False
+        }
+      },
+    )
+
   and {
-    state_ok,
+    refund_paid,
     after_cleanup_allowed,
     challenge_burned,
     no_challenge_outputs,
+    only_script_input,
   }
 }
 
@@ -931,57 +962,33 @@ fn validate_cleanup_resolved(
 // PRIVATE HELPERS
 // ══════════════════════════════════════════════════════════════════════
 
-/// Read AP3X amount locked in the consumed claim input.
+/// The claim of a challenge: the input at the claim validator that holds the
+/// claim token named in the challenge (`claim_token`). Returns the AP3X of
+/// that input and the claimer credential of its datum. Fails when the
+/// transaction spends no such input.
 ///
-/// fix: G1-LIFECYCLE-01 — search by claim script address, not OutputReference.
-/// After OpenChallenge, the continuing claim UTxO has a different output_reference
-/// than what claim_ref stored in ChallengeDatum points to. The original claim UTxO
-/// was consumed by OpenChallenge. Searching by script address is safe because
-/// count_script_inputs(tx.inputs, refs.claim_validator_hash) == 1 is enforced in
-/// both claim.ak and challenge.ak spend handlers.
-fn find_claim_stake(
+/// fix: G1-LIFECYCLE-01 — the challenge's claim_ref points to the claim UTxO
+/// that OpenChallenge consumed, so the claim is found by its claim token,
+/// which stays in the continuing claim UTxO. Another claim input at the claim
+/// address does not count.
+fn bound_claim(
   inputs: List<Input>,
   claim_validator_hash: ByteArray,
-  config: AuditingConfig,
-) -> Int {
-  when
-    list.find(
-      inputs,
-      fn(i) {
-        when i.output.address.payment_credential is {
-          Script(h) -> h == claim_validator_hash
-          _ -> False
-        }
-      },
-    )
-  is {
-    Some(inp) ->
-      assets.lovelace_of(inp.output.value)
-    None -> 0
-  }
-}
-
-/// Read claimer credential from the consumed claim input's datum.
-///
-/// fix: G1-LIFECYCLE-01 — search by claim script address, not OutputReference.
-/// Same reasoning as find_claim_stake above.
-fn find_claimer_cred(
-  inputs: List<Input>,
-  claim_validator_hash: ByteArray,
-) -> Credential {
+  claim_token: ByteArray,
+) -> (Int, Credential) {
   expect Some(inp) =
     list.find(
       inputs,
       fn(i) {
-        when i.output.address.payment_credential is {
-          Script(h) -> h == claim_validator_hash
-          _ -> False
+        and {
+          i.output.address.payment_credential == Script(claim_validator_hash),
+          assets.quantity_of(i.output.value, claim_validator_hash, claim_token) == 1,
         }
       },
     )
   expect InlineDatum(raw) = inp.output.datum
   expect claim: ClaimDatum = raw
-  claim.claimer_credential
+  (assets.lovelace_of(inp.output.value), claim.claimer_credential)
 }
 
 /// Tally votes. Spec §4.6: supermajority → that verdict; else Inconclusive.
@@ -2040,11 +2047,13 @@ test test_vor_fail_claimer_wins_with_rule_without_mint() {
   )
 }
 
-test test_vrj_auditor_wins_with_verdict_mint() {
-  r_jury(
-    placeholder_verdict_policy(),
-    jury_resolution_tx(AuditorWins, base_verdict()),
-  )
+test test_vrj_auditor_wins_without_verdict_mint() {
+  // A jury outcome gives no verdict, also under a policy with a rule for it.
+  and {
+    r_jury(placeholder_verdict_policy(), jury_resolution_tx(AuditorWins)),
+    r_jury(revoke_verdict_policy(), jury_resolution_tx(AuditorWins)),
+    r_jury(revoke_verdict_policy(), jury_resolution_tx(ClaimerWins)),
+  }
 }
 
 // Benchmarks: constants are built at compile time, so the execution units
@@ -2062,13 +2071,12 @@ const bench_voting: ChallengeDatum =
 
 const bench_pending: ChallengeDatum = challenge_datum(PendingOracle)
 
-const bench_jury_tx: Transaction =
-  jury_resolution_tx(AuditorWins, base_verdict())
+const bench_jury_tx: Transaction = jury_resolution_tx(AuditorWins)
 
 const bench_oracle_tx: Transaction =
   oracle_resolution_tx(AuditorWins, base_verdict())
 
-test bench_resolve_jury_with_verdict_mint() {
+test bench_resolve_jury() {
   validate_resolve_jury(
     bench_config,
     bench_refs,
@@ -2091,31 +2099,12 @@ test bench_oracle_resolve_with_verdict_mint() {
   )
 }
 
-test test_vrj_fail_auditor_wins_without_verdict_mint() {
-  let tx = jury_resolution_tx(AuditorWins, base_verdict())
-  !r_jury(
-    placeholder_verdict_policy(),
-    Transaction {
-      ..tx,
-      mint: assets.from_asset(identity_fixtures.claim_hash, claim_token, -1),
-    },
-  )
-}
-
-test test_vrj_claimer_wins_without_rule_needs_no_mint() {
-  let tx = jury_resolution_tx(ClaimerWins, base_verdict())
-  r_jury(
-    placeholder_verdict_policy(),
-    Transaction {
-      ..tx,
-      outputs: list.take(tx.outputs, 3),
-      mint: assets.from_asset(identity_fixtures.claim_hash, claim_token, -1),
-    },
-  )
+test test_vrj_claimer_wins() {
+  r_jury(placeholder_verdict_policy(), jury_resolution_tx(ClaimerWins))
 }
 
 test test_vrj_fail_when_claim_token_changes() {
-  let tx = jury_resolution_tx(AuditorWins, base_verdict())
+  let tx = jury_resolution_tx(AuditorWins)
   expect [challenge_output, ..rest] = tx.outputs
   expect InlineDatum(data) = challenge_output.datum
   expect datum: ChallengeDatum = data
@@ -2127,6 +2116,215 @@ test test_vrj_fail_when_claim_token_changes() {
   !r_jury(
     placeholder_verdict_policy(),
     Transaction { ..tx, outputs: [changed, ..rest] },
+  )
+}
+
+test test_vrj_refund_address_is_free() {
+  let tx = jury_resolution_tx(AuditorWins)
+  expect [challenge_output, ..rest] = tx.outputs
+  expect InlineDatum(data) = challenge_output.datum
+  expect datum: ChallengeDatum = data
+  let changed =
+    Output {
+      ..challenge_output,
+      datum: InlineDatum(
+        ChallengeDatum {
+          ..datum,
+          state: Resolved {
+            verdict: AuditorWins,
+            refund_to: key_address(blake2b_224(stranger_key)),
+          },
+        },
+      ),
+    }
+  r_jury(
+    placeholder_verdict_policy(),
+    Transaction { ..tx, outputs: [changed, ..rest] },
+  )
+}
+
+test test_vrj_fail_with_other_outcome_in_state() {
+  let tx = jury_resolution_tx(AuditorWins)
+  expect [challenge_output, ..rest] = tx.outputs
+  expect InlineDatum(data) = challenge_output.datum
+  expect datum: ChallengeDatum = data
+  let changed =
+    Output {
+      ..challenge_output,
+      datum: InlineDatum(
+        ChallengeDatum {
+          ..datum,
+          state: Resolved { verdict: ClaimerWins, refund_to: funder_address() },
+        },
+      ),
+    }
+  !r_jury(
+    placeholder_verdict_policy(),
+    Transaction { ..tx, outputs: [changed, ..rest] },
+  )
+}
+
+// ── Claim binding: each resolution accepts only the claim of its challenge
+
+fn r_timeout(tx: Transaction) -> Bool {
+  validate_timeout_resolve(
+    auditing_config(placeholder_verdict_policy()),
+    cross_refs(),
+    challenge_datum(PendingOracle),
+    challenge_ref(),
+    tx,
+  )
+}
+
+test test_vtr_timeout_with_bound_claim() {
+  r_timeout(timeout_resolution_tx())
+}
+
+test test_vor_fail_with_claim_of_other_challenge() fail {
+  r_oracle(
+    placeholder_verdict_policy(),
+    AuditorWins,
+    with_claim_of_other_challenge(
+      oracle_resolution_tx(AuditorWins, base_verdict()),
+    ),
+  )
+}
+
+test test_vrj_fail_with_claim_of_other_challenge() fail {
+  r_jury(
+    placeholder_verdict_policy(),
+    with_claim_of_other_challenge(jury_resolution_tx(AuditorWins)),
+  )
+}
+
+test test_vtr_fail_with_claim_of_other_challenge() fail {
+  r_timeout(with_claim_of_other_challenge(timeout_resolution_tx()))
+}
+
+test test_vor_fail_when_other_claim_token_burned() {
+  let tx = oracle_resolution_tx(AuditorWins, base_verdict())
+  !r_oracle(
+    placeholder_verdict_policy(),
+    AuditorWins,
+    Transaction {
+      ..tx,
+      mint: tx.mint
+        |> assets.add(identity_fixtures.claim_hash, claim_token, 1)
+        |> assets.add(identity_fixtures.claim_hash, other_claim_token, -1),
+    },
+  )
+}
+
+test test_vtr_fail_when_other_claim_token_burned() {
+  let tx = timeout_resolution_tx()
+  !r_timeout(
+    Transaction {
+      ..tx,
+      mint: tx.mint
+        |> assets.add(identity_fixtures.claim_hash, claim_token, 1)
+        |> assets.add(identity_fixtures.claim_hash, other_claim_token, -1),
+    },
+  )
+}
+
+// ── CleanupResolved: the kept AP3X goes to refund_to
+
+fn r_cleanup(datum: ChallengeDatum, tx: Transaction) -> Bool {
+  validate_cleanup_resolved(
+    auditing_config(placeholder_verdict_policy()),
+    cross_refs(),
+    protocol_params(),
+    datum,
+    challenge_ref(),
+    tx,
+  )
+}
+
+test test_vcr_cleanup_pays_refund_address() {
+  let datum = resolved_challenge_datum(AuditorWins)
+  r_cleanup(datum, cleanup_tx(datum))
+}
+
+test test_vcr_fail_when_kept_stake_goes_elsewhere() {
+  let datum = resolved_challenge_datum(ClaimerWins)
+  !r_cleanup(
+    datum,
+    Transaction {
+      ..cleanup_tx(datum),
+      outputs: [
+        Output {
+          ..refund_output(datum.stake_amount),
+          address: key_address(blake2b_224(stranger_key)),
+        },
+      ],
+    },
+  )
+}
+
+test test_vcr_fail_with_less_than_kept_stake() {
+  let datum = resolved_challenge_datum(Inconclusive)
+  !r_cleanup(
+    datum,
+    Transaction {
+      ..cleanup_tx(datum),
+      outputs: [refund_output(datum.stake_amount - 1)],
+    },
+  )
+}
+
+test test_vcr_fail_with_datum_on_refund() {
+  let datum = resolved_challenge_datum(AuditorWins)
+  !r_cleanup(
+    datum,
+    Transaction {
+      ..cleanup_tx(datum),
+      outputs: [
+        Output { ..refund_output(datum.stake_amount), datum: InlineDatum(datum) },
+      ],
+    },
+  )
+}
+
+test test_vcr_fail_with_forfeit_of_other_claim() {
+  // The Resolved challenge belongs to another claim; the transaction also
+  // forfeits the base claim.
+  let datum =
+    ChallengeDatum {
+      ..resolved_challenge_datum(AuditorWins),
+      claim_token: other_claim_token,
+    }
+  let tx = cleanup_tx(datum)
+  !r_cleanup(
+    datum,
+    Transaction {
+      ..tx,
+      inputs: [claim_input(claim_token, challenged_claim_datum()), ..tx.inputs],
+      mint: assets.add(tx.mint, identity_fixtures.claim_hash, claim_token, -1),
+    },
+  )
+}
+
+test test_vcr_fail_with_other_script_input() {
+  let datum = resolved_challenge_datum(AuditorWins)
+  let tx = cleanup_tx(datum)
+  let other =
+    Input {
+      output_reference: out_ref(0x77, 0),
+      output: Output {
+        address: script_address(other_script_hash),
+        value: assets.from_lovelace(100_000_000),
+        datum: NoDatum,
+        reference_script: None,
+      },
+    }
+  !r_cleanup(datum, Transaction { ..tx, inputs: [other, ..tx.inputs] })
+}
+
+test test_vcr_fail_before_cleanup_time() {
+  let datum = resolved_challenge_datum(AuditorWins)
+  !r_cleanup(
+    datum,
+    Transaction { ..cleanup_tx(datum), validity_range: interval.between(lo, hi) },
   )
 }
 

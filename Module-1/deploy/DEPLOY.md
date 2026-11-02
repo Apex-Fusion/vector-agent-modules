@@ -20,7 +20,9 @@ Hash order:
 2. `claim`, `challenge` and `jury_pool`, each with `(AuditingConfig, ProtocolParams)`.
    `AuditingConfig` holds the identity hash, the configuration record keys and
    the verdict policy.
-3. `identity_party` with `(AuditingConfig, challenge hash)`. Its hash is M1.
+3. `identity_party` with `(AuditingConfig, challenge hash, claim hash)`. Its
+   hash is M1. The verdict mint reads the claim of a resolved challenge at the
+   claim hash of its parameters, not from CrossValidatorRefs.
 4. The seal: `config_seal` mints `identity-config` to `config_holder` with
    the inline datum M1. The challenge validator reads M1 from this record.
 5. Register the stake credential of `identity_party` with the legacy stake
@@ -33,13 +35,36 @@ Commands (they sign and submit nothing):
 ```sh
 python3 scripts/identity_deploy.py plan          # reads deploy/identity/config.json
 python3 scripts/identity_deploy.py check-seal --datum <inline datum CBOR hex>
+python3 scripts/test_identity_deploy.py          # tests of the plan guards
 ```
 
 `deploy/identity/config.json` has placeholders (identity hashes, operator
 key, refs token policy and the verdict policy, an open item). The plan
-refuses them unless `--allow-placeholders` is given; its output is then not
-for deployment. New Foundation operator keys deploy the modules; old module
-keys are not reused.
+refuses them, and every all-zero `identity_hash`, `config_policy`,
+`config_holder`, `oracle_vkh` or `refs_token_policy`, unless
+`--allow-placeholders` is given; its output is then not for deployment. New
+Foundation operator keys deploy the modules; old module keys are not reused.
+
+Rules for transaction builders of the new deployment:
+
+- Only OracleResolve gives an identity verdict (the verdict policy applies to
+  oracle outcomes only). ResolveJury mints no verdict. With
+  `oracle_active = false`, no verdict is ever minted.
+- An OracleResolve that mints a verdict has a validity range with finite
+  bounds of at most one hour. The verdict datum is
+  `{ agent, action, duration, challenge, deposit_to, expires_at }` with
+  `expires_at = hi + 30 days`; `deposit_to` is the address of the wallet that
+  funds the AP3X of the verdict output.
+- ApplyVerdict needs `hi <= expires_at`. After `expires_at`, anybody can
+  reclaim the verdict output: burn its token (BurnVerdict, no identity_party
+  withdrawal), pay all its AP3X to `deposit_to` without datum, spend no other
+  script input, and use a range with `lo > expires_at` of at most one hour.
+- Every resolution spends the claim input that holds the challenge's
+  `claim_token` and burns exactly that claim token.
+- ResolveJury writes `Resolved { verdict, refund_to }`; `refund_to` is the
+  address of the wallet that funds the AP3X kept in the Resolved output (equal
+  to the auditor stake). CleanupResolved pays all AP3X of the Resolved output
+  to `refund_to` without datum and spends no other script input.
 
 ---
 

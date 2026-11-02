@@ -46,13 +46,13 @@ DAYS_30_MS = 2_592_000_000
 # identity_hash, config_policy and config_holder come from the identity
 # deployment (Part 2 §3.8 steps 1-3). claim, challenge and jury_pool take
 # (AuditingConfig, ProtocolParams). identity_party takes (AuditingConfig,
-# challenge hash). The seal datum is the identity_party hash.
+# challenge hash, claim hash). The seal datum is the identity_party hash.
 HASH_ORDER = [
     "config_holder, config_policy, identity (inputs from the identity deployment)",
     "claim(AuditingConfig, ProtocolParams)",
     "challenge(AuditingConfig, ProtocolParams)",
     "jury_pool(AuditingConfig, ProtocolParams)",
-    "identity_party(AuditingConfig, challenge hash) = M1",
+    "identity_party(AuditingConfig, challenge hash, claim hash) = M1",
     "seal: config_seal mints identity-config with the inline datum M1",
 ]
 
@@ -175,6 +175,36 @@ def hash28(value: str, name: str) -> bytes:
     if len(raw) != 28:
         raise ValueError(f"{name} must be 28 bytes (56 hex characters)")
     return raw
+
+
+# The hash fields of AuditingConfig that a deployment must set. A value with
+# only zero bytes counts as a placeholder (the Module-3 and Module-6 deploy
+# scripts refuse zero values in the same way): for example, a zero
+# refs_token_policy lets claims open, but no claim, challenge or juror can be
+# spent after that.
+NONZERO_FIELDS = (
+    ("identity", "identity_hash"),
+    ("identity", "config_policy"),
+    ("identity", "config_holder"),
+    ("module1", "oracle_vkh"),
+    ("module1", "refs_token_policy"),
+)
+
+
+def zero_fields(config: dict[str, Any]) -> list[str]:
+    """The paths ("section.name") of NONZERO_FIELDS that hold only zero bytes."""
+    return [
+        f"{section}.{name}"
+        for section, name in NONZERO_FIELDS
+        if not any(bytes.fromhex(config[section][name]))
+    ]
+
+
+def unsafe_values(config: dict[str, Any]) -> list[str]:
+    """The declared placeholders, then each all-zero hash field that the
+    placeholders list does not name."""
+    placeholders = list(config.get("placeholders", []))
+    return placeholders + [path for path in zero_fields(config) if path not in placeholders]
 
 
 def verdict_rule(rule: dict[str, Any] | None, name: str) -> Constr:
@@ -348,10 +378,11 @@ def command_encode(args: argparse.Namespace) -> int:
 
 def command_plan(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    placeholders = config.get("placeholders", [])
+    placeholders = unsafe_values(config)
     if placeholders and not args.allow_placeholders:
         print(
-            "The configuration still has placeholders: " + ", ".join(placeholders)
+            "The configuration still has placeholders or all-zero values: "
+            + ", ".join(placeholders)
             + ". Replace them, or use --allow-placeholders for a dry run.",
             file=sys.stderr,
         )
@@ -385,6 +416,7 @@ def command_plan(args: argparse.Namespace) -> int:
 
         applied("identity_party", config_cbor)
         applied("identity_party", encode(bytes.fromhex(hashes["challenge"])))
+        applied("identity_party", encode(bytes.fromhex(hashes["claim"])))
         hashes["identity_party"] = blueprint_hash(current, "identity_party")
 
         blueprint = out_dir / "plutus.json"
@@ -403,6 +435,7 @@ def command_plan(args: argparse.Namespace) -> int:
             "auditing_config_cbor": config_cbor.hex(),
             "protocol_params_cbor": params_cbor.hex(),
             "identity_party_challenge_hash_cbor": encode(bytes.fromhex(hashes["challenge"])).hex(),
+            "identity_party_claim_hash_cbor": encode(bytes.fromhex(hashes["claim"])).hex(),
         },
         "hashes": hashes,
         "addresses": {name: script_addresses(value, mainnet) for name, value in hashes.items()},

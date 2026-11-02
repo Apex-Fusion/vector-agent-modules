@@ -33,8 +33,8 @@ use cardano/transaction.{
 use adversarial_auditing/identity_checks.{identity_ok}
 use adversarial_auditing/params.{ProtocolParams, challenge_window_valid}
 use adversarial_auditing/types.{
-  AuditingConfig, Challenged, ChallengeDatum, ClaimAction, ClaimDatum,
-  CrossValidatorRefs, ForfeitClaim, MarkChallenged, Open, Resolved,
+  AuditingConfig, AuditorWins, Challenged, ChallengeDatum, ClaimAction,
+  ClaimDatum, CrossValidatorRefs, ForfeitClaim, MarkChallenged, Open, Resolved,
   SubmitClaim, WithdrawClaim,
 }
 use adversarial_auditing/utils.{
@@ -47,10 +47,13 @@ use vector_identity/types.{
   Active, ControllerSet, Hold, IdentityDatum, Revoked, Suspended,
 } as vi
 use adversarial_auditing_tests/identity_fixtures.{
-  agent_a, agent_b, auditing_config, auth_key_a, claim_hash, controller_a,
-  hash_32, key_address, key_credential, largest_record, lo, out_ref,
+  agent_a, agent_b, auditing_config, auth_key_a, base_verdict, claim_hash,
+  claim_input, claim_ref, challenged_claim_datum, cleanup_tx, controller_a,
+  cross_refs, hash_32, jury_resolution_tx, key_address, key_credential,
+  largest_record, lo, oracle_resolution_tx, other_claim_token, out_ref,
   placeholder_verdict_policy, protocol_params, record_a, record_input,
-  script_address, stranger_key, tx_key_a, window_range,
+  resolved_challenge_datum, script_address, stranger_key,
+  timeout_resolution_tx, tx_key_a, window_range, with_challenge_of_other_claim,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -453,68 +456,95 @@ fn validate_forfeit_claim(
       _ -> False
     }
 
-  // 2. Claim token must be burned in this tx.
-  let token_burned =
-    when find_input(tx.inputs, own_ref) is {
-      Some(inp) ->
-        when
-          dict.to_pairs(
-            assets.tokens(inp.output.value, refs.claim_validator_hash),
-          )
-        is {
-          [Pair(token_name, 1)] ->
-            exactly_one_burned(tx, refs.claim_validator_hash, token_name)
-          _ -> False
-        }
-      None -> False
-    }
+  expect Some(own_input) = find_input(tx.inputs, own_ref)
+  when
+    dict.to_pairs(assets.tokens(own_input.output.value, refs.claim_validator_hash))
+  is {
+    [Pair(token_name, 1)] -> and {
+        state_ok,
+        // 2. Claim token must be burned in this tx.
+        exactly_one_burned(tx, refs.claim_validator_hash, token_name),
+        // 3. The challenge of THIS claim must resolve in this tx.
+        own_challenge_resolves(refs, token_name, tx),
+      }
+    _ -> False
+  }
+}
 
-  // 3. Challenge must be resolving in this TX.
-  // fix: Finding-002 + Finding-v10-F1 — accept EITHER:
-  //   (a) Challenge token burned (OracleResolve, TimeoutResolve) — original path
-  //   (b) Challenge UTxO transitions to Resolved{..} state (ResolveJury)
-  //
-  // CRITICAL: Do NOT accept bare "challenge_being_spent" — an attacker could
-  // pair SubmitEvidence (non-resolution spend) with ForfeitClaim to steal
-  // the claimer's stake. Must verify the challenge actually reaches Resolved.
-  let challenge_token_burned =
-    list.any(
-      dict.to_pairs(assets.tokens(tx.mint, refs.challenge_validator_hash)),
-      fn(p) { p.2nd == -1 },
-    )
-  // fix: Finding-v10-F1 + Finding-001 — check for Resolved{..} state in continuing
-  // output AND verify it contains a legitimate challenge token.
-  // CRITICAL: In eUTxO, anyone can create outputs at any script address without
-  // the script executing. Without token verification, an attacker can fabricate
-  // a Resolved datum output at the challenge address. Challenge tokens are 1-of-1
-  // NFTs minted only through validate_open_challenge — unforgeable.
-  let challenge_resolved_via_spend =
-    list.any(
-      outputs_at_script(tx.outputs, refs.challenge_validator_hash),
-      fn(o) {
-        // Must contain a legitimate challenge token (1-of-1 NFT)
-        let has_challenge_token =
-          list.length(
-            dict.to_pairs(assets.tokens(o.value, refs.challenge_validator_hash))
-          ) == 1
-        when o.datum is {
-          InlineDatum(raw) -> {
-            expect ch: ChallengeDatum = raw
-            when ch.state is {
-              Resolved { .. } -> has_challenge_token
-              _ -> False
-            }
-          }
-          _ -> False
-        }
+/// The challenge of the claim with the claim token `claim_token` resolves in
+/// `tx`. Its input is the challenge input whose datum names `claim_token`
+/// (the challenge validator allows one challenge input per transaction).
+/// Either its challenge token is burned (OracleResolve, TimeoutResolve), or
+/// the continuing challenge output holds that token with the state Resolved
+/// (ResolveJury).
+///
+/// fix: Finding-002 + Finding-v10-F1 + Finding-001 — a bare challenge spend
+/// (for example SubmitEvidence) does not count, a Resolved output counts only
+/// with the challenge token of this claim's challenge (challenge tokens are
+/// 1-of-1 NFTs minted only through validate_open_challenge), and the burn or
+/// the Resolved output of another challenge does not count.
+fn own_challenge_resolves(
+  refs: CrossValidatorRefs,
+  claim_token: ByteArray,
+  tx: Transaction,
+) -> Bool {
+  when
+    list.find(
+      tx.inputs,
+      fn(i) {
+        i.output.address.payment_credential == Script(
+          refs.challenge_validator_hash,
+        )
       },
     )
-  let challenge_resolving = challenge_token_burned || challenge_resolved_via_spend
-
-  and {
-    state_ok,
-    token_burned,
-    challenge_resolving,
+  is {
+    Some(challenge_input) -> {
+      expect InlineDatum(raw) = challenge_input.output.datum
+      expect ch: ChallengeDatum = raw
+      when
+        dict.to_pairs(
+          assets.tokens(
+            challenge_input.output.value,
+            refs.challenge_validator_hash,
+          ),
+        )
+      is {
+        [Pair(challenge_token, 1)] -> and {
+            ch.claim_token == claim_token,
+            or {
+              assets.quantity_of(
+                tx.mint,
+                refs.challenge_validator_hash,
+                challenge_token,
+              ) == -1,
+              list.any(
+                outputs_at_script(tx.outputs, refs.challenge_validator_hash),
+                fn(o) {
+                  and {
+                    assets.quantity_of(
+                      o.value,
+                      refs.challenge_validator_hash,
+                      challenge_token,
+                    ) == 1,
+                    when o.datum is {
+                      InlineDatum(out_raw) -> {
+                        expect updated: ChallengeDatum = out_raw
+                        when updated.state is {
+                          Resolved { .. } -> True
+                          _ -> False
+                        }
+                      }
+                      _ -> False
+                    },
+                  }
+                },
+              ),
+            },
+          }
+        _ -> False
+      }
+    }
+    None -> False
   }
 }
 
@@ -718,4 +748,70 @@ test bench_submit_claim_largest_record() {
     claim_hash,
     bench_submit_largest_tx,
   )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// FORFEIT CLAIM — BINDING TO THE CLAIM'S OWN CHALLENGE
+// ══════════════════════════════════════════════════════════════════════
+//
+// Full resolution transactions from the identity fixtures. ForfeitClaim
+// accepts only the resolution of the challenge whose datum names this
+// claim's token.
+
+fn f_forfeit(tx: Transaction) -> Bool {
+  validate_forfeit_claim(cross_refs(), challenged_claim_datum(), claim_ref(), tx)
+}
+
+test forfeit_in_oracle_resolution_of_own_challenge() {
+  f_forfeit(oracle_resolution_tx(AuditorWins, base_verdict()))
+}
+
+test forfeit_in_jury_resolution_of_own_challenge() {
+  f_forfeit(jury_resolution_tx(AuditorWins))
+}
+
+test forfeit_in_timeout_of_own_challenge() {
+  f_forfeit(timeout_resolution_tx())
+}
+
+test forfeit_fails_with_burn_of_other_challenge() {
+  !f_forfeit(
+    with_challenge_of_other_claim(
+      oracle_resolution_tx(AuditorWins, base_verdict()),
+    ),
+  )
+}
+
+test forfeit_fails_with_timeout_of_other_challenge() {
+  !f_forfeit(with_challenge_of_other_claim(timeout_resolution_tx()))
+}
+
+test forfeit_fails_with_resolved_output_of_other_challenge() {
+  !f_forfeit(with_challenge_of_other_claim(jury_resolution_tx(AuditorWins)))
+}
+
+test forfeit_fails_with_cleanup_of_other_challenge() {
+  // CleanupResolved of a Resolved challenge of another claim burns a
+  // challenge token; it does not forfeit this claim.
+  let datum =
+    ChallengeDatum {
+      ..resolved_challenge_datum(AuditorWins),
+      claim_token: other_claim_token,
+    }
+  let tx = cleanup_tx(datum)
+  !f_forfeit(
+    Transaction {
+      ..tx,
+      inputs: [
+        claim_input(identity_fixtures.claim_token, challenged_claim_datum()),
+        ..tx.inputs
+      ],
+      mint: assets.add(tx.mint, claim_hash, identity_fixtures.claim_token, -1),
+    },
+  )
+}
+
+test forfeit_fails_without_challenge_input() {
+  let tx = oracle_resolution_tx(AuditorWins, base_verdict())
+  !f_forfeit(Transaction { ..tx, inputs: list.drop(tx.inputs, 1) })
 }
