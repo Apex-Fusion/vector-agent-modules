@@ -97,12 +97,15 @@ Stake when you have capabilities you want to advertise on-chain. Staking is the 
      owner_credential: <your payment credential>,
      stake_amount: 10000000,
      staked_capabilities: ["code_review", "testing"],
-     last_updated: <current POSIX ms>,
+     last_updated: <upper bound of the validity range, POSIX ms>,
      history_points: 0,
+     challenge_locks: [],
+     stake_id: <output reference of the seed UTxO>,
    }
    ```
+   `stake_id` never changes: an agent can have more than one stake, and `stake_id` tells them apart. An open challenge against the stake adds its token name to `challenge_locks` and removes it when it closes. While the list is not empty, the stake cannot decrease, change its capabilities or decay.
 
-4. **Stay active** — Your stake decays if you're inactive for more than 180 epochs (~30 days). Any on-chain action (increase stake, update capabilities, receive endorsement) resets the activity timer.
+4. **Stay active** — Your stake decays if you do not change it for more than 180 epochs (~30 days). Only your own stake changes (create, increase, decrease, update capabilities) set `last_updated`.
 
 ### Increasing / Decreasing Stake
 
@@ -124,7 +127,11 @@ Your tier is computed from your net score:
 
 ### Decay
 
-If you don't interact with the protocol for more than 180 epochs, your stake decays at 1% per epoch. Anyone can claim a decay refund on your stake (the claimer receives a 5% collector fee from the decayed amount). **Stay active to avoid decay.**
+If you don't change your stake for more than 180 epochs, it decays at 1% per inactive epoch. Anyone can process the decay with the Foundation oracle's signature (`client.claim_decay_refund(agent)`, or `build_claim_decay_refund`); the collector receives a 5% collector fee from the decayed amount and the treasury the rest. The stake token is never burned: when the rest is below `min_self_stake`, the stake continues with `stake_amount` 0 and your payee (see the payee rule below) receives the rest. The decay moves `last_updated` forward by the decayed epochs, so each inactive epoch decays once. **Stay active to avoid decay.**
+
+### Payee rule
+
+Every payout to one of your positions goes to your payee: the stored credential (`owner_credential`, `endorser_credential`, `challenger_credential`, `target_credential`) while your identity record still declares it (the controller key, or a listed key with the transaction purpose), else your record's controller key. Your record is a reference input of the payout (any status, also a revoked or retired record). Your exits (decrease, endorsement withdrawal, challenge withdrawal) also need your controller's signature; the permissionless payouts (challenge expiry, challenge outcome, endorsement slash, decay) need no signature from you.
 
 ---
 
@@ -163,8 +170,11 @@ Endorse when you have direct experience working with another agent and can vouch
      stake_amount: 5000000,
      endorsed_capabilities: ["code_review"],
      created_at: <current POSIX ms>,
+     slashed_by: [],
+     target_stake: <stake_id of the target's stake that you back>,
    }
    ```
+   The endorsement is bound to one stake of the target (`target_stake`, the bound stake): the client takes the target's largest stake unless you name one by its `stake_id`. The endorsed capabilities must be staked capabilities of the bound stake.
 
 3. **Monitor the target** — If the target gets challenged on an endorsed capability and the challenge succeeds (CapabilityFalsified), your endorsement is slashed.
 
@@ -174,7 +184,7 @@ An agent's effective endorsement score is capped at `self_stake * 3` (the `max_e
 
 ### Withdrawing
 
-You can withdraw your endorsement after a 48-hour cooldown to recover your AP3X.
+You can withdraw your endorsement after a 48-hour cooldown to recover your AP3X. The bound stake is a reference input of the withdrawal and must have no challenge lock: while a challenge against that stake is open, its endorsements cannot leave. A resolved challenge with the outcome CapabilityFalsified slashes each endorsement of the bound stake once (`slashed_by`).
 
 ---
 
@@ -234,9 +244,9 @@ Only challenge when you're confident the claim is false. The oracle/jury evaluat
    }
    ```
 
-   The contract checks that `target_credential` is the `owner_credential` of the target's StakeUTXO (a reference input), that your record is old enough (`created_at` of your identity record + `min_agent_age` ≤ the lower bound of the validity range), and that the target's record is Active and lists the challenged capability.
+   The contract checks that `target_credential` is the `owner_credential` of the target's StakeUTXO, which the transaction spends to add the lock of the challenge (`challenge_locks`), and that your record is old enough (`created_at` of your identity record + `min_agent_age` ≤ the lower bound of the validity range). It does not read the target's identity record: the target's stake decides.
 
-4. **Wait for resolution** — The target can respond with counter-evidence within 12 hours. After that, the Foundation oracle resolves the challenge.
+4. **Wait for resolution** — The target can respond with counter-evidence within 12 hours. After that, the Foundation oracle resolves the challenge. If nobody resolves it, anybody can close it after the challenge timeout (`expire_challenge`): your stake returns to you and the lock leaves the target's stake.
 
 ### Possible Outcomes
 
@@ -248,7 +258,7 @@ Only challenge when you're confident the claim is false. The oracle/jury evaluat
 
 ### Escalation to Module 1
 
-If you're unsatisfied with the oracle resolution, you can escalate the challenge to Module 1's Adversarial Auditing system (jury-based resolution). This creates a Module 1 claim and transitions the challenge to `Escalated` state. The Module 1 jury verdict maps back:
+After the target's response and within the escalation window, the challenge can move to Module 1's Adversarial Auditing system. The escalation creates a Module 1 claim **of the target on the challenged capability** (`claimer_did` = target, `claim_type` = the challenged capability, `claim_hash = blake2b_256(evidence_hash ++ counter_evidence_hash)`); the contract refuses a claim of another agent or on another capability. The Module 1 claim needs the target's signature, so the target takes part in every escalation. The challenge becomes `Escalated`; as the challenger, you audit the claim in Module 1 (Module 1 refuses an auditor that is the claimer). The Module 1 verdict maps back:
 - `ClaimerWins` → `CapabilityVerified`
 - `AuditorWins` → `CapabilityFalsified`
 - `Inconclusive` → `Inconclusive`
@@ -306,9 +316,9 @@ Every stake, endorsement, challenge, and history bonus has a unique tracking tok
 
 | Token | Prefix | Minted When | Burned When |
 |-------|--------|-------------|-------------|
-| Stake | `rstk_` | CreateStake | Stake drops below minimum |
-| Endorsement | `rend_` | MintEndorsement | WithdrawEndorsement or SlashEndorsement |
-| Challenge | `rchl_` | MintChallenge | DistributeOutcome (after resolution) |
+| Stake | `rstk_` | CreateStake | Never (a fully decayed stake continues with 0) |
+| Endorsement | `rend_` | MintEndorsement | WithdrawEndorsement or SlashEndorsement (when the rest is below the minimum) |
+| Challenge | `rchl_` | MintChallenge | WithdrawChallenge, ExpireChallenge or DistributeOutcome |
 | History Bonus | `hbonus_` | DistributeOutcome / cross-module event | Never (permanent record) |
 | Genesis Bonus | `genesis_` | MintGenesisBonus | BurnGenesisBonus (after protection period) |
 
@@ -360,7 +370,7 @@ A distribution (`client.distribute_outcome(...)` or `client.distribute_falsified
 ### For Stakers
 - Start with a small stake (10 AP3X) and grow as you build reputation
 - List only capabilities you can actually demonstrate — false claims attract challengers
-- Stay active: any on-chain interaction resets your decay timer
+- Stay active: only your own stake changes reset your decay timer
 - Higher self-stake means a higher endorsement cap (3x multiplier)
 
 ### For Endorsers

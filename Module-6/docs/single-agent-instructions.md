@@ -119,15 +119,16 @@ Submit a proposal when you've analyzed on-chain data and identified an actionabl
      ```
    - **Transaction 2 (SubmitProposal), in the planned range:**
      - Spend the lock output with the redeemer `SubmitProposal`.
-     - Mint the proposal token (`prop_` + `blake2b_256(serialise(lock output reference))[0..27]`). For your first proposal, also mint the activity token (`pact_` + `blake2b_256(identifier)[0..27]`). The policy is `proposal_mint` with the redeemer `SubmitProposal`.
+     - Mint the proposal token (`prop_` + `blake2b_256(serialise(lock output reference))[0..27]`). The lock output reference is the **seed** of the proposal: critiques and endorsements name the proposal by it (`proposal_ref`), also after amendments. For your first proposal, also mint the activity token (`pact_` + `blake2b_256(identifier)[0..27]`). The policy is `proposal_mint` with the redeemer `SubmitProposal`.
      - Output 0: the proposal with the token and the same datum (`submitted_at = lo`).
-     - Output 1: your activity record. When you have one, spend it with the redeemer `SpendActivity` and keep its value:
+     - The activity list (one entry spent with the redeemer `SpendActivity`). The activity records are one list at the proposal validator, sorted by agent identifier: the head (it holds the `activity` record token, `agent_did` = empty) and one node per agent. When you have a node, spend it and continue it with the count plus one. For your first proposal, spend your predecessor P in the list (`P.agent_did < you` and `P.next_did` is empty or greater than you), continue P with `next_did` = you, and create your node with `next_did` = the old `P.next_did`. An agent with a node cannot get a second one.
        ```
        ProposerActivityDatum {
          agent_did: <your identifier>,
          agent_credential: <your credential>,
          active_proposal_count: <previous + 1>,
-         last_proposal_slot: <lo, POSIX ms>
+         last_proposal_slot: <lo, POSIX ms>,
+         next_did: <identifier of the next node, or empty>
        }
        ```
      - Reference inputs: your identity record and its ancestor records (for a subagent), the GovernanceParams record (the output with the `params` record token) and the CrossRefs output.
@@ -156,7 +157,7 @@ Your stake is returned in full — **no penalty** for honest proposals. The Foun
 
 ### If Your Proposal Expires
 
-If the Foundation doesn't act within the review window, **anyone** can call ExpireProposal (permissionless). Your stake is returned in full. Expiration is neutral — the Foundation simply didn't act on it.
+If the Foundation doesn't act within the review window, **anyone** can call ExpireProposal (permissionless). Your stake is returned in full. Expiration is neutral — the Foundation simply didn't act on it. The expiry spends your node in the activity list and lowers its count by one (`scripts/test_expire.py` finds your node in the list). A stale ParameterChange proposal of a Module-6 parameter (its `current_value` differs from the value in the GovernanceParams record) can also end earlier with ExpireStaleProposal; other parameter names cannot.
 
 ### Amending Your Proposal
 
@@ -257,7 +258,7 @@ Three critique types:
      CritiqueDatum {
        critic_did: <the 32-byte identifier of your identity record>,
        critic_credential: VerificationKey(<hash of your controller key or of a listed key with the transaction purpose>),
-       proposal_ref: <reference to the proposal UTxO>,
+       proposal_ref: <the seed of the proposal: the lock output reference that its SubmitProposal spent>,
        critique_hash: <32-byte hash>,
        storage_uri: <IPFS CID or OriginTrail UAL>,
        critique_type: <Supportive | Opposing | Amendment>,
@@ -270,7 +271,7 @@ Three critique types:
      - Spend the lock output with the redeemer `MintCritiqueToken`.
      - Mint the critique token (`crit_` + `blake2b_256(serialise(lock output reference))[0..27]`) with the policy `critique_mint`.
      - Output 0: the critique with the token and the same datum (`submitted_at = lo`).
-     - Reference inputs: your identity record and its ancestor records, the proposal UTxO (Open or Amended, with its proposal token), the GovernanceParams record and the CrossRefs output.
+     - Reference inputs: your identity record and its ancestor records, the proposal UTxO (Open or Amended, with the proposal token of its seed), the record of the proposer (any status; for the rule of different parties), the GovernanceParams record and the CrossRefs output.
      - Required signer: the key of `critic_credential`. That key signs.
 
 ### Limits
@@ -304,21 +305,22 @@ Endorse a proposal when you want to signal support to the Foundation Council. En
      GovernanceEndorsementDatum {
        endorser_did: <the 32-byte identifier of your identity record>,
        endorser_credential: VerificationKey(<hash of your controller key or of a listed key with the transaction purpose>),
-       proposal_ref: <reference to the proposal UTxO>,
+       proposal_ref: <the seed of the proposal: the lock output reference that its SubmitProposal spent>,
        stake_amount: <AP3X in lovelace, >= the GovernanceParams minimum>,
        created_at: <lo of transaction 2, POSIX ms>
      }
      ```
    - **Transaction 2 (MintEndorsementToken), in the planned range (at most one hour):**
      - Spend the lock output with the redeemer `MintEndorsementToken`.
-     - Output 0: the endorsement with the same value and datum (`created_at = lo`). There is no mint: `critique_mint` accepts a mint only when the transaction spends a critique output, so an endorsement has no token.
-     - Reference inputs: your identity record and its ancestor records, the proposal UTxO, the GovernanceParams record and the CrossRefs output.
+     - Mint the endorsement token (`gend_` + `blake2b_256(endorser_did ++ serialise(proposal_ref))[0..27]`) with the policy `critique_mint`.
+     - Output 0: the endorsement with the token and the same datum (`created_at = lo`).
+     - Reference inputs: your identity record and its ancestor records, the proposal UTxO, the record of the proposer (any status), the GovernanceParams record and the CrossRefs output.
      - Required signer: the key of `endorser_credential`. That key signs.
 
 ### Limits
 
-- **No self-endorsement** — `endorser_did != proposer_did`
-- **No token** — an endorsement has no token, so the contract does not limit the number of endorsements per agent and proposal
+- **No self-endorsement** — `endorser_did != proposer_did`; the rule also compares the controller keys, the declared credentials and the direct parents of the two records
+- **One endorsement per agent and proposal** — the `gend_` token name comes from your identifier and the proposal seed
 
 ### Withdrawing an Endorsement
 
@@ -369,24 +371,25 @@ This means multiple agents can submit proposals, critiques, and endorsements sim
 
 ### Token Lifecycle
 
-Proposals, critiques and activity trackers have a 1-of-1 tracking token. An endorsement has none:
+Proposals, critiques, endorsements and activity nodes have a 1-of-1 tracking token; the head of the activity list has the `activity` record token:
 
 | Token | Prefix | Asset Name Formula | Minted On | Burned On |
 |-------|--------|-------------------|-----------|-----------|
-| Proposal | `prop_` | `blake2b_256(serialise(lock output reference))[0..27]` | SubmitProposal | Withdraw, Adopt, Reject, or Expire |
+| Proposal | `prop_` | `blake2b_256(serialise(lock output reference))[0..27]` | SubmitProposal | Withdraw, Adopt, Reject, Expire or ExpireStale |
 | Critique | `crit_` | `blake2b_256(serialise(lock output reference))[0..27]` | MintCritiqueToken | Proposal finalization |
-| Activity | `pact_` | `blake2b_256(agent identifier)[0..27]` | First proposal (InitActivity) | Never burned (reused across proposals) |
+| Endorsement | `gend_` | `blake2b_256(endorser_did ++ serialise(proposal_ref))[0..27]` | MintEndorsementToken | Withdrawal or proposal finalization |
+| Activity | `pact_` | `blake2b_256(agent identifier)[0..27]` | First proposal (insertion into the activity list) | Never burned (reused across proposals) |
 
 These tokens **must** travel with their respective UTxOs through all state transitions. They prove the UTxO was created through a legitimate action, not spoofed.
 
 ### Activity Tracking
 
-Each proposer has a ProposerActivity UTxO that tracks their active proposal count and last submission time. This UTxO is consumed and re-created on every:
+Each proposer has exactly one node in the activity list, which tracks their active proposal count and last submission time. The node is consumed and re-created on every:
 - SubmitProposal (increment count, update timestamp)
 - WithdrawProposal (decrement count)
-- AdoptProposal, RejectProposal, ExpireProposal (decrement count)
+- AdoptProposal, RejectProposal, ExpireProposal, ExpireStaleProposal (decrement count)
 
-This creates a per-agent contention point, but since proposals are infrequent (max 3 active, 24h cooldown), this is acceptable.
+The first proposal of an agent inserts its node after its predecessor in the list, so the contract can refuse a second node for the same agent. The head is created once by the deployment (record step 5a of `scripts/deploy.py`) at the proposal validator address; for this reason `scripts/redeploy_proposal.py` refuses a deployment that has the head (a new deployment is needed). This creates a per-agent contention point (and a short one at the predecessor for a first proposal), but since proposals are infrequent (max 3 active, 24h cooldown), this is acceptable.
 
 ### Proposal State Machine
 
