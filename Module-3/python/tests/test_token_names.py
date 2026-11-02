@@ -1,7 +1,7 @@
 """Tests for token name derivation — validated against known on-chain values."""
 
+from reputation_staking import vector_identity as vi
 from reputation_staking.token_names import (
-    derive_agent_nft_name_conway,
     derive_challenge_token_name,
     derive_endorsement_token_name,
     derive_genesis_bonus_token_name,
@@ -106,24 +106,22 @@ class TestGenesisBonusTokenName:
         assert len(result) == 32  # 8 prefix + 24 hash
 
 
-class TestAgentNftName:
-    def test_known_agent_a_did(self):
-        """The NFT name derivation for Agent A's seed must produce Agent A's DID.
+class TestIdentityIdentifier:
+    """Agent identifiers are identity record identifiers (did:vector)."""
 
-        Agent A was registered using a seed UTXO, and the resulting NFT
-        asset name (= agent DID) is stored in smoke_state.json.
+    def test_stake_token_of_identity_identifier(self):
+        # Part 1 §3.1 vector: the identifier of the seed (00…00, 0)
+        agent_id = vi.identifier_from_seed(bytes(32), 0)
+        assert agent_id.hex() == (
+            "a2e5e227858e84f1a8f9b0c1246e6cbc9336d707d43ba43d0e1cb7c51c45f4c9"
+        )
+        token = bytes.fromhex(derive_stake_token_name(agent_id.hex()))
+        assert token.startswith(b"rstk_") and len(token) == 32
 
-        However, the seed UTXO used for registration was the best wallet
-        UTXO at the time — we can't reconstruct it from the smoke state
-        alone. So we just test that the function is deterministic and
-        produces a 64-char hex string.
-        """
-        result = derive_agent_nft_name_conway("aa" * 32, 0)
-        assert len(result) == 64  # 32 bytes = 64 hex chars
-        # Deterministic
-        assert result == derive_agent_nft_name_conway("aa" * 32, 0)
-
-    def test_different_seed_different_nft(self):
-        n1 = derive_agent_nft_name_conway("aa" * 32, 0)
-        n2 = derive_agent_nft_name_conway("aa" * 32, 1)
-        assert n1 != n2
+    def test_did_and_hex_name_the_same_agent(self):
+        agent_id = vi.identifier_from_seed(bytes.fromhex("ab" * 32), 24)
+        did = vi.did_from_id(agent_id)
+        assert vi.normalize_agent_id(did).hex() == agent_id.hex()
+        assert derive_stake_token_name(vi.normalize_agent_id(did).hex()) == (
+            derive_stake_token_name(agent_id.hex())
+        )

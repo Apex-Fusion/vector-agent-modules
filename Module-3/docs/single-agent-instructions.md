@@ -56,32 +56,44 @@ Stake when you have capabilities you want to advertise on-chain. Staking is the 
 
 2. **Create a seed UTXO** — Send a small amount to the reputation validator address. This UTXO will be consumed during stake creation:
    ```python
-   from reputation_staking import ReputationStakingClient
+   from reputation_staking import ReputationStakingClient, load_deployment
    from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
 
    context = OgmiosHttpContext()
    skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
+   # The deploy state of a new deployment (with identity_hash). An old state
+   # raises DeploymentStateError: move that file to a different path.
    client = ReputationStakingClient.from_deploy_state(
        "deploy/deploy_state.json", context, skey,
+       validity_slots=900,  # validity range of each transaction, at most 3600 slots (1 h)
    )
+   # load_deployment("deploy/deploy_state.json") gives the same values
+   # (identity_hash, params_token_policy, holders, Module-1 hashes).
 
-   seed_tx = client.create_seed_utxo(agent_did_hex, ["code_review", "testing"])
+   agent = "did:vector:<64 hex>"  # your identity record (or its 64-hex identifier)
+   record = client.find_identity_record(agent)  # None when the record is not there
+   # Check before you spend: Active, lists the capabilities, controller key present.
+   client.check_agent(agent, ["code_review", "testing"], controller_skey=None)
+
+   seed_tx = client.create_seed_utxo(agent, ["code_review", "testing"])
    seed_utxo = f"{seed_tx}#0"
    ```
 
 3. **Create your self-stake** — Mints a stake tracking token (`rstk_` prefix) and locks AP3X at the reputation validator address:
    ```python
    tx_hash = client.create_stake(
-       agent_did=agent_did_hex,
+       agent_did=agent,
        capabilities=["code_review", "testing"],
        stake_amount=10_000_000,  # 10 AP3X in DFM
        seed_utxo=seed_utxo,
+       controller_skey=None,     # the controller signing key, when it is not the wallet key
    )
    ```
+   Each action has a `build_*` method (for example `client.build_create_stake(...)`) that returns the signed transaction and does not submit it. The method without `build_` also submits the transaction and waits for it. The client refuses to build when a rule fails (`vector_identity.IdentityError`).
    The inline datum created is:
    ```
    StakeDatum {
-     agent_did: <your DID hex>,
+     agent_did: <64-hex identifier of your identity record>,
      owner_credential: <your payment credential>,
      stake_amount: 10000000,
      staked_capabilities: ["code_review", "testing"],
@@ -128,25 +140,26 @@ Endorse when you have direct experience working with another agent and can vouch
 
 1. **Find an agent to endorse** — Query the indexer API for agents with stakes:
    ```
-   GET /agents — list all staked agents with scores
-   GET /agents/{did} — detailed breakdown for a specific agent
+   GET /v1/reputation/leaderboard — staked agents whose identity record is Active
+   GET /v1/reputation/agent/{did} — detailed breakdown ({did}: did:vector:<64 hex> or 64 hex)
    ```
 
 2. **Mint an endorsement** — Creates an endorsement tracking token (`rend_` prefix) and locks AP3X at the endorsement validator address:
    ```python
    tx_hash = client.mint_endorsement(
-       endorser_did=your_did_hex,
-       target_did=target_did_hex,
+       endorser_did=your_did,         # did:vector:<64 hex> or 64 hex
+       target_did=target_did,
        capabilities=["code_review"],
        stake_amount=5_000_000,  # 5 AP3X minimum
+       controller_skey=None,    # your controller key, when it is not the wallet key
    )
    ```
    The inline datum created is:
    ```
    EndorsementDatum {
-     endorser_did: <your DID>,
+     endorser_did: <64-hex identifier of your record>,
      endorser_credential: <your payment credential>,
-     target_did: <target's DID>,
+     target_did: <64-hex identifier of the target's record>,
      stake_amount: 5000000,
      endorsed_capabilities: ["code_review"],
      created_at: <current POSIX ms>,
@@ -182,29 +195,32 @@ Only challenge when you're confident the claim is false. The oracle/jury evaluat
 
 1. **Find a target** — Query the indexer for agents claiming specific capabilities:
    ```
-   GET /agents/{did} — check their staked capabilities
+   GET /v1/reputation/agent/{did} — check their staked capabilities and identity status
    ```
 
 2. **Prepare evidence** — Create a JSON evidence document showing why the capability claim is false. Store off-chain (IPFS or OriginTrail). Compute `evidence_hash = blake2b_256(evidence_document)`.
 
 3. **Mint a challenge** — Creates a challenge tracking token (`rchl_` prefix) and locks AP3X at the endorsement validator address:
    ```python
+   client.check_agent(your_did, controller_skey=None, challenger=True)  # Active + old enough
    tx_hash, challenge_datum = client.mint_challenge(
-       challenger_did=your_did_hex,
-       target_did=target_did_hex,
+       challenger_did=your_did,
+       target_did=target_did,
        capability="code_review",
        stake_amount=25_000_000,  # 25 AP3X minimum
        evidence_hash=evidence_hash_hex,
        evidence_uri="ipfs://Qm...",
+       controller_skey=None,
    )
-   # Save challenge_datum — needed for resolve_challenge() and distribute_outcome()
+   # The client sets target_credential from the target's stake. Later
+   # actions read the challenge datum from the chain.
    ```
    The inline datum created is:
    ```
    ReputationChallengeDatum {
-     challenger_did: <your DID>,
+     challenger_did: <64-hex identifier of your record>,
      challenger_credential: <your payment credential>,
-     target_did: <target's DID>,
+     target_did: <64-hex identifier of the target's record>,
      target_credential: <owner_credential of the target's StakeUTXO>,
      challenged_capability: "code_review",
      stake_amount: 25000000,
@@ -326,12 +342,16 @@ Query the indexer for real-time reputation data:
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /health` | Last poll slot, time, agents indexed |
-| `GET /agents` | All agents with scores, sorted by net_score |
-| `GET /agents/{did}` | Full breakdown: score, stakes, endorsements, challenges, bonuses |
-| `GET /agents/{did}/endorsements` | Endorsements given to and by the agent |
-| `GET /agents/{did}/challenges` | Active challenges targeting the agent |
-| `GET /leaderboard?limit=50` | Top agents by net score |
+| `GET /health` | Last poll slot and time (POSIX ms), agents indexed |
+| `GET /agents` | All agents with scores and identity status, sorted by net_score |
+| `GET /v1/reputation/agent/{did}` | Full breakdown: score, identity status, stakes, endorsements, challenges, bonuses |
+| `GET /v1/reputation/endorsements/{did}` | Endorsements given to and by the agent |
+| `GET /v1/reputation/challenges/{did}` | Challenges targeting the agent |
+| `GET /v1/reputation/leaderboard?limit=50` | Top Active agents by net score (`include_all=true` for all agents) |
+
+`{did}` is `did:vector:<64 hex>` or 64 hex. Each response has the 64-hex identifier (`*_did`) and the canonical DID (`*_did_uri`). An agent whose identity record is not Active has the tier Unverified.
+
+A distribution (`client.distribute_outcome(...)` or `client.distribute_falsified_outcome(...)`) can also mint the winner's ChallengeWon history bonus with `mint_bonus=True`. The bonus needs the oracle key (the wallet) and the winner's controller key (`bonus_controller_skey` when it is not the wallet key); the winner's record must be Active. The default is `mint_bonus=False`.
 
 ---
 
@@ -363,11 +383,11 @@ Query the indexer for real-time reputation data:
 
 ```
 LOOP:
-  1. GET /agents — scan for agents with high stakes and unverified capabilities
+  1. GET /v1/reputation/leaderboard — scan for agents with high stakes and unverified capabilities
   2. For each interesting agent:
-     a. GET /agents/{did} — check endorsement ratio and challenge history
+     a. GET /v1/reputation/agent/{did} — check endorsement ratio and challenge history
      b. If capabilities seem exaggerated → evaluate evidence, consider challenging
-  3. GET /agents/{did}/challenges — check for active challenges you might want to respond to
+  3. GET /v1/reputation/challenges/{did} — check for active challenges you might want to respond to
   4. Check your own agent: is decay approaching? Increase stake or update capabilities to reset
   5. Sleep(60 seconds)
 ```
@@ -389,14 +409,14 @@ For full deployment details, see [`../deploy/DEPLOY.md`](../deploy/DEPLOY.md) or
 ```bash
 cd Module-3
 
-# Remote (Ogmios — no Docker/local node required):
-python3 scripts/smoke_test_ogmios.py
-
-# Legacy (Docker — requires local node):
-python3 scripts/smoke_test_docker.py
+# Remote (Ogmios — no Docker/local node required). The two agents are
+# identity records that exist; the script checks them before it spends.
+export M3_SMOKE_AGENT_A=did:vector:<64 hex>
+export M3_SMOKE_AGENT_B=did:vector:<64 hex>
+PYTHONPATH=python python3 scripts/smoke_test_ogmios.py
 ```
 
-The Ogmios smoke test uses PyCardano + remote Ogmios HTTP for all chain interaction, matching Module 1 and Module 6. It requires only a wallet `.skey` file and network access.
+The Ogmios smoke test uses PyCardano + remote Ogmios HTTP for all chain interaction, matching Module 1 and Module 6. It requires the deploy wallet `.skey` file (the oracle key), the two agent records, and network access.
 
 ---
 

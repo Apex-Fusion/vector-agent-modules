@@ -11,65 +11,89 @@ for a presentation:
   - Sybil detection flags (mutual-endorsement cycle)
   - An unresolved active challenge visible on the Challenges tab
 
+The 7 agents are identity records (did:vector) that exist before the run.
+Register them with the identity tools. Before the first transaction the
+script checks that each record is Active and lists the capabilities that the
+agent stakes, that a signing key of each controller is available (the wallet
+key or a given key file), that the challengers (beta, gamma, delta) are at
+least min_agent_age old, and that the wallet key is the oracle key.
+
+Inputs, for NAME in alpha beta gamma delta epsilon sybil1 sybil2:
+  --agent NAME=DID              or M3_DEMO_<NAME>                 (required)
+  --controller-skey NAME=PATH   or M3_DEMO_<NAME>_CONTROLLER_SKEY (when the
+                                   controller key is not the wallet key)
+  --wallet-skey PATH            or M3_WALLET_SKEY (default /tmp/m3mainnet_payment.skey)
+
 End state after run (approximate):
-  Alpha    -> Elite       (stake 50  + endorsements 150 + bonus 1860 - 10 open)
+  Alpha    -> Elite       (stake 50  + endorsements 150 + bonus 1810 - 10 open)
   Beta     -> Trusted     (stake 50  + endorsements 150 + bonus 300)
   Gamma    -> Established (stake 110)
-  Delta    -> Novice      (stake 5)
-  Epsilon  -> Unverified  (no stake, 1 incoming endorsement only)
+  Delta    -> Novice      (stake 10)
+  Epsilon  -> Unverified  (stake 10, one open 25 AP3X challenge)
   Sybil1   -> Novice + sybil flag  (mutual cycle with Sybil2)
   Sybil2   -> Novice + sybil flag  (mutual cycle with Sybil1)
 
-Resumable via deploy/mainnet/demo_state.json — safe to re-run on failure.
+Resumable via deploy/mainnet/demo_state.json. A state of another deployment
+or other agents stops the run: move that file to a different path.
 
 Usage:
-    cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/demo_seed_mainnet.py
+    cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/demo_seed_mainnet.py \
+        --agent alpha=did:vector:<64 hex> ... --agent sybil2=did:vector:<64 hex>
 """
 
+import argparse
 import hashlib
-import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 
-from pycardano import PaymentSigningKey, PaymentVerificationKey, PlutusV3Script
-
 MODULE3_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(MODULE3_ROOT / "python"))
+sys.path.insert(0, str(Path(__file__).parent))
 
-# Patch mainnet system start BEFORE any slot/time calls in the SDK.
-import reputation_staking.utils as _utils
-import reputation_staking.constants as _constants
-MAINNET_SYSTEM_START_UNIX_S = 1756485600  # 2025-08-29T16:40:00Z
-_utils.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
-_constants.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
+from smoke_test_ogmios import (  # noqa: E402
+    MAINNET,
+    agent_id,
+    check_agent,
+    load_run_state,
+    read_skey,
+    require_oracle_wallet,
+    save_run_state,
+    use_network,
+)
 
-from reputation_staking import ReputationStakingClient
-from reputation_staking.ogmios_backend import (
+use_network(MAINNET)
+
+from reputation_staking import ReputationStakingClient  # noqa: E402
+from reputation_staking.deployment import DeploymentStateError  # noqa: E402
+from reputation_staking.ogmios_backend import (  # noqa: E402
     OgmiosHttpContext,
     get_wallet_utxos,
     load_wallet,
-)
-from reputation_staking.plutus_data import EndorsementValidatorDatumChallenge
-
-# Reuse the battle-tested agent registration helper from the smoke test.
-from smoke_test_mainnet_ogmios import (  # noqa: E402
-    MAINNET_OGMIOS_URL,
-    MAINNET_SUBMIT_URL,
-    load_registry_script,
-    register_agent,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-DEPLOY_DIR = MODULE3_ROOT / "deploy" / "mainnet"
-DEPLOY_STATE_FILE = DEPLOY_DIR / "deploy_state.json"
+DEPLOY_DIR = MAINNET.deploy_dir
+DEPLOY_STATE_FILE = MAINNET.deploy_state_file
 DEMO_STATE_FILE = DEPLOY_DIR / "demo_state.json"
-WALLET_SKEY_PATH = "/tmp/m3mainnet_payment.skey"
 
 TX_WAIT = 25  # seconds between txs
+
+# Agents: the capabilities that each one stakes (its record lists them) and
+# whether it challenges another agent (min_agent_age).
+AGENTS = {
+    "alpha": (["code_review", "testing"], False),
+    "beta": (["security_audit"], True),
+    "gamma": (["data_analysis"], True),
+    "delta": (["documentation"], True),
+    "epsilon": (["research"], False),
+    "sybil1": (["code_review"], False),
+    "sybil2": (["code_review"], False),
+}
 
 # ── Demo economics (in DFM = lovelace) ──────────────────────────────────────
 AP3X = 1_000_000
@@ -97,23 +121,27 @@ OPEN_CHALLENGE_STAKE = 25 * AP3X    # at min_challenge_stake; vs Epsilon
 RESOLVED_CHALLENGE_STAKE = 25 * AP3X  # minted + resolved, not distributed → visible on Challenges tab
 
 
-# ── State management ───────────────────────────────────────────────────────
-
-def load_state() -> dict:
-    if DEMO_STATE_FILE.exists():
-        with open(DEMO_STATE_FILE) as f:
-            return json.load(f)
-    return {}
+# ── Inputs ───────────────────────────────────────────────────────────────────
 
 
-def save_state(state: dict):
-    DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
-    with open(DEMO_STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Module 3 demo seed (mainnet)")
+    parser.add_argument("--agent", action="append", default=[], metavar="NAME=DID",
+                        help="Agent DID or 64-hex identifier (else M3_DEMO_<NAME>)")
+    parser.add_argument("--controller-skey", action="append", default=[], metavar="NAME=PATH",
+                        help="Key file of the agent's controller (else M3_DEMO_<NAME>_CONTROLLER_SKEY)")
+    parser.add_argument("--wallet-skey", help="Wallet key file (M3_WALLET_SKEY)")
+    return parser.parse_args()
 
 
-def _load_cd(cbor_hex: str):
-    return EndorsementValidatorDatumChallenge.from_cbor(cbor_hex)
+def named_values(pairs, what):
+    values = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or name not in AGENTS:
+            sys.exit(f"ERROR: {what} {pair!r}: use NAME=VALUE with NAME in {', '.join(AGENTS)}")
+        values[name] = value
+    return values
 
 
 # ── Step wrapper ───────────────────────────────────────────────────────────
@@ -129,10 +157,10 @@ def step(state: dict, key: str, label: str, fn, *, wait: int = TX_WAIT):
     except Exception as e:
         print(f"  FAIL: {e}")
         import traceback; traceback.print_exc()
-        save_state(state)
+        save_run_state(DEMO_STATE_FILE, state)
         sys.exit(1)
     state[key] = result
-    save_state(state)
+    save_run_state(DEMO_STATE_FILE, state)
     print(f"  OK: {result if isinstance(result, str) else 'complete'}")
     if wait:
         print(f"  waiting {wait}s for tx confirmation...")
@@ -140,119 +168,27 @@ def step(state: dict, key: str, label: str, fn, *, wait: int = TX_WAIT):
     return result
 
 
-# ── Per-agent registration helper ──────────────────────────────────────────
-
-def register(state, key, client, context, skey, vkey, wallet_addr, registry_script,
-             name, description, capabilities):
-    """Register an agent (or return cached DID), returning the DID string."""
-    did_key = f"{key}_did"
-    tx_key = f"{key}_tx"
-    if did_key in state:
-        print(f"\n[skip] Register {name} — DID {state[did_key][:24]}... already in state")
-        return state[did_key]
-    print(f"\n--- Register {name} ---")
-    try:
-        did, tx_hash = register_agent(
-            context, skey, vkey, wallet_addr, registry_script,
-            name, description, capabilities, client._protected_refs,
-        )
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        import traceback; traceback.print_exc()
-        save_state(state)
-        sys.exit(1)
-    state[did_key] = did
-    state[tx_key] = tx_hash
-    save_state(state)
-    print(f"  OK: DID {did[:24]}... tx {tx_hash[:16]}...")
-    print(f"  waiting {TX_WAIT}s...")
-    time.sleep(TX_WAIT)
-    return did
+def evidence_hash(text: str) -> str:
+    return hashlib.blake2b(text.encode(), digest_size=32).hexdigest()
 
 
 # ── Challenge cycle helper (mint -> resolve Verified -> distribute) ────────
 
-def run_won_challenge(state, cycle_key, label, client, challenger_did, target_did,
-                      capability, stake_amount):
-    """Full win cycle: target wins → gets history bonus of `stake_amount` points."""
-    mint_key = f"{cycle_key}_mint_tx"
-    datum_key = f"{cycle_key}_datum_cbor"
-    resolve_key = f"{cycle_key}_resolve_tx"
-    distribute_key = f"{cycle_key}_distribute_tx"
-
-    # Stage 1: mint challenge
-    if mint_key not in state:
-        print(f"\n--- {label} — mint challenge ({stake_amount // AP3X} AP3X) ---")
-        try:
-            evidence = f"{cycle_key}_evidence_{int(time.time())}".encode()
-            evidence_hash = hashlib.blake2b(evidence, digest_size=32).hexdigest()
-            tx_hash, cd = client.mint_challenge(
-                challenger_did=challenger_did,
-                target_did=target_did,
-                capability=capability,
-                stake_amount=stake_amount,
-                evidence_hash=evidence_hash,
-                evidence_uri=f"ipfs://demo-{cycle_key}",
-            )
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            import traceback; traceback.print_exc()
-            save_state(state)
-            sys.exit(1)
-        state[mint_key] = tx_hash
-        state[datum_key] = cd.to_cbor().hex()
-        save_state(state)
-        print(f"  OK: tx {tx_hash[:16]}...   waiting {TX_WAIT}s")
-        time.sleep(TX_WAIT)
-    else:
-        print(f"\n[skip] {label} — mint already done ({state[mint_key][:16]}...)")
-
-    # Stage 2: resolve Verified (target wins)
-    if resolve_key not in state:
-        print(f"\n--- {label} — resolve Verified ---")
-        try:
-            cd = _load_cd(state[datum_key])
-            tx_hash = client.resolve_challenge(
-                challenger_did=challenger_did,
-                target_did=target_did,
-                capability=capability,
-                outcome_constructor=0,  # CapabilityVerified
-                challenge_datum=cd,
-            )
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            import traceback; traceback.print_exc()
-            save_state(state)
-            sys.exit(1)
-        state[resolve_key] = tx_hash
-        save_state(state)
-        print(f"  OK: tx {tx_hash[:16]}...   waiting {TX_WAIT}s")
-        time.sleep(TX_WAIT)
-    else:
-        print(f"\n[skip] {label} — resolve already done ({state[resolve_key][:16]}...)")
-
-    # Stage 3: distribute outcome (mints history bonus for TARGET)
-    if distribute_key not in state:
-        print(f"\n--- {label} — distribute outcome (mints history bonus for target) ---")
-        try:
-            cd = _load_cd(state[datum_key])
-            tx_hash = client.distribute_outcome(
-                challenger_did=challenger_did,
-                target_did=target_did,
-                capability=capability,
-                challenge_datum=cd,
-            )
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            import traceback; traceback.print_exc()
-            save_state(state)
-            sys.exit(1)
-        state[distribute_key] = tx_hash
-        save_state(state)
-        print(f"  OK: tx {tx_hash[:16]}...   waiting {TX_WAIT}s")
-        time.sleep(TX_WAIT)
-    else:
-        print(f"\n[skip] {label} — distribute already done ({state[distribute_key][:16]}...)")
+def run_won_challenge(state, cycle_key, label, client, keys, challenger, target,
+                      ids, capability, stake_amount):
+    """Full win cycle: target wins → gets a history bonus of `stake_amount` points."""
+    step(state, f"{cycle_key}_mint_tx", f"{label} — mint challenge ({stake_amount // AP3X} AP3X)",
+         lambda: client.mint_challenge(
+             ids[challenger], ids[target], capability, stake_amount,
+             evidence_hash(f"{cycle_key}_evidence"), f"ipfs://demo-{cycle_key}",
+             controller_skey=keys[challenger])[0])
+    step(state, f"{cycle_key}_resolve_tx", f"{label} — resolve Verified",
+         lambda: client.resolve_challenge(ids[challenger], ids[target], capability, 0))
+    step(state, f"{cycle_key}_distribute_tx",
+         f"{label} — distribute outcome (mints history bonus for target)",
+         lambda: client.distribute_outcome(
+             ids[challenger], ids[target], capability,
+             mint_bonus=True, bonus_controller_skey=keys[target]))
 
 
 # ── Main ───────────────────────────────────────────────────────────────────
@@ -263,19 +199,34 @@ def main():
     print("Showcases all 5 reputation tiers + sybil detection + active chg")
     print("=" * 64)
 
-    if not DEPLOY_STATE_FILE.exists():
-        sys.exit(f"Deploy state missing: {DEPLOY_STATE_FILE}")
-    if not Path(WALLET_SKEY_PATH).exists():
-        sys.exit(f"Wallet key missing: {WALLET_SKEY_PATH}")
+    args = parse_args()
+    given_ids = named_values(args.agent, "--agent")
+    given_keys = named_values(args.controller_skey, "--controller-skey")
+    ids = {
+        name: agent_id(given_ids.get(name) or os.environ.get(f"M3_DEMO_{name.upper()}"),
+                       f"agent {name} (M3_DEMO_{name.upper()})")
+        for name in AGENTS
+    }
+    if len(set(ids.values())) != len(ids):
+        sys.exit("ERROR: the 7 agents must be different agents")
+    keys = {
+        name: read_skey(given_keys.get(name)
+                        or os.environ.get(f"M3_DEMO_{name.upper()}_CONTROLLER_SKEY"))
+        for name in AGENTS
+    }
+    wallet_skey = args.wallet_skey or os.environ.get("M3_WALLET_SKEY") or MAINNET.wallet_skey
+    if not Path(wallet_skey).exists():
+        sys.exit(f"Wallet key missing: {wallet_skey}")
 
-    context = OgmiosHttpContext(ogmios_url=MAINNET_OGMIOS_URL)
-    skey, vkey, wallet_addr = load_wallet(WALLET_SKEY_PATH)
-    client = ReputationStakingClient.from_deploy_state(
-        str(DEPLOY_STATE_FILE), context, skey,
-        ogmios_url=MAINNET_OGMIOS_URL, submit_url=MAINNET_SUBMIT_URL,
-    )
-    registry_script = load_registry_script()
-    state = load_state()
+    context = OgmiosHttpContext(ogmios_url=MAINNET.ogmios_url)
+    skey, vkey, wallet_addr = load_wallet(wallet_skey)
+    try:
+        client = ReputationStakingClient.from_deploy_state(
+            str(DEPLOY_STATE_FILE), context, skey,
+            ogmios_url=MAINNET.ogmios_url, submit_url=MAINNET.submit_url,
+        )
+    except DeploymentStateError as exc:
+        sys.exit(f"ERROR: {exc}")
 
     # Environment banner
     wallet_utxos = get_wallet_utxos(context, wallet_addr)
@@ -285,295 +236,111 @@ def main():
     print(f"Current slot: {context.last_block_slot}")
     print(f"State file: {DEMO_STATE_FILE}")
 
-    # ── Agent registrations ────────────────────────────────────────────────
+    # ── Identity records (before any transaction) ──────────────────────────
     print("\n" + "=" * 64)
-    print("PHASE 1/7: Register 7 agents")
+    print("PHASE 1/7: Check the identity records of the 7 agents")
     print("=" * 64)
+    require_oracle_wallet(client)
+    for name, (capabilities, challenger) in AGENTS.items():
+        check_agent(client, name, ids[name], capabilities, keys[name], challenger=challenger)
+    state = load_run_state(DEMO_STATE_FILE, client.deployment.identity_hash, ids)
+    alpha_did, beta_did, gamma_did, delta_did = ids["alpha"], ids["beta"], ids["gamma"], ids["delta"]
+    epsilon_did, sybil1_did, sybil2_did = ids["epsilon"], ids["sybil1"], ids["sybil2"]
 
-    alpha_did = register(state, "alpha", client, context, skey, vkey, wallet_addr,
-        registry_script, "DemoAlpha",
-        "Demo agent showcasing Elite tier via challenges won",
-        ["code_review", "testing", "deployment"])
-    beta_did = register(state, "beta", client, context, skey, vkey, wallet_addr,
-        registry_script, "DemoBeta",
-        "Demo agent showcasing Trusted tier",
-        ["code_review", "security_audit"])
-    gamma_did = register(state, "gamma", client, context, skey, vkey, wallet_addr,
-        registry_script, "DemoGamma",
-        "Demo agent showcasing Established tier",
-        ["data_analysis"])
-    delta_did = register(state, "delta", client, context, skey, vkey, wallet_addr,
-        registry_script, "DemoDelta",
-        "Demo agent showcasing Novice tier",
-        ["documentation"])
-    epsilon_did = register(state, "epsilon", client, context, skey, vkey, wallet_addr,
-        registry_script, "DemoEpsilon",
-        "Demo agent showcasing Unverified tier (no stake)",
-        ["research"])
-    sybil1_did = register(state, "sybil1", client, context, skey, vkey, wallet_addr,
-        registry_script, "DemoSybil1",
-        "Demo agent part of a mutual-endorsement sybil cluster",
-        ["code_review"])
-    sybil2_did = register(state, "sybil2", client, context, skey, vkey, wallet_addr,
-        registry_script, "DemoSybil2",
-        "Demo agent part of a mutual-endorsement sybil cluster",
-        ["code_review"])
+    def stake(name, amount):
+        caps = AGENTS[name][0]
+        step(state, f"{name}_seed_utxo", f"{name} seed UTXO",
+             lambda: client.create_seed_utxo(ids[name], caps))
+        step(state, f"{name}_stake_tx", f"{name} CreateStake ({amount // AP3X} AP3X)",
+             lambda: client.create_stake(
+                 ids[name], caps, amount, seed_utxo=f"{state[f'{name}_seed_utxo']}#0",
+                 controller_skey=keys[name]))
 
-    # ── Alpha tier: Elite via stake + endorsements + 3 won challenges ─────
+    def endorse(endorser, target, capability, amount):
+        step(state, f"{endorser}_endorses_{target}",
+             f"{endorser} → {target} endorsement ({amount // AP3X} AP3X)",
+             lambda: client.mint_endorsement(
+                 ids[endorser], ids[target], [capability], amount,
+                 controller_skey=keys[endorser]))
+
+    # ── Alpha tier: Elite via stake + endorsements + won challenges ─────────
     print("\n" + "=" * 64)
     print("PHASE 2/7: Alpha → Elite")
     print("=" * 64)
-
-    step(state, "alpha_seed_utxo", "Alpha seed UTXO",
-         lambda: client.create_seed_utxo(alpha_did, ["code_review", "testing"]))
-    step(state, "alpha_stake_tx", f"Alpha CreateStake ({ALPHA_SELF_STAKE // AP3X} AP3X)",
-         lambda: client.create_stake(
-             agent_did=alpha_did,
-             capabilities=["code_review", "testing"],
-             stake_amount=ALPHA_SELF_STAKE,
-             seed_utxo=f"{state['alpha_seed_utxo']}#0"))
-
-    # Fill Alpha endorsement cap (50 × 3 = 150) with 3 endorsements
-    step(state, "beta_endorses_alpha",
-         f"Beta → Alpha endorsement ({ENDORSE_TO_ALPHA // AP3X} AP3X)",
-         lambda: client.mint_endorsement(
-             endorser_did=beta_did, target_did=alpha_did,
-             capabilities=["code_review"], stake_amount=ENDORSE_TO_ALPHA))
-    step(state, "gamma_endorses_alpha",
-         f"Gamma → Alpha endorsement ({ENDORSE_TO_ALPHA // AP3X} AP3X)",
-         lambda: client.mint_endorsement(
-             endorser_did=gamma_did, target_did=alpha_did,
-             capabilities=["testing"], stake_amount=ENDORSE_TO_ALPHA))
-    step(state, "delta_endorses_alpha",
-         f"Delta → Alpha endorsement ({ENDORSE_TO_ALPHA // AP3X} AP3X)",
-         lambda: client.mint_endorsement(
-             endorser_did=delta_did, target_did=alpha_did,
-             capabilities=["code_review"], stake_amount=ENDORSE_TO_ALPHA))
-
-    # Sequential won challenges with shrinking stakes → history bonuses
+    stake("alpha", ALPHA_SELF_STAKE)
+    # Fill Alpha endorsement cap (50 × 3 = 150) with 3 endorsements. The
+    # endorsers need a stake of their own only for their tier.
+    endorse("beta", "alpha", "code_review", ENDORSE_TO_ALPHA)
+    endorse("gamma", "alpha", "testing", ENDORSE_TO_ALPHA)
+    endorse("delta", "alpha", "code_review", ENDORSE_TO_ALPHA)
     for i, stake_ap3x in enumerate(ALPHA_CYCLE_STAKES, start=1):
         run_won_challenge(
-            state, cycle_key=f"alpha_cycle_{i}",
-            label=f"Alpha cycle {i}/{len(ALPHA_CYCLE_STAKES)} ({stake_ap3x} AP3X challenge)",
-            client=client,
-            challenger_did=beta_did,       # Beta challenges, Alpha wins
-            target_did=alpha_did,
-            capability="code_review",
-            stake_amount=stake_ap3x * AP3X,
+            state, f"alpha_cycle_{i}",
+            f"Alpha cycle {i}/{len(ALPHA_CYCLE_STAKES)} ({stake_ap3x} AP3X challenge)",
+            client, keys, "beta", "alpha", ids, "code_review", stake_ap3x * AP3X,
         )
 
-    # ── Beta tier: Trusted via stake + endorsements + 1 won challenge ─────
+    # ── Beta tier: Trusted via stake + endorsements + 1 won challenge ───────
     print("\n" + "=" * 64)
     print("PHASE 3/7: Beta → Trusted")
     print("=" * 64)
-
-    step(state, "beta_seed_utxo", "Beta seed UTXO",
-         lambda: client.create_seed_utxo(beta_did, ["security_audit"]))
-    step(state, "beta_stake_tx", f"Beta CreateStake ({BETA_SELF_STAKE // AP3X} AP3X)",
-         lambda: client.create_stake(
-             agent_did=beta_did,
-             capabilities=["security_audit"],
-             stake_amount=BETA_SELF_STAKE,
-             seed_utxo=f"{state['beta_seed_utxo']}#0"))
-
-    # 1 won challenge → +300 bonus
+    stake("beta", BETA_SELF_STAKE)
     run_won_challenge(
-        state, cycle_key="beta_cycle_1",
-        label="Beta cycle 1/1 (300 AP3X challenge)",
-        client=client,
-        challenger_did=gamma_did,          # Gamma challenges, Beta wins
-        target_did=beta_did,
-        capability="security_audit",
-        stake_amount=BETA_CHALLENGE_STAKE,
+        state, "beta_cycle_1", "Beta cycle 1/1 (300 AP3X challenge)",
+        client, keys, "gamma", "beta", ids, "security_audit", BETA_CHALLENGE_STAKE,
     )
+    endorse("alpha", "beta", "security_audit", ENDORSE_TO_BETA)
+    endorse("gamma", "beta", "security_audit", ENDORSE_TO_BETA)
+    endorse("delta", "beta", "security_audit", ENDORSE_TO_BETA)
 
-    # 3 endorsements → fills cap 150
-    step(state, "alpha_endorses_beta",
-         f"Alpha → Beta endorsement ({ENDORSE_TO_BETA // AP3X} AP3X)",
-         lambda: client.mint_endorsement(
-             endorser_did=alpha_did, target_did=beta_did,
-             capabilities=["security_audit"], stake_amount=ENDORSE_TO_BETA))
-    step(state, "gamma_endorses_beta",
-         f"Gamma → Beta endorsement ({ENDORSE_TO_BETA // AP3X} AP3X)",
-         lambda: client.mint_endorsement(
-             endorser_did=gamma_did, target_did=beta_did,
-             capabilities=["security_audit"], stake_amount=ENDORSE_TO_BETA))
-    step(state, "delta_endorses_beta",
-         f"Delta → Beta endorsement ({ENDORSE_TO_BETA // AP3X} AP3X)",
-         lambda: client.mint_endorsement(
-             endorser_did=delta_did, target_did=beta_did,
-             capabilities=["security_audit"], stake_amount=ENDORSE_TO_BETA))
-
-    # ── Gamma tier: Established (simple stake) ────────────────────────────
+    # ── Gamma, Delta, Epsilon: simple stakes ───────────────────────────────
     print("\n" + "=" * 64)
-    print("PHASE 4/7: Gamma → Established")
+    print("PHASE 4-6/7: Gamma → Established, Delta → Novice, Epsilon → Unverified")
     print("=" * 64)
-
-    step(state, "gamma_seed_utxo", "Gamma seed UTXO",
-         lambda: client.create_seed_utxo(gamma_did, ["data_analysis"]))
-    step(state, "gamma_stake_tx", f"Gamma CreateStake ({GAMMA_SELF_STAKE // AP3X} AP3X)",
-         lambda: client.create_stake(
-             agent_did=gamma_did,
-             capabilities=["data_analysis"],
-             stake_amount=GAMMA_SELF_STAKE,
-             seed_utxo=f"{state['gamma_seed_utxo']}#0"))
-
-    # ── Delta tier: Novice (simple stake) ─────────────────────────────────
-    print("\n" + "=" * 64)
-    print("PHASE 5/7: Delta → Novice")
-    print("=" * 64)
-
-    step(state, "delta_seed_utxo", "Delta seed UTXO",
-         lambda: client.create_seed_utxo(delta_did, ["documentation"]))
-    step(state, "delta_stake_tx", f"Delta CreateStake ({DELTA_SELF_STAKE // AP3X} AP3X)",
-         lambda: client.create_stake(
-             agent_did=delta_did,
-             capabilities=["documentation"],
-             stake_amount=DELTA_SELF_STAKE,
-             seed_utxo=f"{state['delta_seed_utxo']}#0"))
-
-    # ── Epsilon tier: Unverified ──────────────────────────────────────────
-    print("\n" + "=" * 64)
-    print("PHASE 6/7: Epsilon → Unverified")
-    print("=" * 64)
+    stake("gamma", GAMMA_SELF_STAKE)
+    stake("delta", DELTA_SELF_STAKE)
     # Epsilon self-stakes at min (10 AP3X) to appear in the indexer, then an
-    # unresolved 25 AP3X challenge (Phase 7) will subtract from net_score,
+    # unresolved 25 AP3X challenge (Phase 7) subtracts from net_score,
     # clamping it to 0 → Unverified tier.
-    step(state, "epsilon_seed_utxo", "Epsilon seed UTXO",
-         lambda: client.create_seed_utxo(epsilon_did, ["research"]))
-    step(state, "epsilon_stake_tx", f"Epsilon CreateStake ({EPSILON_SELF_STAKE // AP3X} AP3X)",
-         lambda: client.create_stake(
-             agent_did=epsilon_did,
-             capabilities=["research"],
-             stake_amount=EPSILON_SELF_STAKE,
-             seed_utxo=f"{state['epsilon_seed_utxo']}#0"))
+    stake("epsilon", EPSILON_SELF_STAKE)
 
     # ── Sybil cluster: mutual endorsement ring ─────────────────────────────
     print("\n" + "=" * 64)
-    print("PHASE 7/7: Sybil cluster + open challenge")
+    print("PHASE 7/7: Sybil cluster + resolved and open challenges")
     print("=" * 64)
+    stake("sybil1", SYBIL_SELF_STAKE)
+    stake("sybil2", SYBIL_SELF_STAKE)
+    endorse("sybil1", "sybil2", "code_review", ENDORSE_SYBIL)
+    endorse("sybil2", "sybil1", "code_review", ENDORSE_SYBIL)
 
-    step(state, "sybil1_seed_utxo", "Sybil1 seed UTXO",
-         lambda: client.create_seed_utxo(sybil1_did, ["code_review"]))
-    step(state, "sybil1_stake_tx", f"Sybil1 CreateStake ({SYBIL_SELF_STAKE // AP3X} AP3X)",
-         lambda: client.create_stake(
-             agent_did=sybil1_did,
-             capabilities=["code_review"],
-             stake_amount=SYBIL_SELF_STAKE,
-             seed_utxo=f"{state['sybil1_seed_utxo']}#0"))
+    # Resolved challenge (mint + resolve, no distribute): Delta challenges
+    # Gamma's data_analysis. It stays Resolved (CapabilityFalsified) for the
+    # Challenges tab; no history bonus, no tier change.
+    step(state, "resolved_challenge_mint_tx",
+         f"Resolved challenge: Delta vs Gamma data_analysis ({RESOLVED_CHALLENGE_STAKE // AP3X} AP3X) — mint",
+         lambda: client.mint_challenge(
+             delta_did, gamma_did, "data_analysis", RESOLVED_CHALLENGE_STAKE,
+             evidence_hash("demo_resolved_challenge_evidence"),
+             "ipfs://demo-resolved-challenge", controller_skey=keys["delta"])[0])
+    step(state, "resolved_challenge_resolve_tx", "Resolved challenge — resolve Falsified",
+         lambda: client.resolve_challenge(delta_did, gamma_did, "data_analysis", 1))
 
-    step(state, "sybil2_seed_utxo", "Sybil2 seed UTXO",
-         lambda: client.create_seed_utxo(sybil2_did, ["code_review"]))
-    step(state, "sybil2_stake_tx", f"Sybil2 CreateStake ({SYBIL_SELF_STAKE // AP3X} AP3X)",
-         lambda: client.create_stake(
-             agent_did=sybil2_did,
-             capabilities=["code_review"],
-             stake_amount=SYBIL_SELF_STAKE,
-             seed_utxo=f"{state['sybil2_seed_utxo']}#0"))
-
-    step(state, "sybil1_endorses_sybil2",
-         f"Sybil1 → Sybil2 endorsement ({ENDORSE_SYBIL // AP3X} AP3X)",
-         lambda: client.mint_endorsement(
-             endorser_did=sybil1_did, target_did=sybil2_did,
-             capabilities=["code_review"], stake_amount=ENDORSE_SYBIL))
-    step(state, "sybil2_endorses_sybil1",
-         f"Sybil2 → Sybil1 endorsement ({ENDORSE_SYBIL // AP3X} AP3X)  [completes cycle]",
-         lambda: client.mint_endorsement(
-             endorser_did=sybil2_did, target_did=sybil1_did,
-             capabilities=["code_review"], stake_amount=ENDORSE_SYBIL))
-
-    # ── Resolved challenge (mint + resolve, no distribute) ────────────────
-    # Delta challenges Gamma's data_analysis capability. Resolved as
-    # CapabilityFalsified — remains at the endorsement address in Resolved
-    # state so the Challenges tab has a non-Open example. No distribute step,
-    # so no history bonus is minted and no tier changes.
-    if "resolved_challenge_mint_tx" not in state:
-        print(f"\n--- Resolved challenge: Delta vs Gamma data_analysis ({RESOLVED_CHALLENGE_STAKE // AP3X} AP3X) — mint ---")
-        try:
-            evidence = b"demo_resolved_challenge_evidence"
-            ehash = hashlib.blake2b(evidence, digest_size=32).hexdigest()
-            tx_hash, cd = client.mint_challenge(
-                challenger_did=delta_did,
-                target_did=gamma_did,
-                capability="data_analysis",
-                stake_amount=RESOLVED_CHALLENGE_STAKE,
-                evidence_hash=ehash,
-                evidence_uri="ipfs://demo-resolved-challenge",
-            )
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            import traceback; traceback.print_exc()
-            save_state(state)
-            sys.exit(1)
-        state["resolved_challenge_mint_tx"] = tx_hash
-        state["resolved_challenge_datum_cbor"] = cd.to_cbor().hex()
-        save_state(state)
-        print(f"  OK: tx {tx_hash[:16]}...   waiting {TX_WAIT}s")
-        time.sleep(TX_WAIT)
-    else:
-        print(f"\n[skip] Resolved challenge mint — already done ({state['resolved_challenge_mint_tx'][:16]}...)")
-
-    if "resolved_challenge_resolve_tx" not in state:
-        print("\n--- Resolved challenge — resolve Falsified ---")
-        try:
-            cd = _load_cd(state["resolved_challenge_datum_cbor"])
-            tx_hash = client.resolve_challenge(
-                challenger_did=delta_did,
-                target_did=gamma_did,
-                capability="data_analysis",
-                outcome_constructor=1,  # CapabilityFalsified
-                challenge_datum=cd,
-            )
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            import traceback; traceback.print_exc()
-            save_state(state)
-            sys.exit(1)
-        state["resolved_challenge_resolve_tx"] = tx_hash
-        save_state(state)
-        print(f"  OK: tx {tx_hash[:16]}...   (stays Resolved — no distribute)")
-        time.sleep(TX_WAIT)
-    else:
-        print(f"\n[skip] Resolved challenge resolve — already done ({state['resolved_challenge_resolve_tx'][:16]}...)")
-
-    # ── Open challenge against Epsilon (unresolved, pushes to Unverified) ─
-    if "open_challenge_mint_tx" not in state:
-        print(f"\n--- Open challenge vs Epsilon ({OPEN_CHALLENGE_STAKE // AP3X} AP3X, unresolved) ---")
-        try:
-            evidence = b"demo_open_challenge_evidence"
-            ehash = hashlib.blake2b(evidence, digest_size=32).hexdigest()
-            tx_hash, cd = client.mint_challenge(
-                challenger_did=gamma_did,
-                target_did=epsilon_did,
-                capability="research",
-                stake_amount=OPEN_CHALLENGE_STAKE,
-                evidence_hash=ehash,
-                evidence_uri="ipfs://demo-open-challenge",
-            )
-        except Exception as e:
-            print(f"  FAIL: {e}")
-            import traceback; traceback.print_exc()
-            save_state(state)
-            sys.exit(1)
-        state["open_challenge_mint_tx"] = tx_hash
-        state["open_challenge_datum_cbor"] = cd.to_cbor().hex()
-        save_state(state)
-        print(f"  OK: tx {tx_hash[:16]}...   (left Open — will appear on Challenges tab)")
-        time.sleep(TX_WAIT)
-    else:
-        print(f"\n[skip] Open challenge — already minted ({state['open_challenge_mint_tx'][:16]}...)")
+    # Open challenge against Epsilon (unresolved, pushes it to Unverified)
+    step(state, "open_challenge_mint_tx",
+         f"Open challenge vs Epsilon ({OPEN_CHALLENGE_STAKE // AP3X} AP3X, unresolved)",
+         lambda: client.mint_challenge(
+             gamma_did, epsilon_did, "research", OPEN_CHALLENGE_STAKE,
+             evidence_hash("demo_open_challenge_evidence"),
+             "ipfs://demo-open-challenge", controller_skey=keys["gamma"])[0])
 
     # ── Summary ────────────────────────────────────────────────────────────
     print("\n" + "=" * 64)
     print("DEMO SEED COMPLETE")
     print("=" * 64)
-    print(f"Alpha   (Elite      ): {alpha_did}")
-    print(f"Beta    (Trusted    ): {beta_did}")
-    print(f"Gamma   (Established): {gamma_did}")
-    print(f"Delta   (Novice     ): {delta_did}")
-    print(f"Epsilon (Unverified ): {epsilon_did}")
-    print(f"Sybil1  (Novice+flag): {sybil1_did}")
-    print(f"Sybil2  (Novice+flag): {sybil2_did}")
+    for name, label in (("alpha", "Elite"), ("beta", "Trusted"), ("gamma", "Established"),
+                        ("delta", "Novice"), ("epsilon", "Unverified"),
+                        ("sybil1", "Novice+flag"), ("sybil2", "Novice+flag")):
+        print(f"{name:<8}({label:<11}): did:vector:{ids[name]}")
     print()
     print("Next: run the indexer against mainnet to populate the dashboard:")
     print("  cd Module-3")

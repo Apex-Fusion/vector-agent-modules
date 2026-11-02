@@ -1,0 +1,588 @@
+"""Offline tests of the ReputationStakingClient transaction builders.
+
+Each test builds a signed transaction against a fake chain context
+(tests/chain_fixtures.py) and checks the shape that the contracts need
+(validators/*.ak, lib/reputation_staking/*_validation.ak, shared/identity.ak):
+reference inputs (identity record, ancestors, ProtocolParams record,
+CrossValidatorRefs), required signers (controller and owner), the validity
+range (at most one hour; stored times equal the lower bound), datum fields,
+redeemers, mint and payouts. The refusal tests check the client-side checks.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+import pytest
+from pycardano import PaymentSigningKey, Value
+
+from reputation_staking import vector_identity as vi
+from reputation_staking.client import ReputationStakingClient
+from reputation_staking.deployment import DeploymentStateError
+from reputation_staking.plutus_data import (
+    BurnChallengeTokenRedeemer,
+    BurnEndorsementTokenRedeemer,
+    ChallengeSpendRedeemer,
+    CreateStakeRedeemer,
+    DistributeOutcomeRedeemer,
+    EndorsementSpendRedeemer,
+    EndorsementValidatorDatumChallenge,
+    EndorsementValidatorDatumEndorsement,
+    HistoryBonusDatum,
+    MintChallengeTokenRedeemer,
+    MintEndorsementTokenRedeemer,
+    MintHistoryBonusRedeemer,
+    MintStakeTokenRedeemer,
+    RepChallengeOutcomeFalsified,
+    RepChallengeOutcomeInconclusive,
+    RepChallengeOutcomeVerified,
+    RepChallengeStateOpen,
+    RepChallengeStateResolved,
+    ResolveChallengeRedeemer,
+    SlashEndorsementRedeemer,
+    SlashStakeRedeemer,
+    StakeDatum,
+    VerificationKeyCredential,
+    decode_datum,
+)
+from reputation_staking.token_names import (
+    derive_challenge_token_name,
+    derive_endorsement_token_name,
+    derive_history_bonus_token_name,
+    derive_stake_token_name,
+)
+from tests.chain_fixtures import (
+    AP3X,
+    CROSS_REFS,
+    END_HASH,
+    END_REF,
+    HI,
+    LO,
+    REP_HASH,
+    REP_REF,
+    TIP_SLOT,
+    TREASURY,
+    World,
+    address,
+    assert_window,
+    challenge_utxo,
+    endorsement_utxo,
+    inputs_of,
+    key_address,
+    key_hash,
+    mint_of,
+    outputs_to,
+    redeemers_of,
+    ref,
+    refs_of,
+    signers_of,
+    utxo_at,
+    witness_keys,
+)
+
+MIN_AGENT_AGE = 86_400_000  # ProtocolParams default (ms)
+
+
+@pytest.fixture
+def world():
+    w = World()
+    w.record("A")
+    w.record("B")
+    return w
+
+
+# ── Deploy state and window ──────────────────────────────────────────────────
+
+
+class TestClientSetup:
+    def test_old_deploy_state_is_refused(self, world):
+        old = dict(world.state)
+        del old["identity_hash"]
+        old["agent_registry_hash"] = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
+        with pytest.raises(DeploymentStateError, match="Move the file"):
+            ReputationStakingClient(world.context, world.wallet, old)
+
+    def test_validity_range_longer_than_one_hour_is_refused(self, world):
+        with pytest.raises(ValueError, match="one hour"):
+            world.client(validity_slots=3601)
+        assert world.client(validity_slots=3600).validity_slots == 3600
+
+    def test_treasury_and_identity_addresses_from_deploy_state(self, world):
+        client = world.client()
+        assert client.treasury_addr == address(TREASURY)
+        assert client.identity_addr == address("1d" * 28)
+        assert client.tx_window().lo == LO and client.tx_window().hi == HI
+
+
+# ── CreateStake ──────────────────────────────────────────────────────────────
+
+
+class TestCreateStake:
+    def build(self, world, did=None, caps=("code_review", "testing"), **kwargs):
+        seed = world.seed("A")
+        kwargs.setdefault("controller_skey", world.ctrl["A"])
+        return world.client().build_create_stake(
+            did or world.did("A"), list(caps), 10 * AP3X, ref(seed), **kwargs
+        ), seed
+
+    def test_shape(self, world):
+        tx, seed = self.build(world)
+        assert refs_of(tx) == {ref(world.records["A"]), REP_REF} | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet), key_hash(world.ctrl["A"])}
+        assert witness_keys(tx) == {key_hash(world.wallet), key_hash(world.ctrl["A"])}
+        assert_window(tx)
+        assert ref(seed) in inputs_of(tx)
+        token = bytes.fromhex(derive_stake_token_name(world.ids["A"].hex()))
+        assert mint_of(tx) == {(REP_HASH, token): 1}
+        [out] = outputs_to(tx, address(REP_HASH))
+        assert out.datum.last_updated == LO
+        assert bytes(out.datum.agent_did) == world.ids["A"]
+        assert out.datum.owner_credential == VerificationKeyCredential(key_hash(world.wallet))
+        assert out.amount.coin == 10 * AP3X
+        kinds = {type(data) for _, data in redeemers_of(tx)}
+        assert kinds == {CreateStakeRedeemer, MintStakeTokenRedeemer}
+
+    def test_protected_deployment_utxos_are_not_spent(self, world):
+        tx, _ = self.build(world)
+        assert not inputs_of(tx) & {REP_REF, END_REF, CROSS_REFS}
+
+    def test_hex_identifier_and_wallet_controller(self, world):
+        """The controller can be the wallet key; the client signs once."""
+        world.ctrl["A"] = world.wallet
+        world.record("A")
+        tx, _ = self.build(world, did=world.ids["A"].hex(), controller_skey=None)
+        assert signers_of(tx) == {key_hash(world.wallet)}
+
+    def test_subagent_has_parent_reference_input(self, world):
+        world.record("P")
+        world.record("A", lineage=vi.Lineage(world.ids["P"], 0, 1))
+        tx, _ = self.build(world)
+        assert {ref(world.records["A"]), ref(world.records["P"])} <= refs_of(tx)
+
+    def test_refuses_suspended_record(self, world):
+        hold = vi.Hold(vi.Signer.controller_set(), 1, LO - 1000, HI + 1)
+        world.record("A", status=vi.Status.suspended([hold]))
+        with pytest.raises(vi.IdentityStatusError):
+            self.build(world)
+
+    def test_refuses_record_without_capability(self, world):
+        world.record("A", capabilities=("code_review",))
+        with pytest.raises(vi.IdentityError, match="testing"):
+            self.build(world)
+
+    def test_refuses_missing_ancestor(self, world):
+        world.record("A", lineage=vi.Lineage(world.ids["P"], 0, 1))
+        with pytest.raises(vi.MissingAncestorError):
+            self.build(world)
+
+    def test_refuses_missing_record(self, world):
+        world.context.remove(world.records.pop("A"))
+        with pytest.raises(vi.RecordNotFoundError):
+            self.build(world)
+
+    def test_refuses_party_that_ends_inside_the_window(self, world):
+        party = vi.Party(vi.Role.ACCOUNTABLE, vi.Signer.controller_set(), None, 0, HI - 1, 3, None)
+        world.record("A", parties=(party,))
+        with pytest.raises(vi.IdentityStatusError):
+            self.build(world)
+
+    def test_refuses_without_controller_key(self, world):
+        with pytest.raises(vi.IdentityError, match="controller_skey"):
+            self.build(world, controller_skey=None)
+
+    def test_refuses_wrong_controller_key(self, world):
+        with pytest.raises(vi.IdentityError, match="not the controller"):
+            self.build(world, controller_skey=world.ctrl["B"])
+
+
+# ── MintEndorsement ──────────────────────────────────────────────────────────
+
+
+class TestMintEndorsement:
+    def build(self, world, caps=("code_review",), **kwargs):
+        kwargs.setdefault("controller_skey", world.ctrl["B"])
+        return world.client().build_mint_endorsement(
+            world.did("B"), world.did("A"), list(caps), 20 * AP3X, **kwargs
+        )
+
+    def test_shape(self, world):
+        stake = world.stake_a()
+        tx = self.build(world)
+        assert refs_of(tx) == {
+            ref(world.records["B"]), ref(world.records["A"]), ref(stake), END_REF,
+        } | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet), key_hash(world.ctrl["B"])}
+        assert_window(tx)
+        token = bytes.fromhex(
+            derive_endorsement_token_name(world.ids["B"].hex(), world.ids["A"].hex())
+        )
+        assert mint_of(tx) == {(END_HASH, token): 1}
+        [out] = outputs_to(tx, address(END_HASH))
+        assert isinstance(out.datum, EndorsementValidatorDatumEndorsement)
+        inner = out.datum.datum
+        assert inner.created_at == LO
+        assert inner.endorser_credential == VerificationKeyCredential(key_hash(world.wallet))
+        assert bytes(inner.endorser_did) == world.ids["B"]
+        assert bytes(inner.target_did) == world.ids["A"]
+        assert [type(d) for _, d in redeemers_of(tx)] == [MintEndorsementTokenRedeemer]
+
+    def test_target_subagent_has_parent_reference_input(self, world):
+        world.stake_a()
+        world.record("P")
+        world.record("A", lineage=vi.Lineage(world.ids["P"], 0, 1))
+        assert ref(world.records["P"]) in refs_of(self.build(world))
+
+    def test_refuses_target_not_active(self, world):
+        world.stake_a()
+        world.record("A", status=vi.Status.revoked(vi.Signer.controller_set(), 1, LO - 1))
+        with pytest.raises(vi.IdentityStatusError):
+            self.build(world)
+
+    def test_refuses_target_without_capability(self, world):
+        world.stake_a(capabilities=("code_review", "deployment"))
+        with pytest.raises(vi.IdentityError, match="deployment"):
+            self.build(world, caps=("deployment",))
+
+    def test_refuses_endorser_not_active(self, world):
+        world.stake_a()
+        world.record("B", status=vi.Status.retired(LO - 1))
+        with pytest.raises(vi.IdentityStatusError):
+            self.build(world)
+
+    def test_refuses_capability_the_stake_does_not_back(self, world):
+        world.stake_a(capabilities=("testing",))
+        with pytest.raises(ValueError, match="does not back"):
+            self.build(world)
+
+    def test_refuses_self_endorsement(self, world):
+        with pytest.raises(ValueError, match="itself"):
+            world.client().build_mint_endorsement(
+                world.did("A"), world.ids["A"].hex(), ["code_review"], 20 * AP3X,
+            )
+
+
+# ── MintChallenge ────────────────────────────────────────────────────────────
+
+
+class TestMintChallenge:
+    def build(self, world, capability="code_review", **kwargs):
+        kwargs.setdefault("controller_skey", world.ctrl["B"])
+        return world.client().build_mint_challenge(
+            world.did("B"), world.did("A"), capability, 25 * AP3X,
+            "ab" * 32, "ipfs://evidence", **kwargs
+        )
+
+    def test_shape(self, world):
+        stake = world.stake_a()
+        tx, datum = self.build(world)
+        assert refs_of(tx) == {
+            ref(world.records["B"]), ref(world.records["A"]), ref(stake), END_REF,
+        } | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet), key_hash(world.ctrl["B"])}
+        assert_window(tx)
+        token = bytes.fromhex(
+            derive_challenge_token_name(world.ids["B"].hex(), world.ids["A"].hex(), "code_review")
+        )
+        assert mint_of(tx) == {(END_HASH, token): 1}
+        [out] = outputs_to(tx, address(END_HASH))
+        assert out.datum == datum
+        inner = datum.datum
+        assert inner.created_at == LO
+        assert isinstance(inner.state, RepChallengeStateOpen)
+        assert inner.challenger_credential == VerificationKeyCredential(key_hash(world.wallet))
+        assert [type(d) for _, d in redeemers_of(tx)] == [MintChallengeTokenRedeemer]
+
+    def test_target_credential_is_the_stake_owner(self, world):
+        """target_credential = owner_credential of the target's stake (here
+        a key other than the wallet key)."""
+        world.stake_a()
+        _, datum = self.build(world)
+        assert datum.datum.target_credential == VerificationKeyCredential(world.owner_a)
+        assert world.owner_a != key_hash(world.wallet)
+
+    def test_challenger_age_boundary(self, world):
+        world.stake_a()
+        world.record("B", created_at=LO - MIN_AGENT_AGE)
+        self.build(world)  # exactly min_agent_age old at lo
+        world.record("B", created_at=LO - MIN_AGENT_AGE + 1)
+        with pytest.raises(vi.IdentityError, match="min_agent_age"):
+            self.build(world)
+
+    def test_refuses_target_without_capability(self, world):
+        world.stake_a(capabilities=("code_review", "deployment"))
+        with pytest.raises(vi.IdentityError, match="deployment"):
+            self.build(world, capability="deployment")
+
+    def test_refuses_challenger_suspended(self, world):
+        world.stake_a()
+        hold = vi.Hold(vi.Signer.controller_set(), 1, LO - 1000, LO + 1)
+        world.record("B", status=vi.Status.suspended([hold]))
+        with pytest.raises(vi.IdentityStatusError):
+            self.build(world)
+
+    def test_refuses_challenger_with_missing_ancestor(self, world):
+        world.stake_a()
+        world.record("B", lineage=vi.Lineage(world.ids["P"], 0, 1))
+        with pytest.raises(vi.MissingAncestorError):
+            self.build(world)
+
+    def test_refuses_without_challenger_controller_key(self, world):
+        world.stake_a()
+        with pytest.raises(vi.IdentityError, match="controller_skey"):
+            self.build(world, controller_skey=None)
+
+
+# ── ResolveChallenge (oracle) ────────────────────────────────────────────────
+
+
+class TestResolveChallenge:
+    def test_shape(self, world):
+        challenge = world.context.add(challenge_utxo(
+            world.ids["B"], world.ids["A"], key_hash(world.wallet), world.owner_a,
+        ))
+        tx = world.client().build_resolve_challenge(world.did("B"), world.did("A"), "code_review", 0)
+        assert ref(challenge) in inputs_of(tx)
+        assert refs_of(tx) == {END_REF} | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet)}
+        assert tx.transaction_body.validity_start == TIP_SLOT
+        [out] = outputs_to(tx, address(END_HASH))
+        assert out.amount == challenge.output.amount
+        before = decode_datum(EndorsementValidatorDatumChallenge, challenge.output.datum).datum
+        after = out.datum.datum
+        assert after.state == RepChallengeStateResolved(outcome=RepChallengeOutcomeVerified())
+        assert dataclasses.replace(after, state=before.state) == before
+        [(tag, data)] = redeemers_of(tx)
+        assert tag == "spend"
+        assert data == ChallengeSpendRedeemer(
+            action=ResolveChallengeRedeemer(outcome=RepChallengeOutcomeVerified())
+        )
+        assert mint_of(tx) == {}
+
+    def test_refuses_wallet_that_is_not_the_oracle(self, world):
+        world.context.add(challenge_utxo(
+            world.ids["B"], world.ids["A"], key_hash(world.wallet), world.owner_a,
+        ))
+        other = PaymentSigningKey.generate()
+        world.context.add(utxo_at(key_address(key_hash(other)), Value(100 * AP3X)))
+        with pytest.raises(ValueError, match="oracle"):
+            world.client(wallet=other).build_resolve_challenge(
+                world.did("B"), world.did("A"), "code_review", 1,
+            )
+
+
+# ── DistributeOutcome ────────────────────────────────────────────────────────
+
+
+def resolved(outcome):
+    return RepChallengeStateResolved(outcome=outcome)
+
+
+class TestDistributeOutcome:
+    def add_challenge(self, world, outcome):
+        return world.context.add(challenge_utxo(
+            world.ids["B"], world.ids["A"], key_hash(world.wallet), world.owner_a,
+            state=resolved(outcome),
+        ))
+
+    def test_verified_without_bonus(self, world):
+        challenge = self.add_challenge(world, RepChallengeOutcomeVerified())
+        tx = world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
+        assert ref(challenge) in inputs_of(tx)
+        # No identity record: a bonus is not a condition (W2-M36 decision 4)
+        assert refs_of(tx) == {END_REF} | world.deployment_refs()
+        fee = 25 * AP3X * 500 // 10_000
+        [target_out] = outputs_to(tx, key_address(world.owner_a))
+        assert target_out.amount.coin == 25 * AP3X - fee
+        [treasury_out] = outputs_to(tx, address(TREASURY))
+        assert treasury_out.amount.coin >= fee
+        token = bytes.fromhex(
+            derive_challenge_token_name(world.ids["B"].hex(), world.ids["A"].hex(), "code_review")
+        )
+        assert mint_of(tx) == {(END_HASH, token): -1}
+        kinds = {type(d) for _, d in redeemers_of(tx)}
+        assert kinds == {ChallengeSpendRedeemer, BurnChallengeTokenRedeemer}
+        assert tx.transaction_body.validity_start == TIP_SLOT
+
+    def test_verified_with_bonus(self, world):
+        challenge = self.add_challenge(world, RepChallengeOutcomeVerified())
+        tx = world.client().build_distribute_outcome(
+            world.did("B"), world.did("A"), "code_review",
+            mint_bonus=True, bonus_controller_skey=world.ctrl["A"],
+        )
+        assert refs_of(tx) == {ref(world.records["A"]), END_REF, REP_REF} | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet), key_hash(world.ctrl["A"])}
+        assert_window(tx)
+        bonus_token = bytes.fromhex(derive_history_bonus_token_name(
+            bytes(challenge.input.transaction_id).hex(), challenge.input.index,
+        ))
+        assert mint_of(tx)[(REP_HASH, bonus_token)] == 1
+        [bonus_out] = [
+            o for o in outputs_to(tx, address(REP_HASH)) if isinstance(o.datum, HistoryBonusDatum)
+        ]
+        assert bonus_out.datum.created_at == LO
+        assert bytes(bonus_out.datum.agent_did) == world.ids["A"]
+        assert MintHistoryBonusRedeemer in {type(d) for _, d in redeemers_of(tx)}
+
+    def test_bonus_refuses_target_not_active(self, world):
+        self.add_challenge(world, RepChallengeOutcomeVerified())
+        world.record("A", status=vi.Status.revoked(vi.Signer.controller_set(), 1, LO - 1))
+        client = world.client()
+        with pytest.raises(vi.IdentityStatusError):
+            client.build_distribute_outcome(
+                world.did("B"), world.did("A"), "code_review",
+                mint_bonus=True, bonus_controller_skey=world.ctrl["A"],
+            )
+        # Without the bonus the distribution needs no record
+        client.build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
+
+    def test_inconclusive_pays_challenger(self, world):
+        self.add_challenge(world, RepChallengeOutcomeInconclusive())
+        tx = world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
+        fee = 25 * AP3X * 500 // 10_000
+        [challenger_out] = [
+            o for o in outputs_to(tx, key_address(key_hash(world.wallet)))
+            if o.amount.coin == 25 * AP3X - fee // 2
+        ]
+        assert challenger_out
+        with pytest.raises(ValueError, match="no winner"):
+            world.client().build_distribute_outcome(
+                world.did("B"), world.did("A"), "code_review", mint_bonus=True,
+            )
+
+    def test_falsified_needs_the_slash_builder(self, world):
+        self.add_challenge(world, RepChallengeOutcomeFalsified())
+        with pytest.raises(ValueError, match="distribute_falsified_outcome"):
+            world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
+
+
+# ── SlashEndorsement and DistributeOutcome + SlashStake ──────────────────────
+
+
+class TestFalsifiedPath:
+    def setup_falsified(self, world, endorsement_amount=20 * AP3X):
+        world.stake_a()
+        challenge = world.context.add(challenge_utxo(
+            world.ids["B"], world.ids["A"], key_hash(world.wallet), world.owner_a,
+            state=resolved(RepChallengeOutcomeFalsified()),
+        ))
+        endorser_key = key_hash(PaymentSigningKey.generate())
+        endorsement = world.context.add(endorsement_utxo(
+            world.ids["B"], world.ids["A"], endorser_key, amount=endorsement_amount,
+        ))
+        return challenge, endorsement, endorser_key
+
+    def test_slash_continues_endorsement(self, world):
+        challenge, endorsement, endorser_key = self.setup_falsified(world)
+        tx = world.client().build_slash_endorsement(
+            world.did("B"), world.did("A"), ref(challenge),
+        )
+        assert ref(endorsement) in inputs_of(tx)
+        assert ref(challenge) in refs_of(tx)
+        assert ref(challenge) not in inputs_of(tx)
+        slash = 20 * AP3X * 5000 // 10_000
+        fee = slash * 500 // 10_000
+        [out] = outputs_to(tx, address(END_HASH))
+        before = decode_datum(EndorsementValidatorDatumEndorsement, endorsement.output.datum).datum
+        assert out.datum.datum == dataclasses.replace(before, stake_amount=20 * AP3X - slash)
+        assert out.amount.coin >= 20 * AP3X - slash
+        challenger_paid = sum(
+            o.amount.coin for o in outputs_to(tx, key_address(key_hash(world.wallet)))
+        )
+        assert challenger_paid >= slash - fee
+        [treasury_out] = outputs_to(tx, address(TREASURY))
+        assert treasury_out.amount.coin >= fee
+        assert mint_of(tx) == {}
+        [(_, data)] = redeemers_of(tx)
+        assert isinstance(data, EndorsementSpendRedeemer)
+        assert isinstance(data.action, SlashEndorsementRedeemer)
+        assert tx.transaction_body.validity_start == TIP_SLOT
+
+    def test_slash_closes_small_endorsement(self, world):
+        """remaining < min_endorsement: burn the token, pay the endorser."""
+        challenge, endorsement, endorser_key = self.setup_falsified(world, 8 * AP3X)
+        tx = world.client().build_slash_endorsement(
+            world.did("B"), world.did("A"), ref(challenge),
+        )
+        token = bytes.fromhex(
+            derive_endorsement_token_name(world.ids["B"].hex(), world.ids["A"].hex())
+        )
+        assert mint_of(tx) == {(END_HASH, token): -1}
+        assert outputs_to(tx, address(END_HASH)) == []
+        [endorser_out] = outputs_to(tx, key_address(endorser_key))
+        assert endorser_out.amount.coin >= 8 * AP3X - 8 * AP3X * 5000 // 10_000
+        assert BurnEndorsementTokenRedeemer in {type(d) for _, d in redeemers_of(tx)}
+
+    def test_distribute_falsified_slashes_stake(self, world):
+        challenge, _, _ = self.setup_falsified(world)
+        stake = world.client().find_stake_utxo(world.did("A"))
+        tx = world.client().build_distribute_falsified_outcome(
+            world.did("B"), world.did("A"), "code_review",
+        )
+        assert {ref(challenge), ref(stake)} <= inputs_of(tx)
+        assert refs_of(tx) == {END_REF, REP_REF} | world.deployment_refs()
+        target_slash = 100 * AP3X // 2
+        fee = target_slash * 500 // 10_000
+        [stake_out] = [
+            o for o in outputs_to(tx, address(REP_HASH)) if isinstance(o.datum, StakeDatum)
+        ]
+        assert stake_out.datum.stake_amount == 100 * AP3X - target_slash
+        assert stake_out.datum.last_updated == LO
+        assert stake_out.amount.coin >= 100 * AP3X - target_slash
+        challenger_paid = max(
+            o.amount.coin for o in outputs_to(tx, key_address(key_hash(world.wallet)))
+        )
+        assert challenger_paid >= target_slash - fee + 25 * AP3X
+        kinds = [type(d) for _, d in redeemers_of(tx)]
+        assert SlashStakeRedeemer in kinds and BurnChallengeTokenRedeemer in kinds
+        [slash] = [d for _, d in redeemers_of(tx) if isinstance(d, SlashStakeRedeemer)]
+        assert bytes(slash.challenge_ref.transaction_id) == bytes(challenge.input.transaction_id)
+        spend = [d for _, d in redeemers_of(tx) if isinstance(d, ChallengeSpendRedeemer)]
+        assert spend == [ChallengeSpendRedeemer(action=DistributeOutcomeRedeemer())]
+        assert_window(tx)
+
+    def test_distribute_falsified_with_challenger_bonus(self, world):
+        self.setup_falsified(world)
+        world.record("P")
+        world.record("B", lineage=vi.Lineage(world.ids["P"], 0, 1))
+        tx = world.client().build_distribute_falsified_outcome(
+            world.did("B"), world.did("A"), "code_review",
+            mint_bonus=True, bonus_controller_skey=world.ctrl["B"],
+        )
+        assert {ref(world.records["B"]), ref(world.records["P"])} <= refs_of(tx)
+        assert signers_of(tx) == {key_hash(world.wallet), key_hash(world.ctrl["B"])}
+        [bonus_out] = [
+            o for o in outputs_to(tx, address(REP_HASH)) if isinstance(o.datum, HistoryBonusDatum)
+        ]
+        assert bytes(bonus_out.datum.agent_did) == world.ids["B"]
+        assert bonus_out.datum.created_at == LO
+
+    def test_slash_refuses_other_target(self, world):
+        challenge, _, _ = self.setup_falsified(world)
+        other = vi.identifier_from_seed(bytes.fromhex("0d" * 32), 0)
+        world.context.add(endorsement_utxo(world.ids["B"], other, key_hash(world.wallet)))
+        with pytest.raises(ValueError, match="another target"):
+            world.client().build_slash_endorsement(world.did("B"), other.hex(), ref(challenge))
+
+
+# ── Agent checks for scripts ─────────────────────────────────────────────────
+
+
+class TestCheckAgent:
+    def test_check_agent(self, world):
+        record = world.client().check_agent(
+            world.did("A"), ["code_review"], world.ctrl["A"],
+        )
+        assert record.agent_id == world.ids["A"]
+        with pytest.raises(vi.IdentityError, match="deployment"):
+            world.client().check_agent(world.did("A"), ["deployment"], world.ctrl["A"])
+        with pytest.raises(vi.IdentityError, match="controller_skey"):
+            world.client().check_agent(world.did("A"))
+        # A target does not sign
+        world.client().check_agent(world.did("A"), ["code_review"], signs=False)
+
+    def test_check_challenger_age(self, world):
+        world.record("B", created_at=LO - 1000)
+        with pytest.raises(vi.IdentityError, match="min_agent_age"):
+            world.client().check_agent(
+                world.did("B"), controller_skey=world.ctrl["B"], challenger=True,
+            )

@@ -1,24 +1,28 @@
 """
 PyCardano PlutusData definitions matching the on-chain Aiken types.
 
-Source of truth: reputation_staking/lib/reputation_staking/types.ak
+Source of truth: reputation_staking/lib/reputation_staking/types.ak,
+params.ak (ProtocolParams) and config.ak (ReputationConfig).
 
 CONSTR_ID values and field order match the Aiken constructor indices.
-All types are Plutus V3 (Conway).
+All types are Plutus V3 (Conway). Every time is POSIX milliseconds.
 
 Encoding gotchas:
   - Sum type variants use NESTED Constr:
     EndorsementValidatorDatum.Challenge(datum) = Constr(1, [Constr(0, [13 fields])])
   - OutputReference: TransactionId is raw ByteArray in V3 (no Constr wrapper)
+
+An agent identifier in a `*_did` field is the 32-byte identifier of the
+agent's identity record (did:vector), not a DID string.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from typing import Any, Type, TypeVar, Union
 
 from pycardano import PlutusData
-from pycardano.serialization import IndefiniteList
+from pycardano.serialization import IndefiniteList, RawCBOR
 
 
 # ── Credential Types ─────────────────────────────────────────────────────────
@@ -322,6 +326,13 @@ class DistributeOutcomeRedeemer(PlutusData):
     CONSTR_ID = 6
 
 
+@dataclass
+class ExpireChallengeRedeemer(PlutusData):
+    """Constructor 7: ExpireChallenge (anybody closes an unresolved
+    challenge after the challenge timeout)"""
+    CONSTR_ID = 7
+
+
 # ── History Bonus Types (Section 4.4) ───────────────────────────────────────
 
 # HistoryBonusSource variants (constructors 0-8)
@@ -449,6 +460,7 @@ class ChallengeSpendRedeemer(PlutusData):
         ResolveChallengeRedeemer,
         DefaultJudgmentRedeemer,
         DistributeOutcomeRedeemer,
+        ExpireChallengeRedeemer,
     ]
 
 
@@ -457,27 +469,83 @@ class ChallengeSpendRedeemer(PlutusData):
 
 @dataclass
 class ProtocolParams(PlutusData):
-    """ProtocolParams datum — 22 fields."""
+    """ProtocolParams datum — 22 fields (params.ak).
+
+    The datum of the params record: the output at the params holder that
+    holds the `params` record token. Durations are POSIX milliseconds,
+    genesis_minting_window is an absolute POSIX time in milliseconds, and
+    activity_window counts epochs of epoch_length milliseconds.
+    """
     CONSTR_ID = 0
     min_self_stake: int
     min_endorsement: int
     min_challenge_stake: int
-    stake_cooldown: int
-    endorsement_cooldown: int
+    stake_cooldown: int  # ms
+    endorsement_cooldown: int  # ms
     decay_rate: int
-    activity_window: int
+    activity_window: int  # epochs
     decay_collector_fee: int
     history_multiplier: int
     max_endorsement_multiplier: int
     slash_rate_endorser: int
     protocol_fee_rate: int
-    challenge_response_deadline: int
-    min_agent_age: int
-    escalation_window: int
+    challenge_response_deadline: int  # ms
+    min_agent_age: int  # ms
+    escalation_window: int  # ms
     default_judgment_fee: int
     genesis_agent_cap: int
     genesis_bonus_amount: int
-    genesis_minting_window: int
-    genesis_protection_period: int
+    genesis_minting_window: int  # POSIX ms
+    genesis_protection_period: int  # ms
     valid_capabilities: IndefiniteList  # List<ByteArray>
-    epoch_length: int
+    epoch_length: int  # ms
+
+
+# ── ReputationConfig ─────────────────────────────────────────────────────────
+
+
+@dataclass
+class ReputationConfig(PlutusData):
+    """ReputationConfig — 12 fields (config.ak), the parameter of both
+    validators. identity_hash is the last field. The deploy scripts apply
+    it; the SDK reads its values from the deploy state
+    (reputation_staking.deployment)."""
+    CONSTR_ID = 0
+    refs_token_policy: bytes
+    audit_claim_validator_hash: bytes
+    audit_challenge_validator_hash: bytes
+    audit_jury_pool_hash: bytes
+    audit_refs_token_policy: bytes
+    params_script_hash: bytes
+    treasury_script_hash: bytes
+    ap3x_policy_id: bytes
+    ap3x_asset_name: bytes
+    oracle_credential: bytes
+    params_token_policy: bytes
+    identity_hash: bytes
+
+
+# ── Inline datums of UTxOs ───────────────────────────────────────────────────
+
+T = TypeVar("T", bound=PlutusData)
+
+
+def datum_cbor(datum: Any) -> bytes:
+    """The CBOR bytes of an inline datum: RawCBOR (Ogmios), a PlutusData
+    object, or bytes. Raises ValueError for an output without a datum."""
+    if datum is None:
+        raise ValueError("the output has no inline datum")
+    if isinstance(datum, RawCBOR):
+        return bytes(datum.cbor)
+    if isinstance(datum, (bytes, bytearray)):
+        return bytes(datum)
+    to_cbor = getattr(datum, "to_cbor", None)
+    if callable(to_cbor):
+        encoded = to_cbor()
+        return bytes.fromhex(encoded) if isinstance(encoded, str) else bytes(encoded)
+    raise ValueError(f"cannot read an inline datum from {type(datum).__name__}")
+
+
+def decode_datum(cls: Type[T], datum: Any) -> T:
+    """Decode an inline datum as `cls`."""
+    return cls.from_cbor(datum_cbor(datum))

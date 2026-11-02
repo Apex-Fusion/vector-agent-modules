@@ -5,7 +5,20 @@ Scans the reputation and endorsement validator addresses for stakes,
 endorsements, challenges, and history bonuses. Computes per-agent
 reputation scores using the same formula as on-chain validators.
 
-Supports both Ogmios (remote) and Docker (local) backends.
+Each poll also reads:
+  - the ProtocolParams record (the output at the params holder with the
+    `params` record token), for the decay and epoch values;
+  - the identity records at the identity address (identity_hash of the
+    deployment). For each indexed agent the indexer stores the effective
+    status of its record at the index time (`vector_identity.effective`
+    with lo = hi = the index time, ancestors from `record_chain`), or
+    'missing' when the record or an ancestor is not at the identity address.
+
+Identity rule (decision, see scoring.py): an agent that is not Active gets
+the tier Unverified; its amounts stay. The leaderboard leaves it out unless
+the caller asks for all agents.
+
+The indexer reads the chain through Ogmios.
 """
 
 from __future__ import annotations
@@ -13,28 +26,34 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections import defaultdict
-from typing import Optional
+from typing import Dict, Iterable, List, Mapping, Union
 
 import cbor2
+from pycardano import AssetName, ScriptHash
 
+from reputation_staking import vector_identity as vi
 from reputation_staking.constants import (
     CHALLENGE_PREFIX,
     ENDORSEMENT_PREFIX,
     HISTORY_BONUS_PREFIX,
     OGMIOS_URL,
+    PARAMS_TOKEN_NAME,
     STAKE_PREFIX,
 )
+from reputation_staking.deployment import Deployment, load_deployment
 from reputation_staking.models import (
     ChallengeInfo,
     EndorsementInfo,
     HistoryBonusInfo,
     HistoryBonusSource,
+    IdentityStatus,
     ProtocolParamsInfo,
     RepChallengeState,
     StakeInfo,
 )
-from reputation_staking.scoring import compute_decay, compute_reputation_score, get_tier
+from reputation_staking.ogmios_backend import parse_ogmios_utxo
+from reputation_staking.scoring import compute_reputation_score
+from reputation_staking.utils import slot_to_posix_ms
 
 from indexer.storage import IndexerStorage
 from indexer.sybil import analyze_sybil
@@ -80,60 +99,112 @@ def _parse_challenge_state(state_field: dict) -> tuple:
 
 
 def _parse_history_bonus_source(source_field: dict) -> str:
-    """Parse history bonus source variant."""
-    sources = {
-        0: "ChallengeWon", 1: "ChallengeLost", 2: "ChallengeInconclusive",
-        3: "EndorsementReceived", 4: "EndorsementGiven", 5: "StakeIncreased",
-        6: "CapabilityAdded", 7: "LongTermStaking", 8: "GenesisBonus",
-    }
-    return sources.get(source_field.get("constructor", -1), "Unknown")
+    """Parse history bonus source variant (HistoryBonusSource constructors)."""
+    try:
+        return HistoryBonusSource(source_field.get("constructor", -1)).name
+    except ValueError:
+        return "Unknown"
+
+
+def identity_statuses(
+    utxos: Iterable,
+    identity_hash: bytes,
+    agent_ids: Iterable[str],
+    now_ms: int,
+) -> Dict[str, IdentityStatus]:
+    """The effective status of each agent's identity record at `now_ms`.
+
+    `utxos` are the pycardano UTxOs at the identity address. A record counts
+    only when `vector_identity.record_from_utxo` accepts it. An agent whose
+    record or ancestor record is missing gets MISSING.
+    """
+    records: Dict[bytes, vi.IdentityRecord] = {}
+    for utxo in utxos:
+        try:
+            record = vi.record_from_utxo(utxo, identity_hash)
+        except vi.IdentityDecodeError as exc:
+            logger.warning("Identity output with a datum that does not decode: %s", exc)
+            continue
+        if record is not None:
+            records[record.agent_id] = record
+
+    statuses: Dict[str, IdentityStatus] = {}
+    for agent_hex in agent_ids:
+        try:
+            chain = vi.record_chain(agent_hex, records.get)
+            status = vi.effective_of_chain(chain, now_ms, now_ms)
+            statuses[agent_hex] = IdentityStatus(status.value)
+        except (vi.IdentityError, TypeError, ValueError):
+            statuses[agent_hex] = IdentityStatus.MISSING
+    return statuses
 
 
 class ReputationIndexer:
-    """Polls chain UTXOs and computes reputation scores.
-
-    Supports both Ogmios (remote) and Docker/cardano-cli (local) backends.
-    The default is Ogmios, matching Module 1 and Module 6.
-    """
+    """Polls chain UTXOs and computes reputation scores (Ogmios)."""
 
     def __init__(
         self,
-        deploy_state: dict,
+        deploy_state: Union[Mapping, Deployment],
         storage: IndexerStorage,
         poll_interval: int = 60,
         ogmios_url: str = OGMIOS_URL,
-        backend=None,
     ):
         self.storage = storage
         self.poll_interval = poll_interval
         self.ogmios_url = ogmios_url
-        self._legacy_backend = backend  # Optional: DockerChainBackend for local
 
-        self.reputation_hash = deploy_state["reputation_validator_hash"]
-        self.endorsement_hash = deploy_state["endorsement_validator_hash"]
-        self.reputation_addr = deploy_state["reputation_address"]
-        self.endorsement_addr = deploy_state["endorsement_address"]
+        self.deployment = (
+            deploy_state if isinstance(deploy_state, Deployment)
+            else load_deployment(deploy_state)
+        )
+        d = self.deployment
+        self.reputation_hash = d.reputation_validator_hash
+        self.endorsement_hash = d.endorsement_validator_hash
+        self.reputation_addr = d.reputation_address
+        self.endorsement_addr = d.endorsement_address
+        self.identity_hash = bytes.fromhex(d.identity_hash)
+        self.identity_addr = d.identity_address
 
-        self.params = ProtocolParamsInfo()  # defaults match testnet
+        self.params = ProtocolParamsInfo()
 
-    def _query_utxos(self, address: str) -> dict:
-        """Query UTxOs — uses Ogmios by default, falls back to legacy backend."""
-        if self._legacy_backend:
-            return self._legacy_backend.query_utxos(address)
-        # Use Ogmios and convert to cardano-cli JSON format for the parsers
+    # ── Chain reads ─────────────────────────────────────────────────────
+
+    def _ogmios_utxos(self, address: str) -> list:
+        """The UTxOs at an address as Ogmios JSON items."""
         from reputation_staking.ogmios_backend import ogmios_rpc
-        result = ogmios_rpc(
+        return ogmios_rpc(
             "queryLedgerState/utxo",
             params={"addresses": [address]},
             ogmios_url=self.ogmios_url,
         )
-        return self._ogmios_to_cli_format(result)
+
+    def _query_utxos(self, address: str) -> dict:
+        """The UTxOs at an address in cardano-cli JSON format."""
+        return self._ogmios_to_cli_format(self._ogmios_utxos(address))
+
+    def _pycardano_utxos(self, address: str) -> list:
+        return [parse_ogmios_utxo(item) for item in self._ogmios_utxos(address)]
 
     def _get_current_slot(self) -> int:
-        if self._legacy_backend:
-            return self._legacy_backend.get_current_slot()
         from reputation_staking.ogmios_backend import get_current_slot
         return get_current_slot(self.ogmios_url)
+
+    def _load_params(self) -> ProtocolParamsInfo:
+        """The values of the ProtocolParams record of the deployment."""
+        policy = ScriptHash(bytes.fromhex(self.deployment.params_token_policy))
+        name = AssetName(PARAMS_TOKEN_NAME)
+        for utxo in self._pycardano_utxos(self.deployment.params_holder_address):
+            multi_asset = utxo.output.amount.multi_asset
+            if (
+                multi_asset and policy in multi_asset
+                and multi_asset[policy].get(name, 0) == 1
+                and utxo.output.datum is not None
+            ):
+                return ProtocolParamsInfo.from_datum(utxo.output.datum)
+        raise RuntimeError(
+            f"no ProtocolParams record at {self.deployment.params_holder_address} with "
+            f"the params token of policy {self.deployment.params_token_policy}"
+        )
 
     @staticmethod
     def _ogmios_to_cli_format(ogmios_utxos: list) -> dict:
@@ -157,13 +228,9 @@ class ReputationIndexer:
                 else:
                     value[policy_hex] = assets
 
-            # Inline datum — Ogmios returns it as CBOR hex, we need ScriptData JSON
-            # For now, pass through the datum field if it's already JSON
-            # (the parsers handle both formats)
+            # Inline datum — Ogmios returns it as CBOR hex
             datum = item.get("datum")
             if isinstance(datum, str):
-                # CBOR hex — decode to JSON
-                import cbor2
                 try:
                     raw = cbor2.loads(bytes.fromhex(datum))
                     datum = ReputationIndexer._cbor_to_script_data(raw)
@@ -210,10 +277,15 @@ class ReputationIndexer:
             ]}
         return {"int": 0}
 
+    # ── Poll ────────────────────────────────────────────────────────────
+
     def poll_once(self) -> int:
         """Run a single indexing pass. Returns number of agents indexed."""
         current_slot = self._get_current_slot()
-        logger.info("Indexing at slot %d", current_slot)
+        now_ms = slot_to_posix_ms(current_slot)
+        logger.info("Indexing at slot %d (%d ms)", current_slot, now_ms)
+
+        self.params = self._load_params()
 
         # Clear previous data (full rescan each poll)
         self.storage.clear_stakes()
@@ -229,18 +301,27 @@ class ReputationIndexer:
         end_utxos = self._query_utxos(self.endorsement_addr)
         self._index_endorsement_utxos(end_utxos)
 
-        # Compute scores for all agents
+        # Identity records of the indexed agents
         agents = self._collect_agent_dids()
+        statuses = identity_statuses(
+            self._pycardano_utxos(self.identity_addr), self.identity_hash, agents, now_ms,
+        )
+
+        # Compute scores for all agents
         for agent_did in agents:
-            self._compute_agent_score(agent_did, current_slot)
+            self._compute_agent_score(agent_did, current_slot, now_ms, statuses[agent_did])
 
         # Run sybil detection
         sybil_flags = analyze_sybil(self.storage)
 
         self.storage.set_state("last_poll_slot", str(current_slot))
+        self.storage.set_state("last_poll_ms", str(now_ms))
         self.storage.set_state("last_poll_time", str(int(time.time())))
         self.storage.set_state("agents_indexed", str(len(agents)))
         self.storage.set_state("sybil_flags", str(len(sybil_flags)))
+        self.storage.set_state("activity_window", str(self.params.activity_window))
+        self.storage.set_state("epoch_length", str(self.params.epoch_length))
+        self.storage.set_state("identity_hash", self.deployment.identity_hash)
 
         logger.info(
             "Indexed %d agents at slot %d (%d sybil flags)",
@@ -368,7 +449,6 @@ class ReputationIndexer:
             source = _parse_history_bonus_source(fields[1])
             bonus_points = _int_field(datum, 2)
             # source_ref is an OutputReference
-            source_ref_fields = fields[3].get("fields", [])
             source_ref = f"{_hex_field(fields[3], 0)}#{_int_field(fields[3], 1)}"
             created_at = _int_field(datum, 4)
 
@@ -380,8 +460,8 @@ class ReputationIndexer:
 
     # ── Score Computation ───────────────────────────────────────────────
 
-    def _collect_agent_dids(self) -> set:
-        """Collect all agent DIDs from indexed data."""
+    def _collect_agent_dids(self) -> List[str]:
+        """Collect all agent identifiers (64 hex) from indexed data."""
         dids = set()
         for row in self.storage.conn.execute("SELECT DISTINCT agent_did FROM stakes").fetchall():
             dids.add(row["agent_did"])
@@ -391,9 +471,15 @@ class ReputationIndexer:
             dids.add(row["target_did"])
         for row in self.storage.conn.execute("SELECT DISTINCT agent_did FROM history_bonuses").fetchall():
             dids.add(row["agent_did"])
-        return dids
+        return sorted(dids)
 
-    def _compute_agent_score(self, agent_did: str, current_slot: int):
+    def _compute_agent_score(
+        self,
+        agent_did: str,
+        current_slot: int,
+        now_ms: int,
+        identity_status: IdentityStatus,
+    ):
         """Compute and store reputation score for an agent."""
         # Build StakeInfo from DB rows (aggregate if multiple, though normally 1)
         stakes_rows = self.storage.get_stakes_for_agent(agent_did)
@@ -472,7 +558,8 @@ class ReputationIndexer:
             challenges=challenges,
             history_bonuses=history_bonuses,
             params=self.params,
-            current_slot=current_slot,
+            now_ms=now_ms,
+            identity_status=identity_status,
         )
 
         self.storage.upsert_score(
@@ -485,4 +572,6 @@ class ReputationIndexer:
             net_score=score.net_score,
             tier=score.tier.name,
             slot=current_slot,
+            identity_status=score.identity_status.value,
+            indexed_at_ms=now_ms,
         )

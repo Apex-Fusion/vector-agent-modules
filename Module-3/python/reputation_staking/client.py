@@ -5,56 +5,83 @@ Uses PyCardano TransactionBuilder with Ogmios for remote chain interaction,
 matching the patterns used by Module 1 and Module 6.
 
 Usage (Ogmios/remote):
-    from reputation_staking.ogmios_backend import create_context, load_wallet
-    from reputation_staking.client import ReputationStakingClient
+    from reputation_staking import ReputationStakingClient
+    from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
 
-    context = create_context()
+    context = OgmiosHttpContext()
     skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
     client = ReputationStakingClient.from_deploy_state(
         "deploy/deploy_state.json", context, skey,
     )
-    tx = client.create_stake("agent_did_hex", ["code_review"], 10_000_000)
+    seed_tx = client.create_seed_utxo(agent_did, ["code_review"])
+    tx = client.create_stake(agent_did, ["code_review"], 10_000_000,
+                             seed_utxo=f"{seed_tx}#0")
+
+Agents and identity records (Part 2 §7 of docs/IDENTITY_REGISTRY.md in
+agents-marketplace, Module-3 row):
+
+- An agent identifier is the 32-byte identifier of the agent's identity
+  record. The methods accept a canonical DID (`did:vector:<64 hex>`) or
+  64 hex characters.
+- An action that opens or extends a position (CreateStake, an endorsement, a
+  challenge, a history bonus) reads the agent's record. The transaction has
+  the record and the ancestor records (`vector_identity.record_chain`) as
+  reference inputs and a validity range of at most one hour. Each time that
+  the contract stores (last_updated, created_at) is the lower bound `lo` of
+  that range. The record must have effective status Active over [lo, hi] and
+  list each staked, endorsed or challenged capability.
+- The controller of the record signs: its key hash is a required signer. When
+  the controller key is not the wallet key, pass `controller_skey`. Openings
+  also keep the signature of the wallet key (owner_credential,
+  endorser_credential, challenger_credential).
+- The client checks these rules before it builds a transaction. It raises
+  vector_identity.IdentityError (or a subclass) when a rule fails.
+
+Each action has a `build_*` method that returns the signed transaction and a
+method that also submits it.
 """
 
 from __future__ import annotations
 
-import json
+import dataclasses
 import logging
-import time
-from pathlib import Path
-from typing import Optional, Set
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 from pycardano import (
     Address,
     Asset,
     AssetName,
-    ExecutionUnits,
     MultiAsset,
     PaymentSigningKey,
     PaymentVerificationKey,
-    PlutusV3Script,
     Redeemer,
     ScriptHash,
+    Transaction,
     TransactionBuilder,
     TransactionOutput,
     UTxO,
     Value,
+    VerificationKeyHash,
 )
-from pycardano.hash import VerificationKeyHash
 from pycardano.serialization import IndefiniteList
+from pycardano.utils import min_lovelace_post_alonzo
 
+from reputation_staking import vector_identity as vi
 from reputation_staking.constants import (
+    DEFAULT_VALIDITY_SLOTS,
+    HISTORY_BONUS_OUTPUT_LOVELACE,
     OGMIOS_URL,
-    REGISTRY_POLICY_ID,
+    PARAMS_TOKEN_NAME,
+    SLOT_LENGTH_S,
     TX_SUBMIT_URL,
-    TX_WAIT_SECONDS,
-    TREASURY_SCRIPT_HASH,
 )
+from reputation_staking.deployment import Deployment, load_deployment
+from reputation_staking.models import ProtocolParamsInfo
 from reputation_staking.ogmios_backend import (
     NETWORK,
-    find_utxo_with_token,
     get_collateral_utxo,
-    get_current_slot,
     get_wallet_utxos,
     resolve_utxo,
     submit_tx,
@@ -77,9 +104,9 @@ from reputation_staking.plutus_data import (
     MintHistoryBonusRedeemer,
     MintStakeTokenRedeemer,
     OutputReference,
-    RepChallengeOutcomeVerified,
     RepChallengeOutcomeFalsified,
     RepChallengeOutcomeInconclusive,
+    RepChallengeOutcomeVerified,
     RepChallengeStateOpen,
     RepChallengeStateResolved,
     ReputationChallengeDatum,
@@ -88,6 +115,7 @@ from reputation_staking.plutus_data import (
     SlashStakeRedeemer,
     StakeDatum,
     VerificationKeyCredential,
+    decode_datum,
 )
 from reputation_staking.token_names import (
     derive_challenge_token_name,
@@ -95,11 +123,7 @@ from reputation_staking.token_names import (
     derive_history_bonus_token_name,
     derive_stake_token_name,
 )
-from reputation_staking.utils import (
-    script_hash_to_address,
-    slot_to_posix_ms,
-    vkey_hash_to_address,
-)
+from reputation_staking.utils import credential_address, slot_to_posix_ms
 
 logger = logging.getLogger(__name__)
 
@@ -113,69 +137,96 @@ OUTCOME_CLASSES = {
     2: RepChallengeOutcomeInconclusive,
 }
 
+AgentRef = Union[str, bytes]
+
+
+@dataclass(frozen=True)
+class TxWindow:
+    """The validity range of a transaction: the slots (validity_start and
+    ttl) and the POSIX ms values that a validator sees (lo and hi)."""
+
+    start_slot: int
+    end_slot: int
+    lo: int
+    hi: int
+
+
+def _ref(utxo: UTxO) -> str:
+    return f"{bytes(utxo.input.transaction_id).hex()}#{utxo.input.index}"
+
+
+def _key_hash(skey: PaymentSigningKey) -> bytes:
+    return bytes(PaymentVerificationKey.from_signing_key(skey).hash())
+
+
+def _capability_bytes(capabilities: Iterable[Union[str, bytes]]) -> List[bytes]:
+    return [c.encode("utf-8") if isinstance(c, str) else bytes(c) for c in capabilities]
+
+
+def _token_quantity(utxo: UTxO, policy: ScriptHash, name: AssetName) -> int:
+    amount = utxo.output.amount
+    multi_asset = getattr(amount, "multi_asset", None)
+    if not multi_asset or policy not in multi_asset:
+        return 0
+    return int(multi_asset[policy].get(name, 0))
+
 
 class ReputationStakingClient:
     """High-level client for Module 3 Reputation Staking operations.
 
     Uses PyCardano TransactionBuilder for transaction construction and
-    Ogmios for chain queries. Transactions are submitted via HTTP POST.
+    the chain context (OgmiosHttpContext) for chain queries. Transactions
+    are submitted via HTTP POST.
     """
 
     def __init__(
         self,
         context,
         skey: PaymentSigningKey,
-        deploy_state: dict,
+        deploy_state: Union[dict, Deployment],
         ogmios_url: str = OGMIOS_URL,
         submit_url: str = TX_SUBMIT_URL,
+        validity_slots: int = DEFAULT_VALIDITY_SLOTS,
     ):
+        self.deployment = (
+            deploy_state if isinstance(deploy_state, Deployment)
+            else load_deployment(deploy_state)
+        )
+        if validity_slots <= 0 or validity_slots * SLOT_LENGTH_S * 1000 > vi.MAX_RANGE_MS:
+            raise ValueError(
+                f"validity_slots must be between 1 and "
+                f"{vi.MAX_RANGE_MS // (SLOT_LENGTH_S * 1000)}: a transaction that reads "
+                f"an identity record has a validity range of at most one hour"
+            )
         self.context = context
         self.skey = skey
         self.vkey = PaymentVerificationKey.from_signing_key(skey)
-        self.wallet_addr = Address(
-            payment_part=self.vkey.hash(), network=NETWORK
-        )
+        self.wallet_addr = Address(payment_part=self.vkey.hash(), network=NETWORK)
         self.ogmios_url = ogmios_url
         self.submit_url = submit_url
-        self.deploy = deploy_state
+        self.validity_slots = validity_slots
 
-        # Validator hashes and addresses
-        self.reputation_hash = deploy_state["reputation_validator_hash"]
-        self.endorsement_hash = deploy_state["endorsement_validator_hash"]
-        self.reputation_addr = Address.from_primitive(
-            deploy_state["reputation_address"]
-        )
-        self.endorsement_addr = Address.from_primitive(
-            deploy_state["endorsement_address"]
-        )
+        d = self.deployment
+        self.reputation_hash = d.reputation_validator_hash
+        self.endorsement_hash = d.endorsement_validator_hash
+        self.reputation_addr = Address.from_primitive(d.reputation_address)
+        self.endorsement_addr = Address.from_primitive(d.endorsement_address)
+        self.treasury_addr = Address.from_primitive(d.treasury_holder_address)
+        self.params_holder_addr = Address.from_primitive(d.params_holder_address)
+        self.identity_addr = Address.from_primitive(d.identity_address)
+        self.identity_hash = bytes.fromhex(d.identity_hash)
 
         # ScriptHash objects for minting
         self.rep_policy = ScriptHash(bytes.fromhex(self.reputation_hash))
         self.end_policy = ScriptHash(bytes.fromhex(self.endorsement_hash))
+        self.params_token_policy = ScriptHash(bytes.fromhex(d.params_token_policy))
 
-        self.registry_addr = script_hash_to_address(REGISTRY_POLICY_ID)
-        self.treasury_addr = Address.from_primitive(
-            script_hash_to_address(TREASURY_SCRIPT_HASH)
-        )
-
-        # Reference script UTxO refs (resolved lazily)
-        tx_hashes = deploy_state.get("tx_hashes", {})
-        self._rep_ref_hash = tx_hashes.get("reputation_spend_ref")
-        self._end_ref_hash = tx_hashes.get("endorsement_spend_ref")
-        self._params_hash = tx_hashes.get("params_utxo")
-        self._cross_refs_hash = tx_hashes.get("cross_refs_nft")
-
-        # Resolved UTxO cache
-        self._rep_ref_utxo: Optional[UTxO] = None
-        self._end_ref_utxo: Optional[UTxO] = None
-        self._params_utxo: Optional[UTxO] = None
-        self._cross_refs_utxo: Optional[UTxO] = None
-
-        # Protected UTxOs (reference scripts — don't spend these)
-        self._protected_refs: Set[str] = set()
-        for h in [self._rep_ref_hash, self._end_ref_hash, self._cross_refs_hash]:
-            if h:
-                self._protected_refs.add(f"{h}#0")
+        # Reference script and CrossValidatorRefs UTxOs (resolved lazily).
+        # They are at the deploy wallet address: never spend them.
+        self._reference_cache: dict = {}
+        self._protected_refs = {
+            d.reputation_spend_ref, d.endorsement_spend_ref, d.cross_refs_nft,
+        }
 
     @classmethod
     def from_deploy_state(
@@ -185,132 +236,336 @@ class ReputationStakingClient:
         skey: PaymentSigningKey,
         ogmios_url: str = OGMIOS_URL,
         submit_url: str = TX_SUBMIT_URL,
+        validity_slots: int = DEFAULT_VALIDITY_SLOTS,
     ) -> "ReputationStakingClient":
-        """Create client from a deploy_state.json file."""
-        with open(deploy_state_path) as f:
-            deploy_state = json.load(f)
-        return cls(context, skey, deploy_state, ogmios_url, submit_url)
+        """Create a client from a deploy_state.json file. Raises
+        DeploymentStateError for an old or incomplete deploy state."""
+        return cls(
+            context, skey, load_deployment(deploy_state_path),
+            ogmios_url, submit_url, validity_slots,
+        )
 
-    # ── Reference UTxO Resolution (lazy) ───────────────────────────────────
+    # ── Chain reads ─────────────────────────────────────────────────────
 
-    def _resolve_ref(self, attr: str, tx_hash: Optional[str]) -> UTxO:
-        """Resolve and cache a reference UTxO."""
-        cached = getattr(self, attr, None)
-        if cached:
-            return cached
-        if not tx_hash:
-            raise RuntimeError(f"No tx hash for {attr} in deploy_state")
-        utxo = resolve_utxo(tx_hash, 0, self.ogmios_url)
-        setattr(self, attr, utxo)
-        return utxo
+    def _resolve_utxo(self, ref: str) -> UTxO:
+        """The UTxO at "<tx hash>#<index>"."""
+        tx_hash, index = ref.split("#")
+        return resolve_utxo(tx_hash, int(index), self.ogmios_url)
+
+    def _utxos_at(self, address) -> List[UTxO]:
+        return list(self.context.utxos(str(address)))
+
+    def _tip_slot(self) -> int:
+        return self.context.last_block_slot
+
+    def _reference(self, ref: str) -> UTxO:
+        if ref not in self._reference_cache:
+            self._reference_cache[ref] = self._resolve_utxo(ref)
+        return self._reference_cache[ref]
 
     @property
     def rep_ref_utxo(self) -> UTxO:
         """Reputation validator reference script UTxO."""
-        return self._resolve_ref("_rep_ref_utxo", self._rep_ref_hash)
+        return self._reference(self.deployment.reputation_spend_ref)
 
     @property
     def end_ref_utxo(self) -> UTxO:
         """Endorsement validator reference script UTxO."""
-        return self._resolve_ref("_end_ref_utxo", self._end_ref_hash)
-
-    @property
-    def params_utxo(self) -> UTxO:
-        """Protocol parameters UTxO (reference input)."""
-        return self._resolve_ref("_params_utxo", self._params_hash)
+        return self._reference(self.deployment.endorsement_spend_ref)
 
     @property
     def cross_refs_utxo(self) -> UTxO:
         """Cross-validator references NFT UTxO (reference input)."""
-        return self._resolve_ref("_cross_refs_utxo", self._cross_refs_hash)
+        return self._reference(self.deployment.cross_refs_nft)
+
+    def params_record(self) -> Tuple[UTxO, ProtocolParamsInfo]:
+        """The ProtocolParams record and its values. The record is the
+        output at the params holder that holds exactly one `params` token of
+        params_token_policy (shared/lib/shared/record_auth.ak)."""
+        name = AssetName(PARAMS_TOKEN_NAME)
+        for utxo in self._utxos_at(self.params_holder_addr):
+            if (
+                _token_quantity(utxo, self.params_token_policy, name) == 1
+                and utxo.output.datum is not None
+            ):
+                return utxo, ProtocolParamsInfo.from_datum(utxo.output.datum)
+        raise RuntimeError(
+            f"no ProtocolParams record at {self.params_holder_addr} with the "
+            f"params token of policy {self.deployment.params_token_policy}"
+        )
+
+    @property
+    def params_utxo(self) -> UTxO:
+        """The ProtocolParams record UTxO (reference input)."""
+        return self.params_record()[0]
+
+    def protocol_params(self) -> ProtocolParamsInfo:
+        """The values of the ProtocolParams record."""
+        return self.params_record()[1]
+
+    # ── Identity records ────────────────────────────────────────────────
+
+    def identity_utxos(self) -> List[UTxO]:
+        """All UTxOs at the identity address."""
+        return self._utxos_at(self.identity_addr)
+
+    def find_identity_record(
+        self, agent_did: AgentRef, utxos: Optional[List[UTxO]] = None
+    ) -> Optional[vi.IdentityRecord]:
+        """The authentic record of an agent (vector_identity.find_record),
+        or None."""
+        if utxos is None:
+            utxos = self.identity_utxos()
+        return vi.find_record(utxos, self.identity_hash, agent_did)
+
+    def record_chain(
+        self, agent_did: AgentRef, utxos: Optional[List[UTxO]] = None
+    ) -> List[vi.IdentityRecord]:
+        """The agent's record and the ancestor records that `effective`
+        reads (vector_identity.record_chain). Raises RecordNotFoundError or
+        MissingAncestorError."""
+        if utxos is None:
+            utxos = self.identity_utxos()
+        return vi.record_chain(
+            agent_did, lambda agent_id: vi.find_record(utxos, self.identity_hash, agent_id)
+        )
+
+    def tx_window(self) -> TxWindow:
+        """The validity range of the next transaction: from the tip slot for
+        validity_slots slots. lo and hi are POSIX ms."""
+        start = self._tip_slot()
+        end = start + self.validity_slots
+        lo, hi = slot_to_posix_ms(start), slot_to_posix_ms(end)
+        vi.check_window(lo, hi)
+        return TxWindow(start, end, lo, hi)
+
+    def _active_chain(
+        self,
+        agent_id: bytes,
+        window: TxWindow,
+        capabilities: Sequence[bytes],
+        utxos: Optional[List[UTxO]] = None,
+    ) -> List[vi.IdentityRecord]:
+        chain = self.record_chain(agent_id, utxos)
+        vi.require_active(chain, window.lo, window.hi, capabilities)
+        return chain
+
+    def _controller_key(
+        self, record: vi.IdentityRecord, controller_skey: Optional[PaymentSigningKey]
+    ) -> PaymentSigningKey:
+        """The signing key of the record's controller: `controller_skey`
+        when given, else the wallet key. Raises IdentityError when the key
+        is not the controller key."""
+        needed = vi.controller_key_hash(record.datum)
+        if controller_skey is not None:
+            if _key_hash(controller_skey) != needed:
+                raise vi.IdentityError(
+                    f"the given controller key (hash {_key_hash(controller_skey).hex()}) "
+                    f"is not the controller of {record.did} (key hash {needed.hex()})"
+                )
+            return controller_skey
+        if _key_hash(self.skey) == needed:
+            return self.skey
+        raise vi.IdentityError(
+            f"the controller of {record.did} has key hash {needed.hex()}, not the "
+            f"wallet key hash {_key_hash(self.skey).hex()}. Pass the controller "
+            f"signing key (controller_skey)."
+        )
+
+    @staticmethod
+    def _require_age(record: vi.IdentityRecord, params: ProtocolParamsInfo, window: TxWindow):
+        """A challenger's record is at least min_agent_age old at lo."""
+        ready_at = record.datum.created_at + params.min_agent_age
+        if ready_at > window.lo:
+            raise vi.IdentityError(
+                f"{record.did} was created at {record.datum.created_at} (POSIX ms). "
+                f"A challenger's record must be at least min_agent_age "
+                f"({params.min_agent_age} ms) old at the lower bound of the "
+                f"validity range ({window.lo}). It can challenge from {ready_at}."
+            )
+
+    def check_agent(
+        self,
+        agent_did: AgentRef,
+        capabilities: Iterable[Union[str, bytes]] = (),
+        controller_skey: Optional[PaymentSigningKey] = None,
+        *,
+        signs: bool = True,
+        challenger: bool = False,
+    ) -> vi.IdentityRecord:
+        """Check an agent as the builders do, before a transaction: the record
+        and its ancestors are at the identity address, the record has
+        effective status Active over the window of the next transaction and
+        lists each capability. With `signs`, a signing key of the controller
+        is available (`controller_skey` or the wallet key). With
+        `challenger`, the record is at least min_agent_age old. Returns the
+        record. Raises IdentityError (or a subclass) when a check fails."""
+        window = self.tx_window()
+        chain = self._active_chain(
+            vi.normalize_agent_id(agent_did), window, _capability_bytes(capabilities)
+        )
+        if signs:
+            self._controller_key(chain[0], controller_skey)
+        if challenger:
+            self._require_age(chain[0], self.protocol_params(), window)
+        return chain[0]
+
+    def _require_oracle(self, action: str):
+        if _key_hash(self.skey).hex() != self.deployment.oracle_vkey_hash:
+            raise ValueError(
+                f"{action} needs the signature of the oracle key "
+                f"{self.deployment.oracle_vkey_hash} (oracle_credential). The wallet "
+                f"key hash is {_key_hash(self.skey).hex()}."
+            )
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
     def _vkey_hash_bytes(self) -> bytes:
         return bytes(self.vkey.hash())
 
-    def _vkey_hash_hex(self) -> str:
-        return bytes(self.vkey.hash()).hex()
-
     def _wallet_utxos(self) -> list:
         return get_wallet_utxos(self.context, self.wallet_addr, self._protected_refs)
 
     def _collateral(self) -> UTxO:
-        return get_collateral_utxo(
-            self.context, self.wallet_addr, self._protected_refs
-        )
+        return get_collateral_utxo(self.context, self.wallet_addr, self._protected_refs)
 
-    def _current_slot(self) -> int:
-        return get_current_slot(self.ogmios_url)
-
-    def _new_builder(self) -> TransactionBuilder:
-        """Create a TransactionBuilder with standard settings."""
-        b = TransactionBuilder(self.context)
-        b.fee_buffer = FEE_BUFFER
-        return b
-
-    def _add_wallet_inputs(self, builder: TransactionBuilder):
-        """Add all spendable wallet UTxOs as inputs."""
+    def _new_builder(self, window: Optional[TxWindow]) -> TransactionBuilder:
+        """A TransactionBuilder with all spendable wallet UTxOs as inputs
+        and, when given, the validity range of `window`."""
+        builder = TransactionBuilder(self.context)
+        builder.fee_buffer = FEE_BUFFER
         for u in self._wallet_utxos():
             builder.add_input(u)
+        if window is not None:
+            builder.validity_start = window.start_slot
+            builder.ttl = window.end_slot
+        return builder
 
-    def _add_common_refs(self, builder: TransactionBuilder):
-        """Add params + cross-refs as reference inputs."""
-        builder.reference_inputs.add(self.params_utxo)
-        builder.reference_inputs.add(self.cross_refs_utxo)
+    @staticmethod
+    def _add_reference_inputs(builder: TransactionBuilder, utxos: Iterable[UTxO]):
+        """Add reference inputs; each output reference once."""
+        present = {_ref(u) for u in builder.reference_inputs if isinstance(u, UTxO)}
+        for utxo in utxos:
+            if _ref(utxo) not in present:
+                builder.reference_inputs.add(utxo)
+                present.add(_ref(utxo))
 
-    def _sign_submit_wait(self, builder: TransactionBuilder, wait: bool = True) -> str:
-        """Build, sign, submit, and optionally wait."""
-        tx = builder.build_and_sign([self.skey], change_address=self.wallet_addr)
+    def _output(
+        self,
+        address: Address,
+        coin: int,
+        multi_asset: Optional[MultiAsset] = None,
+        datum=None,
+    ) -> TransactionOutput:
+        """An output with at least `coin` lovelace and at least the minimum
+        lovelace of the output (the wallet pays the difference)."""
+        probe = TransactionOutput(
+            address,
+            Value(1_000_000, deepcopy(multi_asset)) if multi_asset else Value(1_000_000),
+            datum=datum,
+        )
+        minimum = min_lovelace_post_alonzo(probe, self.context)
+        amount = max(coin, minimum)
+        value = Value(amount, multi_asset) if multi_asset else Value(amount)
+        return TransactionOutput(address, value, datum=datum)
+
+    def _finish(
+        self,
+        builder: TransactionBuilder,
+        signing_keys: Sequence[PaymentSigningKey],
+        required: Sequence[bytes],
+    ) -> Transaction:
+        """Set the required signers and the collateral, then build and sign
+        with the wallet key and `signing_keys`."""
+        signers = list(dict.fromkeys(bytes(h) for h in required))
+        builder.required_signers = [VerificationKeyHash(h) for h in signers]
+        builder.collaterals = [self._collateral()]
+        keys = {}
+        for key in (self.skey, *signing_keys):
+            keys.setdefault(_key_hash(key), key)
+        return builder.build_and_sign(list(keys.values()), change_address=self.wallet_addr)
+
+    def _submit(self, tx: Transaction, wait: bool) -> str:
         tx_hash = submit_tx(tx, self.submit_url)
         if wait:
             wait_for_tx()
         return tx_hash
 
+    def _find_with_token(self, address: Address, policy: ScriptHash, token_hex: str) -> Optional[UTxO]:
+        name = AssetName(bytes.fromhex(token_hex))
+        for utxo in self._utxos_at(address):
+            if _token_quantity(utxo, policy, name) >= 1:
+                return utxo
+        return None
+
     # ── UTxO Finders ─────────────────────────────────────────────────────
 
-    def find_agent_registry_utxo(self, agent_did: str) -> Optional[UTxO]:
-        """Find the registry UTxO for a given agent DID."""
-        return find_utxo_with_token(
-            self.registry_addr, REGISTRY_POLICY_ID, agent_did,
-            self.ogmios_url,
-        )
-
-    def find_stake_utxo(self, agent_did: str) -> Optional[UTxO]:
+    def find_stake_utxo(self, agent_did: AgentRef) -> Optional[UTxO]:
         """Find the stake UTxO for an agent."""
-        token_name = derive_stake_token_name(agent_did)
-        return find_utxo_with_token(
-            str(self.reputation_addr), self.reputation_hash, token_name,
-            self.ogmios_url,
+        agent_id = vi.normalize_agent_id(agent_did)
+        return self._find_with_token(
+            self.reputation_addr, self.rep_policy, derive_stake_token_name(agent_id.hex())
         )
 
     def find_endorsement_utxo(
-        self, endorser_did: str, target_did: str
+        self, endorser_did: AgentRef, target_did: AgentRef
     ) -> Optional[UTxO]:
         """Find an endorsement UTxO."""
-        token_name = derive_endorsement_token_name(endorser_did, target_did)
-        return find_utxo_with_token(
-            str(self.endorsement_addr), self.endorsement_hash, token_name,
-            self.ogmios_url,
+        token_name = derive_endorsement_token_name(
+            vi.normalize_agent_id(endorser_did).hex(), vi.normalize_agent_id(target_did).hex()
         )
+        return self._find_with_token(self.endorsement_addr, self.end_policy, token_name)
 
     def find_challenge_utxo(
-        self, challenger_did: str, target_did: str, capability: str
+        self, challenger_did: AgentRef, target_did: AgentRef, capability: str
     ) -> Optional[UTxO]:
         """Find a challenge UTxO."""
         token_name = derive_challenge_token_name(
-            challenger_did, target_did, capability
+            vi.normalize_agent_id(challenger_did).hex(),
+            vi.normalize_agent_id(target_did).hex(),
+            capability,
         )
-        return find_utxo_with_token(
-            str(self.endorsement_addr), self.endorsement_hash, token_name,
-            self.ogmios_url,
-        )
+        return self._find_with_token(self.endorsement_addr, self.end_policy, token_name)
+
+    def get_challenge(
+        self, challenger_did: AgentRef, target_did: AgentRef, capability: str
+    ) -> Tuple[UTxO, ReputationChallengeDatum]:
+        """The challenge UTxO and its datum. Raises RuntimeError when the
+        challenge is not on chain."""
+        utxo = self.find_challenge_utxo(challenger_did, target_did, capability)
+        if utxo is None:
+            raise RuntimeError("Challenge UTxO not found on-chain")
+        wrapped = decode_datum(EndorsementValidatorDatumChallenge, utxo.output.datum)
+        return utxo, wrapped.datum
+
+    def _target_stake(self, target_id: bytes) -> Tuple[UTxO, StakeDatum]:
+        utxo = self.find_stake_utxo(target_id)
+        if utxo is None:
+            raise RuntimeError(f"{vi.did_from_id(target_id)} has no stake UTxO")
+        return utxo, decode_datum(StakeDatum, utxo.output.datum)
 
     # ── Stake Operations ─────────────────────────────────────────────────
 
+    def build_create_seed_utxo(
+        self, agent_did: AgentRef, capabilities: list, min_lovelace: int = 2_000_000
+    ) -> Transaction:
+        """A seed UTxO at the reputation address for a later CreateStake.
+        CreateStake reads agent_did from its datum."""
+        datum = StakeDatum(
+            agent_did=vi.normalize_agent_id(agent_did),
+            owner_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
+            stake_amount=min_lovelace,
+            staked_capabilities=IndefiniteList(_capability_bytes(capabilities)),
+            last_updated=slot_to_posix_ms(self._tip_slot()),
+            history_points=0,
+        )
+        builder = self._new_builder(None)
+        builder.add_output(TransactionOutput(self.reputation_addr, min_lovelace, datum=datum))
+        return builder.build_and_sign([self.skey], change_address=self.wallet_addr)
+
     def create_seed_utxo(
         self,
-        agent_did: str,
+        agent_did: AgentRef,
         capabilities: list,
         min_lovelace: int = 2_000_000,
         wait: bool = True,
@@ -320,133 +575,192 @@ class ReputationStakingClient:
         Returns:
             Transaction hash. The seed UTxO will be at {tx_hash}#0.
         """
-        current_slot = self._current_slot()
-
-        datum = StakeDatum(
-            agent_did=bytes.fromhex(agent_did),
-            owner_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
-            stake_amount=min_lovelace,
-            staked_capabilities=IndefiniteList(
-                [cap.encode() for cap in capabilities]
-            ),
-            last_updated=slot_to_posix_ms(current_slot),
-            history_points=0,
+        tx_hash = self._submit(
+            self.build_create_seed_utxo(agent_did, capabilities, min_lovelace), wait
         )
-
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-        builder.add_output(
-            TransactionOutput(self.reputation_addr, min_lovelace, datum=datum)
-        )
-
-        tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("Seed UTxO tx: %s", tx_hash)
         return tx_hash
 
-    def create_stake(
+    def build_create_stake(
         self,
-        agent_did: str,
+        agent_did: AgentRef,
         capabilities: list,
         stake_amount: int,
         seed_utxo: Optional[str] = None,
+        controller_skey: Optional[PaymentSigningKey] = None,
+    ) -> Transaction:
+        """CreateStake: spend the seed UTxO, mint the stake token and create
+        the stake UTxO. The agent's record is Active over the validity range
+        and lists each capability; the controller and the wallet key
+        (owner_credential) sign; last_updated is the lower bound."""
+        if not seed_utxo:
+            raise ValueError("seed_utxo is required for CreateStake")
+        agent_id = vi.normalize_agent_id(agent_did)
+        caps = _capability_bytes(capabilities)
+        if not caps:
+            raise ValueError("CreateStake needs at least one capability")
+        window = self.tx_window()
+        params_utxo, params = self.params_record()
+        if stake_amount < params.min_self_stake:
+            raise ValueError(
+                f"stake_amount {stake_amount} is below min_self_stake {params.min_self_stake}"
+            )
+        chain = self._active_chain(agent_id, window, caps)
+        controller = self._controller_key(chain[0], controller_skey)
+
+        seed = self._resolve_utxo(seed_utxo)
+        if seed.output.address.payment_part != self.rep_policy:
+            raise ValueError(f"seed UTxO {seed_utxo} is not at the reputation address")
+        seed_datum = decode_datum(StakeDatum, seed.output.datum)
+        if bytes(seed_datum.agent_did) != agent_id:
+            raise ValueError(
+                f"seed UTxO {seed_utxo} names agent {bytes(seed_datum.agent_did).hex()}, "
+                f"not {agent_id.hex()}"
+            )
+
+        token = AssetName(bytes.fromhex(derive_stake_token_name(agent_id.hex())))
+        datum = StakeDatum(
+            agent_did=agent_id,
+            owner_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
+            stake_amount=stake_amount,
+            staked_capabilities=IndefiniteList(caps),
+            last_updated=window.lo,
+            history_points=0,
+        )
+
+        builder = self._new_builder(window)
+        builder.add_script_input(
+            seed, script=self.rep_ref_utxo, redeemer=Redeemer(CreateStakeRedeemer()),
+        )
+        builder.mint = MultiAsset({self.rep_policy: Asset({token: 1})})
+        builder.add_minting_script(self.rep_ref_utxo, redeemer=Redeemer(MintStakeTokenRedeemer()))
+        builder.add_output(
+            self._output(
+                self.reputation_addr, stake_amount,
+                MultiAsset({self.rep_policy: Asset({token: 1})}), datum,
+            )
+        )
+        self._add_reference_inputs(
+            builder, [r.utxo for r in chain] + [params_utxo, self.cross_refs_utxo]
+        )
+        return self._finish(
+            builder, [controller], [self._vkey_hash_bytes(), vi.controller_key_hash(chain[0].datum)]
+        )
+
+    def create_stake(
+        self,
+        agent_did: AgentRef,
+        capabilities: list,
+        stake_amount: int,
+        seed_utxo: Optional[str] = None,
+        controller_skey: Optional[PaymentSigningKey] = None,
         wait: bool = True,
     ) -> str:
         """Create an initial self-stake for an agent.
 
         Args:
-            agent_did: Agent's DID (NFT asset name hex).
-            capabilities: List of capability strings.
+            agent_did: The agent (canonical DID or 64 hex characters).
+            capabilities: List of capability strings; the record lists each.
             stake_amount: Amount in DFM (lovelace).
             seed_utxo: "txhash#idx" at reputation address to consume.
+            controller_skey: Signing key of the record's controller when it
+                is not the wallet key.
             wait: Whether to wait for confirmation.
 
         Returns:
             Transaction hash.
         """
-        if not seed_utxo:
-            raise ValueError("seed_utxo is required for CreateStake")
-
-        current_slot = self._current_slot()
-        caps_bytes = IndefiniteList([cap.encode() for cap in capabilities])
-
-        # Token name
-        stake_token_name = derive_stake_token_name(agent_did)
-        token_an = AssetName(bytes.fromhex(stake_token_name))
-
-        # Datum
-        datum = StakeDatum(
-            agent_did=bytes.fromhex(agent_did),
-            owner_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
-            stake_amount=stake_amount,
-            staked_capabilities=caps_bytes,
-            last_updated=slot_to_posix_ms(current_slot),
-            history_points=0,
+        tx_hash = self._submit(
+            self.build_create_stake(agent_did, capabilities, stake_amount, seed_utxo, controller_skey),
+            wait,
         )
-
-        # Reference inputs
-        agent_reg_utxo = self.find_agent_registry_utxo(agent_did)
-        if not agent_reg_utxo:
-            raise RuntimeError(f"Agent registry UTxO not found for {agent_did[:16]}...")
-
-        # Resolve the seed UTxO
-        parts = seed_utxo.split("#")
-        seed = resolve_utxo(parts[0], int(parts[1]), self.ogmios_url)
-
-        # Mint
-        mint_ma = MultiAsset({self.rep_policy: Asset({token_an: 1})})
-        out_ma = MultiAsset({self.rep_policy: Asset({token_an: 1})})
-
-        # Build transaction
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-
-        # Spend seed UTxO with CreateStake redeemer
-        builder.add_script_input(
-            seed,
-            script=self.rep_ref_utxo,
-            redeemer=Redeemer(CreateStakeRedeemer()),
-        )
-
-        # Mint stake token
-        builder.mint = mint_ma
-        builder.add_minting_script(
-            self.rep_ref_utxo,
-            redeemer=Redeemer(MintStakeTokenRedeemer()),
-        )
-
-        # Output: stake UTxO with token + datum
-        builder.add_output(
-            TransactionOutput(
-                self.reputation_addr,
-                Value(stake_amount, out_ma),
-                datum=datum,
-            )
-        )
-
-        # Reference inputs
-        builder.reference_inputs.add(agent_reg_utxo)
-        self._add_common_refs(builder)
-
-        # Signing + validity
-        builder.required_signers = [self.vkey.hash()]
-        builder.validity_start = current_slot
-        builder.ttl = current_slot + 600
-
-        # Collateral
-        builder.collaterals = [self._collateral()]
-
-        tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("CreateStake tx: %s", tx_hash)
         return tx_hash
 
     # ── Endorsement Operations ───────────────────────────────────────────
 
-    def mint_endorsement(
+    def build_mint_endorsement(
         self,
-        endorser_did: str,
-        target_did: str,
+        endorser_did: AgentRef,
+        target_did: AgentRef,
         capabilities: list,
         stake_amount: int,
+        controller_skey: Optional[PaymentSigningKey] = None,
+    ) -> Transaction:
+        """MintEndorsementToken: the endorser's record is Active and its
+        controller and the wallet key (endorser_credential) sign; the
+        target's record is Active and lists each endorsed capability; the
+        target's stake backs each endorsed capability; created_at is the
+        lower bound."""
+        endorser_id = vi.normalize_agent_id(endorser_did)
+        target_id = vi.normalize_agent_id(target_did)
+        if endorser_id == target_id:
+            raise ValueError("an agent cannot endorse itself")
+        caps = _capability_bytes(capabilities)
+        if not caps:
+            raise ValueError("an endorsement needs at least one capability")
+        window = self.tx_window()
+        params_utxo, params = self.params_record()
+        if stake_amount < params.min_endorsement:
+            raise ValueError(
+                f"stake_amount {stake_amount} is below min_endorsement {params.min_endorsement}"
+            )
+        utxos = self.identity_utxos()
+        endorser_chain = self._active_chain(endorser_id, window, (), utxos)
+        target_chain = self._active_chain(target_id, window, caps, utxos)
+        controller = self._controller_key(endorser_chain[0], controller_skey)
+
+        stake_utxo, stake = self._target_stake(target_id)
+        staked = {bytes(c) for c in stake.staked_capabilities}
+        unbacked = [c for c in caps if c not in staked]
+        if unbacked:
+            raise ValueError(
+                f"the stake of {vi.did_from_id(target_id)} does not back "
+                + ", ".join(c.decode("utf-8", "replace") for c in unbacked)
+            )
+
+        token = AssetName(
+            bytes.fromhex(derive_endorsement_token_name(endorser_id.hex(), target_id.hex()))
+        )
+        datum = EndorsementValidatorDatumEndorsement(
+            datum=EndorsementDatum(
+                endorser_did=endorser_id,
+                endorser_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
+                target_did=target_id,
+                stake_amount=stake_amount,
+                endorsed_capabilities=IndefiniteList(caps),
+                created_at=window.lo,
+            )
+        )
+
+        builder = self._new_builder(window)
+        builder.mint = MultiAsset({self.end_policy: Asset({token: 1})})
+        builder.add_minting_script(
+            self.end_ref_utxo, redeemer=Redeemer(MintEndorsementTokenRedeemer()),
+        )
+        builder.add_output(
+            self._output(
+                self.endorsement_addr, stake_amount,
+                MultiAsset({self.end_policy: Asset({token: 1})}), datum,
+            )
+        )
+        self._add_reference_inputs(
+            builder,
+            [r.utxo for r in endorser_chain] + [r.utxo for r in target_chain]
+            + [stake_utxo, params_utxo, self.cross_refs_utxo],
+        )
+        return self._finish(
+            builder, [controller],
+            [self._vkey_hash_bytes(), vi.controller_key_hash(endorser_chain[0].datum)],
+        )
+
+    def mint_endorsement(
+        self,
+        endorser_did: AgentRef,
+        target_did: AgentRef,
+        capabilities: list,
+        stake_amount: int,
+        controller_skey: Optional[PaymentSigningKey] = None,
         wait: bool = True,
     ) -> str:
         """Mint an endorsement from one agent to another.
@@ -454,399 +768,458 @@ class ReputationStakingClient:
         Returns:
             Transaction hash.
         """
-        current_slot = self._current_slot()
-
-        token_name = derive_endorsement_token_name(endorser_did, target_did)
-        token_an = AssetName(bytes.fromhex(token_name))
-
-        # Reference inputs
-        endorser_reg = self.find_agent_registry_utxo(endorser_did)
-        target_reg = self.find_agent_registry_utxo(target_did)
-        stake_utxo = self.find_stake_utxo(target_did)
-        if not endorser_reg or not target_reg:
-            raise RuntimeError("Agent registry UTxOs not found")
-        if not stake_utxo:
-            raise RuntimeError("Target agent stake UTxO not found")
-
-        # Datum (wrapped: EndorsementValidatorDatum.Endorsement)
-        inner = EndorsementDatum(
-            endorser_did=bytes.fromhex(endorser_did),
-            endorser_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
-            target_did=bytes.fromhex(target_did),
-            stake_amount=stake_amount,
-            endorsed_capabilities=IndefiniteList(
-                [cap.encode() for cap in capabilities]
+        tx_hash = self._submit(
+            self.build_mint_endorsement(
+                endorser_did, target_did, capabilities, stake_amount, controller_skey,
             ),
-            created_at=slot_to_posix_ms(current_slot),
+            wait,
         )
-        datum = EndorsementValidatorDatumEndorsement(datum=inner)
-
-        # Mint
-        mint_ma = MultiAsset({self.end_policy: Asset({token_an: 1})})
-        out_ma = MultiAsset({self.end_policy: Asset({token_an: 1})})
-
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-
-        builder.mint = mint_ma
-        builder.add_minting_script(
-            self.end_ref_utxo,
-            redeemer=Redeemer(MintEndorsementTokenRedeemer()),
-        )
-
-        builder.add_output(
-            TransactionOutput(
-                self.endorsement_addr,
-                Value(stake_amount, out_ma),
-                datum=datum,
-            )
-        )
-
-        builder.reference_inputs.add(endorser_reg)
-        builder.reference_inputs.add(target_reg)
-        builder.reference_inputs.add(stake_utxo)
-        self._add_common_refs(builder)
-
-        builder.required_signers = [self.vkey.hash()]
-        builder.collaterals = [self._collateral()]
-
-        tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("MintEndorsement tx: %s", tx_hash)
         return tx_hash
 
     # ── Challenge Operations ─────────────────────────────────────────────
 
-    def mint_challenge(
+    def build_mint_challenge(
         self,
-        challenger_did: str,
-        target_did: str,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
         capability: str,
         stake_amount: int,
         evidence_hash: str,
         evidence_uri: str,
+        controller_skey: Optional[PaymentSigningKey] = None,
+    ) -> Tuple[Transaction, EndorsementValidatorDatumChallenge]:
+        """MintChallengeToken: the challenger's record is Active, at least
+        min_agent_age old at the lower bound, and its controller and the
+        wallet key (challenger_credential) sign; the target's record is
+        Active and lists the capability; target_credential is the
+        owner_credential of the target's stake; created_at is the lower
+        bound."""
+        challenger_id = vi.normalize_agent_id(challenger_did)
+        target_id = vi.normalize_agent_id(target_did)
+        if challenger_id == target_id:
+            raise ValueError("an agent cannot challenge itself")
+        evidence = bytes.fromhex(evidence_hash)
+        if len(evidence) != 32:
+            raise ValueError("evidence_hash must be 32 bytes (64 hex characters)")
+        capability_bytes = capability.encode("utf-8")
+        window = self.tx_window()
+        params_utxo, params = self.params_record()
+        if stake_amount < params.min_challenge_stake:
+            raise ValueError(
+                f"stake_amount {stake_amount} is below min_challenge_stake "
+                f"{params.min_challenge_stake}"
+            )
+        utxos = self.identity_utxos()
+        challenger_chain = self._active_chain(challenger_id, window, (), utxos)
+        self._require_age(challenger_chain[0], params, window)
+        target_chain = self._active_chain(target_id, window, [capability_bytes], utxos)
+        controller = self._controller_key(challenger_chain[0], controller_skey)
+
+        stake_utxo, stake = self._target_stake(target_id)
+        if capability_bytes not in {bytes(c) for c in stake.staked_capabilities}:
+            raise ValueError(
+                f"the stake of {vi.did_from_id(target_id)} does not back {capability}"
+            )
+
+        token = AssetName(
+            bytes.fromhex(
+                derive_challenge_token_name(challenger_id.hex(), target_id.hex(), capability)
+            )
+        )
+        datum = EndorsementValidatorDatumChallenge(
+            datum=ReputationChallengeDatum(
+                challenger_did=challenger_id,
+                challenger_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
+                target_did=target_id,
+                target_credential=stake.owner_credential,
+                challenged_capability=capability_bytes,
+                stake_amount=stake_amount,
+                evidence_hash=evidence,
+                evidence_uri=evidence_uri.encode("utf-8"),
+                created_at=window.lo,
+                counter_evidence_hash=b"",
+                counter_evidence_uri=b"",
+                response_submitted_at=0,
+                state=RepChallengeStateOpen(),
+            )
+        )
+
+        builder = self._new_builder(window)
+        builder.mint = MultiAsset({self.end_policy: Asset({token: 1})})
+        builder.add_minting_script(
+            self.end_ref_utxo, redeemer=Redeemer(MintChallengeTokenRedeemer()),
+        )
+        builder.add_output(
+            self._output(
+                self.endorsement_addr, stake_amount,
+                MultiAsset({self.end_policy: Asset({token: 1})}), datum,
+            )
+        )
+        self._add_reference_inputs(
+            builder,
+            [r.utxo for r in challenger_chain] + [r.utxo for r in target_chain]
+            + [stake_utxo, params_utxo, self.cross_refs_utxo],
+        )
+        tx = self._finish(
+            builder, [controller],
+            [self._vkey_hash_bytes(), vi.controller_key_hash(challenger_chain[0].datum)],
+        )
+        return tx, datum
+
+    def mint_challenge(
+        self,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
+        capability: str,
+        stake_amount: int,
+        evidence_hash: str,
+        evidence_uri: str,
+        controller_skey: Optional[PaymentSigningKey] = None,
         wait: bool = True,
     ) -> tuple:
         """Mint a challenge against a target agent's capability.
 
         Returns:
-            Tuple of (tx_hash, challenge_datum). The datum is needed
-            for resolve_challenge() and distribute_outcome().
+            Tuple of (tx_hash, challenge_datum).
         """
-        current_slot = self._current_slot()
-
-        token_name = derive_challenge_token_name(
-            challenger_did, target_did, capability
+        tx, datum = self.build_mint_challenge(
+            challenger_did, target_did, capability, stake_amount,
+            evidence_hash, evidence_uri, controller_skey,
         )
-        token_an = AssetName(bytes.fromhex(token_name))
-
-        # Reference inputs
-        challenger_reg = self.find_agent_registry_utxo(challenger_did)
-        target_reg = self.find_agent_registry_utxo(target_did)
-        stake_utxo = self.find_stake_utxo(target_did)
-        if not challenger_reg or not target_reg:
-            raise RuntimeError("Agent registry UTxOs not found")
-        if not stake_utxo:
-            raise RuntimeError("Target agent stake UTxO not found")
-
-        # Inner datum
-        inner = ReputationChallengeDatum(
-            challenger_did=bytes.fromhex(challenger_did),
-            challenger_credential=VerificationKeyCredential(
-                self._vkey_hash_bytes()
-            ),
-            target_did=bytes.fromhex(target_did),
-            target_credential=VerificationKeyCredential(
-                self._vkey_hash_bytes()
-            ),
-            challenged_capability=capability.encode(),
-            stake_amount=stake_amount,
-            evidence_hash=bytes.fromhex(evidence_hash),
-            evidence_uri=evidence_uri.encode(),
-            created_at=slot_to_posix_ms(current_slot),
-            counter_evidence_hash=b"",
-            counter_evidence_uri=b"",
-            response_submitted_at=0,
-            state=RepChallengeStateOpen(),
-        )
-        datum = EndorsementValidatorDatumChallenge(datum=inner)
-
-        # Mint
-        mint_ma = MultiAsset({self.end_policy: Asset({token_an: 1})})
-        out_ma = MultiAsset({self.end_policy: Asset({token_an: 1})})
-
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-
-        builder.mint = mint_ma
-        builder.add_minting_script(
-            self.end_ref_utxo,
-            redeemer=Redeemer(MintChallengeTokenRedeemer()),
-        )
-
-        builder.add_output(
-            TransactionOutput(
-                self.endorsement_addr,
-                Value(stake_amount, out_ma),
-                datum=datum,
-            )
-        )
-
-        builder.reference_inputs.add(challenger_reg)
-        builder.reference_inputs.add(target_reg)
-        builder.reference_inputs.add(stake_utxo)
-        self._add_common_refs(builder)
-
-        builder.required_signers = [self.vkey.hash()]
-        builder.validity_start = current_slot
-        builder.collaterals = [self._collateral()]
-
-        tx_hash = self._sign_submit_wait(builder, wait)
+        tx_hash = self._submit(tx, wait)
         logger.info("MintChallenge tx: %s", tx_hash)
         return tx_hash, datum
 
-    def resolve_challenge(
+    def build_resolve_challenge(
         self,
-        challenger_did: str,
-        target_did: str,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
         capability: str,
         outcome_constructor: int,
-        challenge_datum,
+    ) -> Transaction:
+        """ResolveChallenge (Foundation oracle): the oracle key signs; the
+        continuing challenge output keeps the address, the value and every
+        field except `state` = Resolved { outcome }. The challenge datum
+        comes from the challenge UTxO."""
+        outcome_cls = OUTCOME_CLASSES.get(outcome_constructor)
+        if outcome_cls is None:
+            raise ValueError(f"Invalid outcome constructor: {outcome_constructor}")
+        self._require_oracle("ResolveChallenge")
+        challenge_utxo, inner = self.get_challenge(challenger_did, target_did, capability)
+        if not isinstance(inner.state, RepChallengeStateOpen):
+            raise ValueError("ResolveChallenge needs a challenge in state Open")
+        resolved = EndorsementValidatorDatumChallenge(
+            datum=dataclasses.replace(inner, state=RepChallengeStateResolved(outcome=outcome_cls()))
+        )
+        window = self.tx_window()
+        params_utxo, _ = self.params_record()
+
+        builder = self._new_builder(window)
+        builder.add_script_input(
+            challenge_utxo,
+            script=self.end_ref_utxo,
+            redeemer=Redeemer(
+                ChallengeSpendRedeemer(action=ResolveChallengeRedeemer(outcome=outcome_cls()))
+            ),
+        )
+        amount = challenge_utxo.output.amount
+        builder.add_output(
+            TransactionOutput(
+                challenge_utxo.output.address,
+                Value(amount.coin, deepcopy(amount.multi_asset)),
+                datum=resolved,
+            )
+        )
+        self._add_reference_inputs(builder, [params_utxo, self.cross_refs_utxo])
+        return self._finish(builder, [], [self._vkey_hash_bytes()])
+
+    def resolve_challenge(
+        self,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
+        capability: str,
+        outcome_constructor: int,
         wait: bool = True,
     ) -> str:
         """Resolve a challenge (Foundation oracle in Phase 1.0).
 
         Args:
             outcome_constructor: 0=CapabilityVerified, 1=CapabilityFalsified, 2=Inconclusive
-            challenge_datum: The original challenge datum (PlutusData or JSON dict).
 
         Returns:
             Transaction hash.
         """
-        current_slot = self._current_slot()
-
-        token_name = derive_challenge_token_name(
-            challenger_did, target_did, capability
+        tx_hash = self._submit(
+            self.build_resolve_challenge(challenger_did, target_did, capability, outcome_constructor),
+            wait,
         )
-        token_an = AssetName(bytes.fromhex(token_name))
-
-        # Find the on-chain challenge UTxO
-        challenge_utxo = self.find_challenge_utxo(
-            challenger_did, target_did, capability
-        )
-        if not challenge_utxo:
-            raise RuntimeError("Challenge UTxO not found on-chain")
-
-        # Build resolved datum
-        outcome_cls = OUTCOME_CLASSES.get(outcome_constructor)
-        if not outcome_cls:
-            raise ValueError(f"Invalid outcome constructor: {outcome_constructor}")
-
-        # Extract inner datum and update state
-        if isinstance(challenge_datum, EndorsementValidatorDatumChallenge):
-            inner = challenge_datum.datum
-        elif isinstance(challenge_datum, dict):
-            # Legacy JSON format — rebuild as PlutusData
-            inner = self._challenge_datum_from_json(challenge_datum)
-        else:
-            inner = challenge_datum
-
-        resolved_inner = ReputationChallengeDatum(
-            challenger_did=inner.challenger_did,
-            challenger_credential=inner.challenger_credential,
-            target_did=inner.target_did,
-            target_credential=inner.target_credential,
-            challenged_capability=inner.challenged_capability,
-            stake_amount=inner.stake_amount,
-            evidence_hash=inner.evidence_hash,
-            evidence_uri=inner.evidence_uri,
-            created_at=inner.created_at,
-            counter_evidence_hash=inner.counter_evidence_hash,
-            counter_evidence_uri=inner.counter_evidence_uri,
-            response_submitted_at=inner.response_submitted_at,
-            state=RepChallengeStateResolved(outcome=outcome_cls()),
-        )
-        resolved_datum = EndorsementValidatorDatumChallenge(datum=resolved_inner)
-
-        challenge_amount = inner.stake_amount
-        mint_value_str = f"1 {self.endorsement_hash}.{token_name}"
-
-        # Redeemer: ChallengeSpend(ResolveChallenge { outcome })
-        spend_redeemer = ChallengeSpendRedeemer(
-            action=ResolveChallengeRedeemer(outcome=outcome_cls())
-        )
-
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-
-        # Spend challenge UTxO
-        builder.add_script_input(
-            challenge_utxo,
-            script=self.end_ref_utxo,
-            redeemer=Redeemer(spend_redeemer),
-        )
-
-        # Output: updated challenge UTxO with Resolved state
-        out_ma = MultiAsset({self.end_policy: Asset({token_an: 1})})
-        builder.add_output(
-            TransactionOutput(
-                self.endorsement_addr,
-                Value(challenge_amount, out_ma),
-                datum=resolved_datum,
-            )
-        )
-
-        self._add_common_refs(builder)
-        builder.required_signers = [self.vkey.hash()]
-        builder.validity_start = current_slot
-        builder.collaterals = [self._collateral()]
-
-        tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("ResolveChallenge tx: %s", tx_hash)
         return tx_hash
 
+    @staticmethod
+    def resolved_outcome(inner: ReputationChallengeDatum):
+        """The outcome of a Resolved challenge. Raises ValueError for
+        another state."""
+        if not isinstance(inner.state, RepChallengeStateResolved):
+            raise ValueError("the challenge is not Resolved")
+        return inner.state.outcome
+
+    def _history_bonus(
+        self,
+        agent_id: bytes,
+        source: UTxO,
+        bonus_points: int,
+        window: TxWindow,
+        controller_skey: Optional[PaymentSigningKey],
+    ) -> Tuple[AssetName, TransactionOutput, List[vi.IdentityRecord], PaymentSigningKey]:
+        """The ChallengeWon history bonus (MintHistoryBonus): the oracle
+        signs, the bonus agent's record is Active over the validity range
+        and its controller signs. Returns the token, the bonus output, the
+        record chain and the controller key."""
+        self._require_oracle("MintHistoryBonus")
+        chain = self._active_chain(agent_id, window, ())
+        controller = self._controller_key(chain[0], controller_skey)
+        tx_hex = bytes(source.input.transaction_id).hex()
+        token = AssetName(bytes.fromhex(derive_history_bonus_token_name(tx_hex, source.input.index)))
+        datum = HistoryBonusDatum(
+            agent_did=agent_id,
+            source=HistoryBonusSourceChallengeWon(),
+            bonus_points=bonus_points,
+            source_ref=OutputReference(
+                transaction_id=bytes.fromhex(tx_hex), output_index=source.input.index,
+            ),
+            created_at=window.lo,
+        )
+        output = self._output(
+            self.reputation_addr, HISTORY_BONUS_OUTPUT_LOVELACE,
+            MultiAsset({self.rep_policy: Asset({token: 1})}), datum,
+        )
+        return token, output, chain, controller
+
+    def build_distribute_outcome(
+        self,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
+        capability: str,
+        mint_bonus: bool = False,
+        bonus_controller_skey: Optional[PaymentSigningKey] = None,
+    ) -> Transaction:
+        """DistributeOutcome for CapabilityVerified or Inconclusive.
+
+        Burns the challenge token. CapabilityVerified pays the challenge
+        stake less the protocol fee to target_credential; Inconclusive pays
+        the stake less half the fee to challenger_credential. The treasury
+        gets the fee. The wallet pays the fee and the rest of the payouts.
+
+        A history bonus is not a condition of DistributeOutcome (W2-M36
+        decision 4). With `mint_bonus` (CapabilityVerified only), the
+        transaction also mints the target's ChallengeWon bonus: the oracle
+        (the wallet key) signs, the target's record is Active and its
+        controller signs (`bonus_controller_skey` when it is not the wallet
+        key).
+        """
+        challenge_utxo, inner = self.get_challenge(challenger_did, target_did, capability)
+        outcome = self.resolved_outcome(inner)
+        if isinstance(outcome, RepChallengeOutcomeFalsified):
+            raise ValueError(
+                "the outcome is CapabilityFalsified: use distribute_falsified_outcome"
+            )
+        verified = isinstance(outcome, RepChallengeOutcomeVerified)
+        if mint_bonus and not verified:
+            raise ValueError("an Inconclusive outcome has no winner, so no history bonus")
+        window = self.tx_window()
+        params_utxo, params = self.params_record()
+        challenge_stake = inner.stake_amount
+        fee = challenge_stake * params.protocol_fee_rate // 10_000
+        challenge_token = AssetName(
+            bytes.fromhex(
+                derive_challenge_token_name(
+                    bytes(inner.challenger_did).hex(), bytes(inner.target_did).hex(),
+                    bytes(inner.challenged_capability).decode("utf-8"),
+                )
+            )
+        )
+
+        builder = self._new_builder(window)
+        builder.add_script_input(
+            challenge_utxo,
+            script=self.end_ref_utxo,
+            redeemer=Redeemer(ChallengeSpendRedeemer(action=DistributeOutcomeRedeemer())),
+        )
+        mint = MultiAsset({self.end_policy: Asset({challenge_token: -1})})
+        if verified:
+            builder.add_output(
+                self._output(credential_address(inner.target_credential), challenge_stake - fee)
+            )
+        else:
+            builder.add_output(
+                self._output(
+                    credential_address(inner.challenger_credential), challenge_stake - fee // 2,
+                )
+            )
+        if fee > 0:
+            builder.add_output(self._output(self.treasury_addr, fee))
+
+        signing_keys: List[PaymentSigningKey] = []
+        required = [self._vkey_hash_bytes()]
+        references = [params_utxo, self.cross_refs_utxo]
+        if mint_bonus:
+            token, output, chain, controller = self._history_bonus(
+                bytes(inner.target_did), challenge_utxo, challenge_stake, window,
+                bonus_controller_skey,
+            )
+            mint[self.rep_policy] = Asset({token: 1})
+            builder.add_output(output)
+            references = [r.utxo for r in chain] + references
+            signing_keys.append(controller)
+            required.append(vi.controller_key_hash(chain[0].datum))
+
+        builder.mint = mint
+        builder.add_minting_script(
+            self.end_ref_utxo, redeemer=Redeemer(BurnChallengeTokenRedeemer()),
+        )
+        if mint_bonus:
+            builder.add_minting_script(
+                self.rep_ref_utxo, redeemer=Redeemer(MintHistoryBonusRedeemer()),
+            )
+        self._add_reference_inputs(builder, references)
+        return self._finish(builder, signing_keys, required)
+
     def distribute_outcome(
         self,
-        challenger_did: str,
-        target_did: str,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
         capability: str,
-        challenge_datum,
-        agent_a_reg_utxo=None,
+        mint_bonus: bool = False,
+        bonus_controller_skey: Optional[PaymentSigningKey] = None,
         wait: bool = True,
     ) -> str:
-        """Distribute outcome after challenge resolution.
-
-        Burns challenge token, mints history bonus, pays target + treasury.
-
-        Args:
-            challenge_datum: The resolved challenge datum (PlutusData or JSON dict).
-            agent_a_reg_utxo: Registry UTxO for target agent. Auto-detected if None.
+        """Distribute the outcome of a CapabilityVerified or Inconclusive
+        challenge (see build_distribute_outcome).
 
         Returns:
             Transaction hash.
         """
-        current_slot = self._current_slot()
-
-        token_name = derive_challenge_token_name(
-            challenger_did, target_did, capability
-        )
-        challenge_token_an = AssetName(bytes.fromhex(token_name))
-
-        # Find the resolved challenge UTxO
-        resolved_utxo = self.find_challenge_utxo(
-            challenger_did, target_did, capability
-        )
-        if not resolved_utxo:
-            raise RuntimeError("Resolved challenge UTxO not found")
-
-        # Auto-detect registry UTxO if not provided
-        if agent_a_reg_utxo is None:
-            agent_a_reg_utxo = self.find_agent_registry_utxo(target_did)
-        elif isinstance(agent_a_reg_utxo, str):
-            parts = agent_a_reg_utxo.split("#")
-            agent_a_reg_utxo = resolve_utxo(parts[0], int(parts[1]), self.ogmios_url)
-        if not agent_a_reg_utxo:
-            raise RuntimeError(f"Registry UTxO not found for target {target_did[:16]}...")
-
-        # Get inner datum
-        if isinstance(challenge_datum, EndorsementValidatorDatumChallenge):
-            inner = challenge_datum.datum
-        elif isinstance(challenge_datum, dict):
-            inner = self._challenge_datum_from_json(challenge_datum)
-        else:
-            inner = challenge_datum
-
-        challenge_amount = inner.stake_amount
-        protocol_fee = challenge_amount * 500 // 10000  # 5%
-        # Ensure treasury output meets Cardano min UTxO (~1 ADA)
-        treasury_output = max(protocol_fee, 1_000_000)
-        target_payout = challenge_amount - protocol_fee
-
-        # Target address
-        target_addr = self.wallet_addr  # In Phase 1.0, dev wallet is both parties
-
-        # History bonus token
-        resolved_tx_hash = bytes(resolved_utxo.input.transaction_id).hex()
-        resolved_tx_idx = resolved_utxo.input.index
-        hbonus_token_name = derive_history_bonus_token_name(
-            resolved_tx_hash, resolved_tx_idx
-        )
-        hbonus_token_an = AssetName(bytes.fromhex(hbonus_token_name))
-
-        hbonus_datum = HistoryBonusDatum(
-            agent_did=bytes.fromhex(target_did),
-            source=HistoryBonusSourceChallengeWon(),
-            bonus_points=challenge_amount,
-            source_ref=OutputReference(
-                transaction_id=bytes.fromhex(resolved_tx_hash),
-                output_index=resolved_tx_idx,
+        tx_hash = self._submit(
+            self.build_distribute_outcome(
+                challenger_did, target_did, capability, mint_bonus, bonus_controller_skey,
             ),
-            created_at=slot_to_posix_ms(current_slot),
+            wait,
         )
-
-        # Mint: burn challenge token (-1) + mint history bonus (+1)
-        mint_ma = MultiAsset()
-        mint_ma[self.end_policy] = Asset({challenge_token_an: -1})
-        mint_ma[self.rep_policy] = Asset({hbonus_token_an: 1})
-
-        # Spend redeemer: ChallengeSpend(DistributeOutcome)
-        spend_redeemer = ChallengeSpendRedeemer(
-            action=DistributeOutcomeRedeemer()
-        )
-
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-
-        # Spend resolved challenge UTxO
-        builder.add_script_input(
-            resolved_utxo,
-            script=self.end_ref_utxo,
-            redeemer=Redeemer(spend_redeemer),
-        )
-
-        # Mint/burn
-        builder.mint = mint_ma
-        builder.add_minting_script(
-            self.end_ref_utxo,
-            redeemer=Redeemer(BurnChallengeTokenRedeemer()),
-        )
-        builder.add_minting_script(
-            self.rep_ref_utxo,
-            redeemer=Redeemer(MintHistoryBonusRedeemer()),
-        )
-
-        # Outputs
-        builder.add_output(TransactionOutput(target_addr, target_payout))
-        builder.add_output(TransactionOutput(self.treasury_addr, treasury_output))
-
-        hbonus_out_ma = MultiAsset({self.rep_policy: Asset({hbonus_token_an: 1})})
-        builder.add_output(
-            TransactionOutput(
-                self.reputation_addr,
-                Value(2_000_000, hbonus_out_ma),
-                datum=hbonus_datum,
-            )
-        )
-
-        # Reference inputs
-        builder.reference_inputs.add(agent_a_reg_utxo)
-        self._add_common_refs(builder)
-
-        builder.required_signers = [self.vkey.hash()]
-        builder.validity_start = current_slot
-        builder.collaterals = [self._collateral()]
-
-        tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("DistributeOutcome tx: %s", tx_hash)
         return tx_hash
 
     # ── Slash Operations (CapabilityFalsified path) ────────────────────
 
+    def build_slash_endorsement(
+        self,
+        endorser_did: AgentRef,
+        target_did: AgentRef,
+        resolved_challenge_utxo_ref: str,
+    ) -> Transaction:
+        """SlashEndorsement after CapabilityFalsified.
+
+        The resolved challenge is a reference input. slash = stake ×
+        slash_rate_endorser, fee = slash × protocol_fee_rate. The challenger
+        gets slash − fee and the treasury gets the fee. When the remaining
+        stake is at least min_endorsement, the endorsement continues at the
+        same address with the same datum and stake_amount = remaining. Else
+        the endorsement token is burned and the endorser gets the remaining
+        stake.
+        """
+        endorser_id = vi.normalize_agent_id(endorser_did)
+        target_id = vi.normalize_agent_id(target_did)
+        endorsement_utxo = self.find_endorsement_utxo(endorser_id, target_id)
+        if endorsement_utxo is None:
+            raise RuntimeError("Endorsement UTxO not found on-chain")
+        endorsement = decode_datum(
+            EndorsementValidatorDatumEndorsement, endorsement_utxo.output.datum
+        ).datum
+
+        challenge_utxo = self._resolve_utxo(resolved_challenge_utxo_ref)
+        if challenge_utxo.output.address.payment_part != self.end_policy:
+            raise ValueError("the resolved challenge is not at the endorsement address")
+        challenge = decode_datum(
+            EndorsementValidatorDatumChallenge, challenge_utxo.output.datum
+        ).datum
+        if not isinstance(self.resolved_outcome(challenge), RepChallengeOutcomeFalsified):
+            raise ValueError("SlashEndorsement needs a CapabilityFalsified challenge")
+        if bytes(challenge.target_did) != target_id:
+            raise ValueError("the challenge has another target than the endorsement")
+        endorsed = {bytes(c) for c in endorsement.endorsed_capabilities}
+        if bytes(challenge.challenged_capability) not in endorsed:
+            raise ValueError("the endorsement does not endorse the challenged capability")
+
+        window = self.tx_window()
+        params_utxo, params = self.params_record()
+        slash = endorsement.stake_amount * params.slash_rate_endorser // 10_000
+        remaining = endorsement.stake_amount - slash
+        fee = slash * params.protocol_fee_rate // 10_000
+        continues = remaining >= params.min_endorsement
+        token = AssetName(
+            bytes.fromhex(derive_endorsement_token_name(endorser_id.hex(), target_id.hex()))
+        )
+
+        builder = self._new_builder(window)
+        builder.add_script_input(
+            endorsement_utxo,
+            script=self.end_ref_utxo,
+            redeemer=Redeemer(
+                EndorsementSpendRedeemer(
+                    action=SlashEndorsementRedeemer(
+                        challenge_ref=OutputReference(
+                            transaction_id=bytes(challenge_utxo.input.transaction_id),
+                            output_index=challenge_utxo.input.index,
+                        )
+                    )
+                )
+            ),
+        )
+        if continues:
+            builder.add_output(
+                self._output(
+                    endorsement_utxo.output.address, remaining,
+                    MultiAsset({self.end_policy: Asset({token: 1})}),
+                    EndorsementValidatorDatumEndorsement(
+                        datum=dataclasses.replace(endorsement, stake_amount=remaining)
+                    ),
+                )
+            )
+            endorser_due = 0
+        else:
+            builder.mint = MultiAsset({self.end_policy: Asset({token: -1})})
+            builder.add_minting_script(
+                self.end_ref_utxo, redeemer=Redeemer(BurnEndorsementTokenRedeemer()),
+            )
+            endorser_due = remaining
+
+        challenger_due = slash - fee
+        if challenge.challenger_credential == endorsement.endorser_credential:
+            due = challenger_due + endorser_due
+            if due > 0:
+                builder.add_output(
+                    self._output(credential_address(challenge.challenger_credential), due)
+                )
+        else:
+            if challenger_due > 0:
+                builder.add_output(
+                    self._output(credential_address(challenge.challenger_credential), challenger_due)
+                )
+            if endorser_due > 0:
+                builder.add_output(
+                    self._output(credential_address(endorsement.endorser_credential), endorser_due)
+                )
+        if fee > 0:
+            builder.add_output(self._output(self.treasury_addr, fee))
+
+        self._add_reference_inputs(builder, [challenge_utxo, params_utxo, self.cross_refs_utxo])
+        return self._finish(builder, [], [self._vkey_hash_bytes()])
+
     def slash_endorsement(
         self,
-        endorser_did: str,
-        target_did: str,
-        challenger_did: str,
-        capability: str,
+        endorser_did: AgentRef,
+        target_did: AgentRef,
         resolved_challenge_utxo_ref: str,
         wait: bool = True,
     ) -> str:
@@ -861,341 +1234,131 @@ class ReputationStakingClient:
         Returns:
             Transaction hash.
         """
-        current_slot = self._current_slot()
-
-        # Find endorsement UTxO
-        endorsement_utxo = self.find_endorsement_utxo(endorser_did, target_did)
-        if not endorsement_utxo:
-            raise RuntimeError("Endorsement UTxO not found on-chain")
-
-        endorsement_token_name = derive_endorsement_token_name(endorser_did, target_did)
-        endorsement_token_an = AssetName(bytes.fromhex(endorsement_token_name))
-
-        # Resolve the challenge UTxO for reference input
-        parts = resolved_challenge_utxo_ref.split("#")
-        challenge_ref_utxo = resolve_utxo(parts[0], int(parts[1]), self.ogmios_url)
-        if not challenge_ref_utxo:
-            raise RuntimeError("Resolved challenge UTxO not found on-chain")
-
-        challenge_oref = OutputReference(
-            transaction_id=bytes.fromhex(parts[0]),
-            output_index=int(parts[1]),
+        tx_hash = self._submit(
+            self.build_slash_endorsement(endorser_did, target_did, resolved_challenge_utxo_ref),
+            wait,
         )
-
-        # Calculate slash: 50% of endorsement stake
-        # Parse endorsement datum to get stake_amount
-        endorsement_value = endorsement_utxo.output.amount
-        endorsement_lovelace = endorsement_value.coin if hasattr(endorsement_value, 'coin') else endorsement_value
-        slash_rate = 5000  # 50% in basis points
-        slash_amount = endorsement_lovelace * slash_rate // 10000
-        remaining = endorsement_lovelace - slash_amount
-        min_endorsement = 5_000_000  # 5 AP3X
-
-        # Spend redeemer: EndorsementSpend(SlashEndorsement { challenge_ref })
-        spend_redeemer = EndorsementSpendRedeemer(
-            action=SlashEndorsementRedeemer(challenge_ref=challenge_oref)
-        )
-
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-
-        # Spend endorsement UTxO
-        builder.add_script_input(
-            endorsement_utxo,
-            script=self.end_ref_utxo,
-            redeemer=Redeemer(spend_redeemer),
-        )
-
-        if remaining >= min_endorsement:
-            # Continuing endorsement with reduced stake
-            out_ma = MultiAsset({self.end_policy: Asset({endorsement_token_an: 1})})
-            # Rebuild endorsement datum with reduced stake
-            inner_datum = endorsement_utxo.output.datum
-            if isinstance(inner_datum, EndorsementValidatorDatumEndorsement):
-                e_datum = inner_datum.datum
-            else:
-                # Parse from raw CBOR
-                from pycardano.serialization import RawPlutusData
-                e_datum_raw = endorsement_utxo.output.datum
-                e_datum = e_datum_raw  # Will need adjustment based on actual format
-
-            reduced_datum = EndorsementValidatorDatumEndorsement(
-                datum=EndorsementDatum(
-                    endorser_did=bytes.fromhex(endorser_did),
-                    endorser_credential=VerificationKeyCredential(self._vkey_hash_bytes()),
-                    target_did=bytes.fromhex(target_did),
-                    stake_amount=remaining,
-                    endorsed_capabilities=[capability.encode()],
-                    created_at=slot_to_posix_ms(current_slot),
-                )
-            )
-            builder.add_output(
-                TransactionOutput(
-                    self.endorsement_addr,
-                    Value(remaining, out_ma),
-                    datum=reduced_datum,
-                )
-            )
-        else:
-            # Burn endorsement token — remaining below minimum
-            burn_ma = MultiAsset({self.end_policy: Asset({endorsement_token_an: -1})})
-            builder.mint = burn_ma
-            builder.add_minting_script(
-                self.end_ref_utxo,
-                redeemer=Redeemer(BurnEndorsementTokenRedeemer()),
-            )
-
-        # Reference inputs: resolved challenge + common refs
-        builder.reference_inputs.add(challenge_ref_utxo)
-        self._add_common_refs(builder)
-
-        builder.required_signers = [self.vkey.hash()]
-        builder.validity_start = current_slot
-        builder.collaterals = [self._collateral()]
-
-        tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("SlashEndorsement tx: %s", tx_hash)
         return tx_hash
 
+    def build_distribute_falsified_outcome(
+        self,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
+        capability: str,
+        mint_bonus: bool = False,
+        bonus_controller_skey: Optional[PaymentSigningKey] = None,
+    ) -> Transaction:
+        """DistributeOutcome for CapabilityFalsified with SlashStake.
+
+        Spends the resolved challenge (DistributeOutcome) and the target's
+        stake (SlashStake), burns the challenge token, pays the challenger
+        target_slash − fee + the challenge stake and the treasury the fee,
+        and continues the stake with stake_amount − target_slash
+        (target_slash = stake_amount / number of staked capabilities) and
+        last_updated = the lower bound. With `mint_bonus`, the transaction
+        also mints the challenger's ChallengeWon bonus (see
+        build_distribute_outcome).
+        """
+        challenge_utxo, inner = self.get_challenge(challenger_did, target_did, capability)
+        if not isinstance(self.resolved_outcome(inner), RepChallengeOutcomeFalsified):
+            raise ValueError("the outcome is not CapabilityFalsified: use distribute_outcome")
+        target_id = bytes(inner.target_did)
+        stake_utxo, stake = self._target_stake(target_id)
+        num_capabilities = len(stake.staked_capabilities)
+        if num_capabilities == 0:
+            raise RuntimeError("Target has no staked capabilities")
+        window = self.tx_window()
+        params_utxo, params = self.params_record()
+        target_slash = stake.stake_amount // num_capabilities
+        remaining = stake.stake_amount - target_slash
+        fee = target_slash * params.protocol_fee_rate // 10_000
+        challenger_reward = target_slash - fee + inner.stake_amount
+
+        challenge_ref = OutputReference(
+            transaction_id=bytes(challenge_utxo.input.transaction_id),
+            output_index=challenge_utxo.input.index,
+        )
+        challenge_token = AssetName(
+            bytes.fromhex(
+                derive_challenge_token_name(
+                    bytes(inner.challenger_did).hex(), target_id.hex(),
+                    bytes(inner.challenged_capability).decode("utf-8"),
+                )
+            )
+        )
+        stake_token = AssetName(bytes.fromhex(derive_stake_token_name(target_id.hex())))
+
+        builder = self._new_builder(window)
+        builder.add_script_input(
+            challenge_utxo,
+            script=self.end_ref_utxo,
+            redeemer=Redeemer(ChallengeSpendRedeemer(action=DistributeOutcomeRedeemer())),
+        )
+        builder.add_script_input(
+            stake_utxo,
+            script=self.rep_ref_utxo,
+            redeemer=Redeemer(SlashStakeRedeemer(challenge_ref=challenge_ref)),
+        )
+        builder.add_output(
+            self._output(credential_address(inner.challenger_credential), challenger_reward)
+        )
+        if fee > 0:
+            builder.add_output(self._output(self.treasury_addr, fee))
+        builder.add_output(
+            self._output(
+                stake_utxo.output.address, remaining,
+                MultiAsset({self.rep_policy: Asset({stake_token: 1})}),
+                dataclasses.replace(stake, stake_amount=remaining, last_updated=window.lo),
+            )
+        )
+
+        mint = MultiAsset({self.end_policy: Asset({challenge_token: -1})})
+        signing_keys: List[PaymentSigningKey] = []
+        required = [self._vkey_hash_bytes()]
+        references = [params_utxo, self.cross_refs_utxo]
+        if mint_bonus:
+            token, output, chain, controller = self._history_bonus(
+                bytes(inner.challenger_did), challenge_utxo, inner.stake_amount, window,
+                bonus_controller_skey,
+            )
+            mint[self.rep_policy] = Asset({token: 1})
+            builder.add_output(output)
+            references = [r.utxo for r in chain] + references
+            signing_keys.append(controller)
+            required.append(vi.controller_key_hash(chain[0].datum))
+
+        builder.mint = mint
+        builder.add_minting_script(
+            self.end_ref_utxo, redeemer=Redeemer(BurnChallengeTokenRedeemer()),
+        )
+        if mint_bonus:
+            builder.add_minting_script(
+                self.rep_ref_utxo, redeemer=Redeemer(MintHistoryBonusRedeemer()),
+            )
+        self._add_reference_inputs(builder, references)
+        return self._finish(builder, signing_keys, required)
+
     def distribute_falsified_outcome(
         self,
-        challenger_did: str,
-        target_did: str,
+        challenger_did: AgentRef,
+        target_did: AgentRef,
         capability: str,
-        challenge_datum,
+        mint_bonus: bool = False,
+        bonus_controller_skey: Optional[PaymentSigningKey] = None,
         wait: bool = True,
     ) -> str:
-        """Distribute outcome for CapabilityFalsified + slash target's stake.
-
-        Combined transaction that:
-        1. Consumes resolved challenge UTxO (DistributeOutcome on endorsement validator)
-        2. Consumes target's stake UTxO (SlashStake on reputation validator)
-        3. Burns challenge token
-        4. Mints history bonus token for challenger
-        5. Outputs: challenger reward, treasury fee, reduced stake, history bonus
+        """Distribute outcome for CapabilityFalsified + slash target's stake
+        (see build_distribute_falsified_outcome).
 
         Returns:
             Transaction hash.
         """
-        current_slot = self._current_slot()
-
-        challenge_token_name = derive_challenge_token_name(
-            challenger_did, target_did, capability
-        )
-        challenge_token_an = AssetName(bytes.fromhex(challenge_token_name))
-
-        # Find resolved challenge UTxO
-        resolved_utxo = self.find_challenge_utxo(
-            challenger_did, target_did, capability
-        )
-        if not resolved_utxo:
-            raise RuntimeError("Resolved challenge UTxO not found")
-
-        # Find target's stake UTxO
-        stake_utxo = self.find_stake_utxo(target_did)
-        if not stake_utxo:
-            raise RuntimeError("Target stake UTxO not found")
-
-        # Find agent registry UTxO for target
-        agent_reg_utxo = self.find_agent_registry_utxo(target_did)
-        if not agent_reg_utxo:
-            raise RuntimeError(f"Registry UTxO not found for target {target_did[:16]}...")
-
-        # Get inner challenge datum
-        if isinstance(challenge_datum, EndorsementValidatorDatumChallenge):
-            inner = challenge_datum.datum
-        elif isinstance(challenge_datum, dict):
-            inner = self._challenge_datum_from_json(challenge_datum)
-        else:
-            inner = challenge_datum
-
-        # Parse stake datum to get num_capabilities and stake_amount
-        # We need these for slash calculation
-        stake_value = stake_utxo.output.amount
-        stake_lovelace = stake_value.coin if hasattr(stake_value, 'coin') else stake_value
-        # For the on-chain datum, we read from the UTxO
-        # The stake has capabilities ["code_review", "testing"] = 2 capabilities
-        # slash = stake_amount / num_capabilities
-        # We'll pass the actual values from the datum
-
-        challenge_amount = inner.stake_amount
-
-        # Stake slash calculation: stake / num_capabilities
-        # We need to extract the StakeDatum from the UTxO
-        stake_datum_raw = stake_utxo.output.datum
-        if isinstance(stake_datum_raw, StakeDatum):
-            s_datum = stake_datum_raw
-        else:
-            # Ogmios returns RawCBOR — decode via cbor2 then parse
-            from pycardano.serialization import RawCBOR
-            if isinstance(stake_datum_raw, RawCBOR):
-                import cbor2
-                decoded = cbor2.loads(stake_datum_raw.cbor)
-                s_datum = StakeDatum.from_primitive(decoded)
-            else:
-                s_datum = StakeDatum.from_primitive(stake_datum_raw)
-
-        num_capabilities = len(s_datum.staked_capabilities)
-        if num_capabilities == 0:
-            raise RuntimeError("Target has no staked capabilities")
-        target_slash = s_datum.stake_amount // num_capabilities
-        remaining_stake = s_datum.stake_amount - target_slash
-
-        # Protocol fee on slashed amount
-        protocol_fee = target_slash * 500 // 10000  # 5%
-        # Ensure treasury output meets Cardano min UTxO (~1 ADA)
-        treasury_output = max(protocol_fee, 1_000_000)
-        challenger_reward = target_slash - protocol_fee + challenge_amount
-
-        # History bonus token for challenger (who won the challenge)
-        resolved_tx_hash = bytes(resolved_utxo.input.transaction_id).hex()
-        resolved_tx_idx = resolved_utxo.input.index
-        hbonus_token_name = derive_history_bonus_token_name(
-            resolved_tx_hash, resolved_tx_idx
-        )
-        hbonus_token_an = AssetName(bytes.fromhex(hbonus_token_name))
-
-        # History bonus datum — challenger won
-        hbonus_datum = HistoryBonusDatum(
-            agent_did=bytes.fromhex(challenger_did),
-            source=HistoryBonusSourceChallengeWon(),
-            bonus_points=challenge_amount,
-            source_ref=OutputReference(
-                transaction_id=bytes.fromhex(resolved_tx_hash),
-                output_index=resolved_tx_idx,
+        tx_hash = self._submit(
+            self.build_distribute_falsified_outcome(
+                challenger_did, target_did, capability, mint_bonus, bonus_controller_skey,
             ),
-            created_at=slot_to_posix_ms(current_slot),
+            wait,
         )
-
-        # Challenge OutputReference for SlashStake redeemer
-        challenge_oref = OutputReference(
-            transaction_id=bytes.fromhex(resolved_tx_hash),
-            output_index=resolved_tx_idx,
-        )
-
-        # Stake token for continuing output
-        stake_token_name = derive_stake_token_name(target_did)
-        stake_token_an = AssetName(bytes.fromhex(stake_token_name))
-
-        # Mint: burn challenge token (-1) + mint history bonus (+1)
-        mint_ma = MultiAsset()
-        mint_ma[self.end_policy] = Asset({challenge_token_an: -1})
-        mint_ma[self.rep_policy] = Asset({hbonus_token_an: 1})
-
-        # Redeemers
-        challenge_spend_redeemer = ChallengeSpendRedeemer(
-            action=DistributeOutcomeRedeemer()
-        )
-        slash_stake_redeemer = SlashStakeRedeemer(
-            challenge_ref=challenge_oref
-        )
-
-        builder = self._new_builder()
-        self._add_wallet_inputs(builder)
-
-        # Spend 1: resolved challenge UTxO (endorsement validator)
-        builder.add_script_input(
-            resolved_utxo,
-            script=self.end_ref_utxo,
-            redeemer=Redeemer(challenge_spend_redeemer),
-        )
-
-        # Spend 2: target's stake UTxO (reputation validator)
-        builder.add_script_input(
-            stake_utxo,
-            script=self.rep_ref_utxo,
-            redeemer=Redeemer(slash_stake_redeemer),
-        )
-
-        # Mint/burn
-        builder.mint = mint_ma
-        builder.add_minting_script(
-            self.end_ref_utxo,
-            redeemer=Redeemer(BurnChallengeTokenRedeemer()),
-        )
-        builder.add_minting_script(
-            self.rep_ref_utxo,
-            redeemer=Redeemer(MintHistoryBonusRedeemer()),
-        )
-
-        # Output 1: challenger receives reward + original stake back
-        challenger_addr = self.wallet_addr  # Phase 1.0: dev wallet is both parties
-        builder.add_output(TransactionOutput(challenger_addr, challenger_reward))
-
-        # Output 2: protocol treasury fee (use treasury_output >= min UTxO)
-        builder.add_output(TransactionOutput(self.treasury_addr, treasury_output))
-
-        # Output 3: continuing stake UTxO with reduced stake
-        stake_out_ma = MultiAsset({self.rep_policy: Asset({stake_token_an: 1})})
-        reduced_stake_datum = StakeDatum(
-            agent_did=s_datum.agent_did,
-            owner_credential=s_datum.owner_credential,
-            stake_amount=remaining_stake,
-            staked_capabilities=s_datum.staked_capabilities,
-            last_updated=slot_to_posix_ms(current_slot),
-            history_points=s_datum.history_points,
-        )
-        builder.add_output(
-            TransactionOutput(
-                self.reputation_addr,
-                Value(remaining_stake, stake_out_ma),
-                datum=reduced_stake_datum,
-            )
-        )
-
-        # Output 4: history bonus UTxO
-        hbonus_out_ma = MultiAsset({self.rep_policy: Asset({hbonus_token_an: 1})})
-        builder.add_output(
-            TransactionOutput(
-                self.reputation_addr,
-                Value(2_000_000, hbonus_out_ma),
-                datum=hbonus_datum,
-            )
-        )
-
-        # Reference inputs
-        # Target agent registry (for falsified payouts validation)
-        builder.reference_inputs.add(agent_reg_utxo)
-        # Challenger agent registry (for history bonus verify_agent_exists)
-        challenger_reg_utxo = self.find_agent_registry_utxo(challenger_did)
-        if challenger_reg_utxo and challenger_reg_utxo != agent_reg_utxo:
-            builder.reference_inputs.add(challenger_reg_utxo)
-        self._add_common_refs(builder)
-
-        builder.required_signers = [self.vkey.hash()]
-        builder.validity_start = current_slot
-        builder.collaterals = [self._collateral()]
-
-        tx_hash = self._sign_submit_wait(builder, wait)
         logger.info("DistributeFalsifiedOutcome tx: %s", tx_hash)
         return tx_hash
-
-    # ── Internal Helpers ─────────────────────────────────────────────────
-
-    @staticmethod
-    def _challenge_datum_from_json(datum_json: dict) -> ReputationChallengeDatum:
-        """Convert a cardano-cli JSON challenge datum to PlutusData.
-
-        Handles the nested Constr format from the old datums.py builders.
-        """
-        # Outer: Constr(1, [inner]) — Challenge variant
-        inner_fields = datum_json["fields"][0]["fields"]
-        return ReputationChallengeDatum(
-            challenger_did=bytes.fromhex(inner_fields[0]["bytes"]),
-            challenger_credential=VerificationKeyCredential(
-                bytes.fromhex(inner_fields[1]["fields"][0]["bytes"])
-            ),
-            target_did=bytes.fromhex(inner_fields[2]["bytes"]),
-            target_credential=VerificationKeyCredential(
-                bytes.fromhex(inner_fields[3]["fields"][0]["bytes"])
-            ),
-            challenged_capability=bytes.fromhex(inner_fields[4]["bytes"]),
-            stake_amount=inner_fields[5]["int"],
-            evidence_hash=bytes.fromhex(inner_fields[6]["bytes"]),
-            evidence_uri=bytes.fromhex(inner_fields[7]["bytes"]),
-            created_at=inner_fields[8]["int"],
-            counter_evidence_hash=bytes.fromhex(inner_fields[9]["bytes"]),
-            counter_evidence_uri=bytes.fromhex(inner_fields[10]["bytes"]),
-            response_submitted_at=inner_fields[11]["int"],
-            state=RepChallengeStateOpen(),
-        )

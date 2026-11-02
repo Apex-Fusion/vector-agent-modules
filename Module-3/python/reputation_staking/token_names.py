@@ -81,20 +81,3 @@ def derive_genesis_bonus_token_name(agent_did_hex: str) -> str:
     return derive_token_name(
         GENESIS_BONUS_PREFIX, bytes.fromhex(agent_did_hex), GENESIS_BONUS_SLICE_LEN
     ).hex()
-
-
-def derive_agent_nft_name_conway(seed_tx_hash: str, seed_tx_ix: int) -> str:
-    """Derive agent NFT asset name from seed OutputReference.
-
-    Conway uses indefinite-length CBOR arrays (9F...FF encoding).
-    OutputReference = Constr(0, [ByteString tx_hash, Int tx_ix])
-    Conway CBOR: D8 79 (tag 121 = constructor 0) + 9F (indef) + fields + FF (break)
-    """
-    tx_hash_bytes = bytes.fromhex(seed_tx_hash)
-    constr_cbor = b"\xd8\x79"  # tag 121 = constructor 0
-    constr_cbor += b"\x9f"  # indefinite array start
-    constr_cbor += cbor2.dumps(tx_hash_bytes)
-    constr_cbor += cbor2.dumps(seed_tx_ix)
-    constr_cbor += b"\xff"  # break
-
-    return hashlib.blake2b(constr_cbor, digest_size=32).hexdigest()

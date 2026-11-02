@@ -13,10 +13,15 @@ Usage:
 
     # Single poll (no loop)
     python -m indexer --once
+
+The indexer reads the deploy state that the deploy scripts write:
+deploy/deploy_state.json (testnet) or deploy/mainnet/deploy_state.json
+(mainnet), or the file of --deploy-state. It stops with an error for an old
+deploy state (no identity_hash): move that file to a different path and use
+the state of a new deployment.
 """
 
 import argparse
-import json
 import logging
 import sys
 from pathlib import Path
@@ -27,14 +32,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger("indexer")
 
+from reputation_staking.constants import (  # noqa: E402
+    MAINNET_OGMIOS_URL,
+    MAINNET_SYSTEM_START_UNIX_S,
+    OGMIOS_URL,
+)
 
 NETWORKS = {
     "testnet": {
-        "ogmios_url": "https://ogmios.vector.testnet.apexfusion.org",
+        "ogmios_url": OGMIOS_URL,
         "deploy_state": "deploy/deploy_state.json",
     },
     "mainnet": {
-        "ogmios_url": "https://ogmios.vector.mainnet.apexfusion.org",
+        "ogmios_url": MAINNET_OGMIOS_URL,
         "deploy_state": "deploy/mainnet/deploy_state.json",
     },
 }
@@ -89,22 +99,23 @@ def main():
     logger.info("Deploy state: %s", deploy_state_path)
     logger.info("Database: %s", args.db)
 
-    # Load deploy state
-    try:
-        with open(deploy_state_path) as f:
-            deploy_state = json.load(f)
-    except FileNotFoundError:
-        logger.error("Deploy state not found: %s", deploy_state_path)
-        sys.exit(1)
-
-    # Patch system start for mainnet
+    # Mainnet system start (slot to POSIX time). Set it before the first
+    # slot conversion.
     if args.network == "mainnet":
         import reputation_staking.utils as _utils
         import reputation_staking.constants as _constants
-        MAINNET_SYSTEM_START_UNIX_S = 1756485600  # 2025-08-29T16:40:00Z
         _utils.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
         _constants.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
         logger.info("Patched system start for mainnet: %d", MAINNET_SYSTEM_START_UNIX_S)
+
+    # Load and check the deploy state
+    from reputation_staking.deployment import DeploymentStateError, load_deployment
+    try:
+        deployment = load_deployment(deploy_state_path)
+    except DeploymentStateError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+    logger.info("Identity hash: %s", deployment.identity_hash)
 
     # Initialize storage and indexer
     from indexer.storage import IndexerStorage
@@ -112,7 +123,7 @@ def main():
 
     storage = IndexerStorage(args.db)
     indexer = ReputationIndexer(
-        deploy_state=deploy_state,
+        deploy_state=deployment,
         storage=storage,
         poll_interval=args.interval,
         ogmios_url=ogmios_url,

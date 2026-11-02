@@ -1,9 +1,13 @@
 """Tests for PlutusData types — CBOR round-trips and encoding verification."""
 
+import sys
+from pathlib import Path
+
 import cbor2
 import pytest
-from pycardano.serialization import IndefiniteList
+from pycardano.serialization import IndefiniteList, RawCBOR
 
+from reputation_staking.models import ProtocolParamsInfo
 from reputation_staking.plutus_data import (
     BurnChallengeTokenRedeemer,
     ChallengeSpendRedeemer,
@@ -13,6 +17,7 @@ from reputation_staking.plutus_data import (
     EndorsementSpendRedeemer,
     EndorsementValidatorDatumChallenge,
     EndorsementValidatorDatumEndorsement,
+    ExpireChallengeRedeemer,
     HistoryBonusDatum,
     HistoryBonusSourceChallengeWon,
     MintChallengeTokenRedeemer,
@@ -24,11 +29,18 @@ from reputation_staking.plutus_data import (
     RepChallengeStateOpen,
     RepChallengeStateResolved,
     ReputationChallengeDatum,
+    ReputationConfig,
     ResolveChallengeRedeemer,
     StakeDatum,
     VerificationKeyCredential,
     WithdrawEndorsementRedeemer,
+    datum_cbor,
 )
+
+# The deploy helpers (scripts/deploy_common.py) build the config and the
+# params datum that the SDK reads.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+import deploy_common  # noqa: E402
 
 
 VKEY_HASH = bytes.fromhex("2ef77ec4340057363c3824919a61db70ee9683ee9b7d15283aa91931")
@@ -234,3 +246,68 @@ class TestRedeemers:
         decoded = cbor2.loads(wrapper.to_cbor())
         assert decoded.tag == 121  # EndorsementSpend (constructor 0)
         assert decoded.value[0].tag == 122  # WithdrawEndorsement (constructor 1)
+
+    def test_expire_challenge_redeemer_nested(self):
+        """ChallengeSpend(ExpireChallenge): the last RepChallengeAction
+        constructor (7, CBOR tag 1280)."""
+        wrapper = ChallengeSpendRedeemer(action=ExpireChallengeRedeemer())
+        decoded = cbor2.loads(wrapper.to_cbor())
+        assert decoded.tag == 122  # ChallengeSpend
+        assert decoded.value[0].tag == 1280  # constructor 7 = ExpireChallenge
+        again = ChallengeSpendRedeemer.from_cbor(wrapper.to_cbor())
+        assert isinstance(again.action, ExpireChallengeRedeemer)
+
+
+class TestReputationConfig:
+    VALUES = dict(
+        refs_token_policy="01" * 28,
+        audit_claim_validator_hash="02" * 28,
+        audit_challenge_validator_hash="03" * 28,
+        audit_jury_pool_hash="04" * 28,
+        audit_refs_token_policy="05" * 28,
+        params_script_hash="06" * 28,
+        treasury_script_hash="07" * 28,
+        ap3x_policy_id="",
+        ap3x_asset_name="",
+        oracle_credential="0a" * 28,
+        params_token_policy="0b" * 28,
+        identity_hash="0c" * 28,
+    )
+
+    def test_twelve_fields_identity_hash_last(self):
+        config = ReputationConfig(**{k: bytes.fromhex(v) for k, v in self.VALUES.items()})
+        decoded = cbor2.loads(config.to_cbor())
+        assert decoded.tag == 121
+        assert len(decoded.value) == 12
+        assert decoded.value[-1] == bytes.fromhex("0c" * 28)
+        assert decoded.value[-2] == bytes.fromhex("0b" * 28)
+
+    def test_same_data_as_the_deploy_scripts(self):
+        """The SDK mirror has the field order of deploy_common (config.ak)."""
+        config = ReputationConfig(**{k: bytes.fromhex(v) for k, v in self.VALUES.items()})
+        deployed = deploy_common.build_reputation_config_cbor(**self.VALUES)
+        assert cbor2.loads(config.to_cbor()) == cbor2.loads(bytes.fromhex(deployed))
+
+
+class TestProtocolParamsRecord:
+    def test_record_datum_of_the_deploy_scripts(self):
+        """The params record datum of the deploy scripts decodes to the SDK
+        defaults, with genesis_minting_window as an absolute POSIX ms time."""
+        end_ms = 1_764_000_000_000
+        raw = RawCBOR(deploy_common.build_protocol_params_cbor(end_ms))
+        params = ProtocolParamsInfo.from_datum(raw)
+        assert params == ProtocolParamsInfo(genesis_minting_window=end_ms)
+
+    def test_datum_cbor_reads_raw_and_plutus_data(self):
+        datum = StakeDatum(
+            agent_did=AGENT_A_DID,
+            owner_credential=VerificationKeyCredential(VKEY_HASH),
+            stake_amount=1,
+            staked_capabilities=IndefiniteList([b"x"]),
+            last_updated=2,
+            history_points=0,
+        )
+        assert datum_cbor(datum) == datum.to_cbor()
+        assert datum_cbor(RawCBOR(datum.to_cbor())) == datum.to_cbor()
+        with pytest.raises(ValueError):
+            datum_cbor(None)

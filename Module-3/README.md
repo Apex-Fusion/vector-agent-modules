@@ -37,7 +37,7 @@ Two Aiken multi-validators on Plutus V3 (Conway), deployed to both testnet and m
 | `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `7e0d53b6797cd770...` | `5168e1871cfdb1e5...` |
 | `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `715726f3670743b1...` | `77196bed7fb84576...` |
 
-Aiken unit tests (`aiken check`), 136 Python SDK tests, 12/12 smoke test steps passing on both Vector testnet and mainnet with the previous deployment (includes CapabilityVerified and CapabilityFalsified paths). The new deployment for the identity registry is not deployed yet.
+Aiken unit tests (`aiken check`), 273 Python SDK tests (offline, with the transaction builders), 12/12 smoke test steps passing on both Vector testnet and mainnet with the previous deployment (includes CapabilityVerified and CapabilityFalsified paths). The new deployment for the identity registry is not deployed yet.
 
 ## Python SDK
 
@@ -63,10 +63,27 @@ skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
 client = ReputationStakingClient.from_deploy_state(
     "deploy/deploy_state.json", context, skey,
 )
-tx = client.create_stake("agent_did_hex", ["code_review"], 10_000_000)
+agent = "did:vector:<64 hex>"          # or the 64-hex identifier
+client.check_agent(agent, ["code_review"], controller_skey=None)
+seed_tx = client.create_seed_utxo(agent, ["code_review"])
+tx = client.create_stake(agent, ["code_review"], 10_000_000, seed_utxo=f"{seed_tx}#0")
 ```
 
-No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries and the HTTP submit endpoint for transaction submission, matching Module 1 and Module 6. Works with both testnet and mainnet endpoints.
+No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries and the HTTP submit endpoint for transaction submission, matching Module 1 and Module 6. Works with both testnet and mainnet endpoints. The protocol parameters (also the Plutus V3 cost model) come from the chain context.
+
+**Deployment values.** The client reads every hash and address from the deploy state that the deploy scripts write (`reputation_staking.deployment.load_deployment`): the validators, the params holder and `params_token_policy`, the treasury holder, `identity_hash` and the Module-1 hashes. There are no defaults. The client refuses a state without `identity_hash` (an old deployment has `agent_registry_hash`): move that file to a different path. Deployment order: identity registry, Module-1, Module-3, Module-6.
+
+**Identity records.** An agent is an identity record (did:vector); the methods accept the canonical DID or the 64-hex identifier. Before it builds a transaction, the client checks the rules of the contracts and raises `vector_identity.IdentityError` (or a subclass) when one fails:
+
+| Action | Identity rules (client checks + transaction shape) |
+|---|---|
+| `create_stake` | Record Active over the validity range, lists each staked capability; controller and wallet key (`owner_credential`) sign |
+| `mint_endorsement` | Endorser Active, its controller and the wallet key (`endorser_credential`) sign; target Active and lists each endorsed capability |
+| `mint_challenge` | Challenger Active and `created_at + min_agent_age <= lo`, its controller and the wallet key sign; target Active and lists the capability; `target_credential` = the target stake's `owner_credential` |
+| `distribute_outcome` / `distribute_falsified_outcome` with `mint_bonus=True` | Bonus agent (the winner) Active and its controller signs; the oracle key (the wallet) signs |
+| `resolve_challenge`, `slash_endorsement`, distributions without a bonus | No identity record; `resolve_challenge` needs the oracle key |
+
+Each action that reads a record adds the record and its ancestor records (`record_chain`) as reference inputs and has a validity range of at most one hour (`validity_slots`, default 900 slots); the times that the contract stores (`last_updated`, `created_at`) are the lower bound. Pass `controller_skey` (or `bonus_controller_skey`) when the controller key is not the wallet key. A history bonus is optional: DistributeOutcome does not need it (`mint_bonus`, default `False`). Each action has a `build_*` method that returns the signed transaction without submitting it.
 
 ### MCP Server Tools
 
@@ -80,7 +97,7 @@ No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries an
 | `reputation_browse` | Read | Find agents by capability, tier, or score |
 | `reputation_my_status` | Read | Check your reputation score and breakdown |
 
-Read-only tools use the indexer database. Write tools use `ReputationStakingClient`.
+Read-only tools use the indexer database. Write tools use `ReputationStakingClient`. The tools accept a canonical DID or a 64-hex identifier. Each agent identifier in the output is the 64-hex identifier (`*_did`) and the canonical DID (`*_did_uri`). `reputation_browse` leaves out agents that are not Active unless `include_all` is true.
 
 ### Indexer CLI
 
@@ -98,16 +115,20 @@ PYTHONPATH=python:$PYTHONPATH python3 -m indexer --once
 PYTHONPATH=python:$PYTHONPATH python3 -m indexer --with-api --api-port 8080
 ```
 
+The indexer reads `deploy/deploy_state.json` (testnet) or `deploy/mainnet/deploy_state.json` (mainnet), the files of the deploy scripts, and stops for an old deploy state. Each poll reads the ProtocolParams record (decay and epoch values, in milliseconds) and the identity records at the identity address. It stores the effective status of each agent's record at the index time (`active`, `suspended`, `revoked`, `retired`, or `missing` when the record or an ancestor record is not there). Times are POSIX milliseconds; decay counts `(now − last_updated) // epoch_length − activity_window` epochs, as ClaimDecayRefund does. An existing SQLite file gets the new columns when the indexer opens it.
+
+**Decision (identity rule):** an agent whose record is not Active at the index time gets the tier Unverified. Its amounts stay as they are. The leaderboard leaves it out unless the caller asks for all agents (`include_all=true`).
+
 ### Dashboard
 
 A public read-only SPA lives in [`dashboard/`](dashboard/). It serves:
 
-- **Leaderboard** — all indexed agents with scores, filtered by tier/capability
+- **Leaderboard** — the Active agents with scores and identity status, filtered by tier/capability (a toggle also shows agents that are not Active)
 - **Challenges** — every challenge (Open / Escalated / Resolved)
 - **Sybil Detection** — cycle + mutual-endorsement cluster flags
-- **Stats** — tier distribution + network totals
+- **Stats** — tier and identity status distribution + network totals
 
-It re-exports every `/v1/*` route from `indexer/api.py`, so the frontend and external API consumers hit the same FastAPI app.
+It shows canonical DIDs (`did:vector:<64 hex>`). It re-exports every `/v1/*` route from `indexer/api.py`, so the frontend and external API consumers hit the same FastAPI app. `/api/config` gives the contract addresses, `identity_hash` and the identity address. The server does not start without the deploy state of a new deployment.
 
 ```bash
 # Local dev (after running the indexer once)
@@ -121,8 +142,8 @@ Production is a Docker Compose stack (Traefik + indexer + dashboard sharing a SQ
 
 ```
 GET /health                              — Indexer health check
-GET /v1/reputation/agent/{did}           — Full reputation profile
-GET /v1/reputation/leaderboard           — Ranked agents (filter by capability, tier)
+GET /v1/reputation/agent/{did}           — Full reputation profile (with identity_status)
+GET /v1/reputation/leaderboard           — Ranked Active agents (filter by capability, tier; include_all=true for all)
 GET /v1/reputation/endorsements/{did}    — Endorsements given/received
 GET /v1/reputation/challenges/{did}      — Active challenges
 GET /v1/reputation/decayable             — Agents eligible for decay
@@ -133,6 +154,8 @@ GET /v1/tools                            — List MCP tool schemas
 POST /v1/tools/reputation_browse         — Execute browse tool
 POST /v1/tools/reputation_my_status      — Execute status tool
 ```
+
+`{did}` is a canonical DID or a 64-hex identifier; another value gets HTTP 400.
 
 ### Sybil Detection
 
@@ -224,7 +247,8 @@ Module-3/
       datums.py                               # cardano-cli JSON datum builders (legacy)
       backend.py                              # ChainBackend Protocol (legacy)
       docker_backend.py                       # Docker/cardano-cli backend (legacy)
-      utils.py                                # Address helpers, slot<->POSIX conversions
+      utils.py                                # Address helpers, slot<->POSIX conversions, DID output fields
+      deployment.py                           # Deploy state check (identity_hash, holders, Module-1 values)
       mcp_tools.py                            # MCP server tools (5 tools, Phase 1.1)
       cross_module.py                         # Cross-module bonus integration (Phase 1.1)
     indexer/                                  # Off-chain indexer + REST API
@@ -242,9 +266,8 @@ Module-3/
     deploy_ogmios.py                          # Deploy to Vector testnet via Ogmios (remote)
     deploy_mainnet_ogmios.py                  # Deploy to Vector mainnet via Ogmios
     test_deploy_config.py                     # Offline checks of the config builder and the inputs
-    smoke_test_ogmios.py                      # Full lifecycle smoke test — testnet (12 steps, legacy registry)
-    smoke_test_mainnet_ogmios.py              # Full lifecycle smoke test — mainnet (12 steps, legacy registry)
-    smoke_test_docker.py                      # Legacy smoke test — Docker/cardano-cli
+    smoke_test_ogmios.py                      # Full lifecycle smoke test — testnet (identity records from M3_SMOKE_AGENT_A/B)
+    smoke_test_mainnet_ogmios.py              # Same smoke test on mainnet
     setup_wallet_docker.py                    # Docker-based wallet setup
     demo_seed_mainnet.py                      # Resumable demo seed — spans all 5 tiers + sybil cluster
 
@@ -280,17 +303,22 @@ aiken check
 # Offline checks of the deploy config builder (needs cbor2)
 cd Module-3/scripts && python3 test_deploy_config.py
 
-# Run smoke test on Vector testnet (remote — no Docker required)
+# Run smoke test on Vector testnet (remote — no Docker required). The two
+# agents are identity records that exist; the wallet is the deploy (oracle)
+# key. The test checks the records (Active, capabilities, controller key,
+# challenger age) before the first transaction.
+export M3_SMOKE_AGENT_A=did:vector:<64 hex>   # stakes code_review, testing
+export M3_SMOKE_AGENT_B=did:vector:<64 hex>   # endorses and challenges A
+# Optional, when a controller key is not the wallet key:
+# export M3_SMOKE_AGENT_A_CONTROLLER_SKEY=/path/a_controller.skey
+# export M3_SMOKE_AGENT_B_CONTROLLER_SKEY=/path/b_controller.skey
 cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_ogmios.py
 
-# Run smoke test on Vector mainnet
+# Run smoke test on Vector mainnet (same inputs)
 cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_mainnet_ogmios.py
 
-# Run smoke test via Docker (legacy — requires local node)
-cd Module-3 && python3 scripts/smoke_test_docker.py
-
-# Run SDK unit tests (136 tests)
-cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m pytest python/tests/ -v
+# Run SDK unit tests (offline)
+cd Module-3/python && python3 -m pytest -q
 
 # Run indexer against live chain (single poll)
 cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m indexer --once

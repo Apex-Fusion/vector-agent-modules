@@ -4,9 +4,20 @@ Reputation score computation for Module 3: Reputation Staking.
 Pure computation — no chain interaction. Mirrors the on-chain logic in:
   reputation_staking/lib/reputation_staking/decay.ak
   reputation_staking/lib/reputation_staking/scoring.ak
+  reputation_staking/validators/reputation.ak (ClaimDecayRefund)
 
 Formula:
   R(agent) = self_stake + endorsements - active_challenges + history_bonus - decay
+
+Times are POSIX milliseconds. An epoch is `epoch_length` milliseconds; the
+epoch number of a time is `posix_ms // epoch_length` (epoch_of). Decay counts
+the epochs that passed since the stake's `last_updated`, as ClaimDecayRefund
+does on-chain: `(now_ms - last_updated) // epoch_length - activity_window`.
+
+Identity rule (decision, Module-3 indexer): an agent whose identity record
+does not have effective status Active at the index time gets the tier
+Unverified. Its amounts stay as they are. The indexer leaves such an agent
+out of the leaderboard unless the caller asks for all agents.
 """
 
 from __future__ import annotations
@@ -24,13 +35,30 @@ from reputation_staking.models import (
     ChallengeInfo,
     EndorsementInfo,
     HistoryBonusInfo,
+    IdentityStatus,
     ProtocolParamsInfo,
     RepChallengeState,
     ReputationScore,
     ReputationTier,
     StakeInfo,
 )
-from reputation_staking.utils import posix_ms_to_slot
+
+
+def epoch_of(posix_ms: int, epoch_length: int) -> int:
+    """The epoch number of a POSIX time in milliseconds."""
+    if epoch_length <= 0:
+        raise ValueError("epoch_length must be positive")
+    return posix_ms // epoch_length
+
+
+def inactive_epochs(last_updated_ms: int, now_ms: int, params: ProtocolParamsInfo) -> int:
+    """Epochs of inactivity after the activity window, as ClaimDecayRefund
+    computes them on-chain: (now - last_updated) // epoch_length -
+    activity_window. Zero or less means no decay."""
+    if params.epoch_length <= 0:
+        raise ValueError("epoch_length must be positive")
+    elapsed_epochs = (now_ms - last_updated_ms) // params.epoch_length
+    return elapsed_epochs - params.activity_window
 
 
 def compute_decay(stake_amount: int, inactive_epochs: int, decay_rate: int) -> int:
@@ -91,7 +119,9 @@ def compute_reputation_score(
     challenges: List[ChallengeInfo],
     history_bonuses: List[HistoryBonusInfo],
     params: ProtocolParamsInfo,
-    current_slot: int,
+    now_ms: int,
+    *,
+    identity_status: IdentityStatus,
 ) -> ReputationScore:
     """Compute the full reputation score for an agent.
 
@@ -108,7 +138,10 @@ def compute_reputation_score(
         challenges: All challenges against this agent.
         history_bonuses: All history bonus UTXOs for this agent.
         params: Protocol parameters.
-        current_slot: Current chain slot (for decay calculation).
+        now_ms: The time of the computation, POSIX milliseconds (for decay).
+        identity_status: The effective status of the agent's identity record
+            at now_ms. When it is not ACTIVE, the tier is Unverified; the
+            amounts do not change.
 
     Returns:
         Computed ReputationScore.
@@ -128,20 +161,19 @@ def compute_reputation_score(
     # Sum history bonus points
     history_bonus = sum(b.bonus_points for b in history_bonuses)
 
-    # Compute decay based on inactivity
-    last_active_slot = posix_ms_to_slot(stake.last_updated)
-    current_epoch = current_slot // params.epoch_length
-    last_active_epoch = last_active_slot // params.epoch_length
-    epochs_since_active = current_epoch - last_active_epoch
-
-    if epochs_since_active > params.activity_window:
-        inactive_epochs = epochs_since_active - params.activity_window
-        decay = compute_decay(self_stake, inactive_epochs, params.decay_rate)
-    else:
-        decay = 0
+    # Decay after the activity window, counted from the stake's last update
+    decay = compute_decay(
+        self_stake,
+        inactive_epochs(stake.last_updated, now_ms, params),
+        params.decay_rate,
+    )
 
     net_score = self_stake + endorsement_total - challenge_total + history_bonus - decay
     net_score = max(net_score, 0)
+
+    tier = get_tier(net_score)
+    if identity_status != IdentityStatus.ACTIVE:
+        tier = ReputationTier.Unverified
 
     return ReputationScore(
         agent_did=stake.agent_did,
@@ -151,5 +183,6 @@ def compute_reputation_score(
         history_bonus=history_bonus,
         decay=decay,
         net_score=net_score,
-        tier=get_tier(net_score),
+        tier=tier,
+        identity_status=identity_status,
     )

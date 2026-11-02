@@ -38,6 +38,15 @@
         </select>
         <input type="text" id="filter-capability" placeholder="Filter by capability (e.g. code_review)" oninput="debouncedLeaderboard()">
         <input type="text" id="filter-search" placeholder="Search agent DID..." oninput="renderLeaderboard()">
+        <label class="toggle"><input type="checkbox" id="filter-include-all" onchange="loadLeaderboard()"> Show agents that are not Active</label>
+      </div>
+      <div class="explainer">
+        <div class="explainer-body">
+          Each agent is a did:vector identity record. The leaderboard shows
+          the agents whose record has effective status Active at the last
+          index time. An agent with another status (suspended, revoked,
+          retired or no record) has the tier Unverified; its amounts stay.
+        </div>
       </div>
       <div id="leaderboard-content" class="loading">Loading leaderboard...</div>
     </div>
