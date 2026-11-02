@@ -1,5 +1,6 @@
 /// Tests for endorsement validation logic.
 
+use aiken/interval
 use cardano/address.{VerificationKey}
 use cardano/assets
 use reputation_staking/endorsement_validation.{
@@ -266,8 +267,8 @@ test withdraw_endorsement_happy_path() {
   let cfg = test_config()
   let params = test_params()
   let created_at = 1000
-  // After cooldown (43_200 slots)
-  let current_slot = created_at + 43_200 + 1
+  // After cooldown (172_800_000 ms = 48 h)
+  let current_slot = created_at + 172_800_000 + 1
 
   let endorser_cred = VerificationKey(test_owner_key_hash)
 
@@ -343,4 +344,71 @@ test withdraw_endorsement_too_early_fails() fail {
         }
 
   validate_withdraw_endorsement(tx, cfg, test_refs(), params, input_datum, current_slot)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// MintEndorsementToken: created_at is the time of the transaction
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A new endorsement with the given created_at, in a transaction with the
+/// given validity range.
+fn mint_endorsement_with(
+  created_at: Int,
+  validity_range: interval.Interval,
+) -> Bool {
+  let output_datum =
+    EndorsementDatum {
+      endorser_did: test_agent_did,
+      endorser_credential: VerificationKey(test_owner_key_hash),
+      target_did: test_agent_did_2,
+      stake_amount: 5_000_000,
+      endorsed_capabilities: ["code_review", "testing"],
+      created_at,
+    }
+  let output =
+    make_output(
+      script_address(test_endorsement_policy_id),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 5_000_000)
+        |> assets.add(
+            test_endorsement_policy_id,
+            derive_endorsement_token_name(test_agent_did, test_agent_did_2),
+            1,
+          ),
+      output_datum,
+    )
+  let tx =
+    Transaction {
+      ..base_tx(0),
+      validity_range,
+      reference_inputs: [
+        make_registry_ref_input(test_agent_did, test_owner_key_hash),
+        make_registry_ref_input(test_agent_did_2, test_owner_key_hash_2),
+        make_target_stake_ref(test_agent_did_2, test_owner_key_hash_2),
+      ],
+      outputs: [output],
+      extra_signatories: [test_owner_key_hash],
+    }
+  validate_mint_endorsement(tx, test_config(), test_refs(), test_params(), output_datum, output)
+}
+
+test mint_endorsement_created_at_lower_bound() {
+  mint_endorsement_with(
+    1_700_000_000_000,
+    interval.between(1_700_000_000_000, 1_700_000_600_000),
+  )
+}
+
+/// The old rule did not check created_at. The withdrawal cooldown counts
+/// from created_at, so created_at must be the time of the transaction.
+test mint_endorsement_with_earlier_created_at_fails() {
+  !mint_endorsement_with(
+    1_700_000_000_000 - 172_800_000,
+    interval.between(1_700_000_000_000, 1_700_000_600_000),
+  )
+}
+
+/// created_at is the lower bound of a validity range of at most one hour.
+test mint_endorsement_with_open_validity_range_fails() {
+  !mint_endorsement_with(1_000, interval.after(1_000))
 }

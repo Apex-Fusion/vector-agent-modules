@@ -235,7 +235,11 @@ validator reputation(cfg: ReputationConfig) {
       MintHistoryBonus -> {
         // F-NEW-6 fix: Require oracle signature AND source-specific validation
         let params =
-          find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
+          find_protocol_params(
+            tx.reference_inputs,
+            cfg.params_script_hash,
+            cfg.params_token_policy,
+          )
         let refs = get_cross_refs(cfg, tx.reference_inputs)
         let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
         let has_valid_token =
@@ -260,7 +264,11 @@ validator reputation(cfg: ReputationConfig) {
         // F1 fix: Require script input to prevent orphan burns
         // Genesis burn: verify protection period has elapsed
         let params =
-          find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
+          find_protocol_params(
+            tx.reference_inputs,
+            cfg.params_script_hash,
+            cfg.params_token_policy,
+          )
         expect Some(current_slot) = get_validity_lower_bound(tx)
         let has_valid_burn =
           list.any(
@@ -287,7 +295,11 @@ validator reputation(cfg: ReputationConfig) {
   ) {
     expect Some(stake_datum) = datum
     let params =
-      find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
+      find_protocol_params(
+        tx.reference_inputs,
+        cfg.params_script_hash,
+        cfg.params_token_policy,
+      )
 
     // Derive current slot from validity range lower bound
     expect Some(current_slot) = get_validity_lower_bound(tx)

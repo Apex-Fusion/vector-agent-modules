@@ -22,7 +22,8 @@ pub type StakeDatum {
   stake_amount: Int,
   /// Capabilities this stake backs (must match registry capabilities)
   staked_capabilities: List<ByteArray>,
-  /// Slot when stake was created or last modified
+  /// POSIX ms when the stake was created or last modified (lower bound of the
+  /// validity range)
   last_updated: Int,
   /// Accumulated history bonus points (from winning challenges, cross-module bonuses)
   history_points: Int,
@@ -73,7 +74,8 @@ pub type EndorsementDatum {
   stake_amount: Int,
   /// Which specific capabilities are endorsed (subset of target's capabilities)
   endorsed_capabilities: List<ByteArray>,
-  /// Slot when endorsement was created
+  /// POSIX ms when the endorsement was created (lower bound of a validity
+  /// range of at most one hour)
   created_at: Int,
 }
 
@@ -122,13 +124,14 @@ pub type ReputationChallengeDatum {
   evidence_hash: ByteArray,
   /// Off-chain storage URI for evidence
   evidence_uri: ByteArray,
-  /// Slot when challenge was created
+  /// POSIX ms when the challenge was created (lower bound of a validity range
+  /// of at most one hour)
   created_at: Int,
   /// Counter-evidence hash (empty ByteArray initially)
   counter_evidence_hash: ByteArray,
   /// Off-chain storage URI for counter-evidence
   counter_evidence_uri: ByteArray,
-  /// Slot when target responded (0 if no response yet)
+  /// POSIX ms when the target responded (0 if no response yet)
   response_submitted_at: Int,
   /// Current state
   state: RepChallengeState,
@@ -174,6 +177,10 @@ pub type RepChallengeAction {
   DefaultJudgment
   /// Distribute rewards/slashing after resolution
   DistributeOutcome
+  /// Close a challenge that nobody resolved before the challenge timeout
+  /// (see challenge_validation.challenge_timeout). The challenger receives
+  /// the challenge stake; the target's stake is not touched.
+  ExpireChallenge
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -192,7 +199,7 @@ pub type HistoryBonusDatum {
   bonus_points: Int,
   /// Reference to the originating event (for auditability)
   source_ref: OutputReference,
-  /// Slot when bonus was created
+  /// POSIX ms when the bonus was created
   created_at: Int,
 }
 

@@ -10,6 +10,7 @@ use cardano/transaction.{
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use shared/did_verification.{AgentDatum}
+use shared/record_auth
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test constants
@@ -42,6 +43,9 @@ pub const test_ap3x_asset_name: ByteArray = "AP3X"
 
 pub const test_oracle_credential: ByteArray =
   #"2200000000000000000000000000000000000000000000000000000000000008"
+
+pub const test_params_token_policy: ByteArray =
+  #"4400000000000000000000000000000000000000000000000000000044"
 
 // Module 1 deployed script hashes (from vector-agent-modules repo)
 pub const test_audit_claim_hash: ByteArray =
@@ -87,6 +91,7 @@ pub fn test_config() -> ReputationConfig {
     ap3x_policy_id: test_ap3x_policy_id,
     ap3x_asset_name: test_ap3x_asset_name,
     oracle_credential: test_oracle_credential,
+    params_token_policy: test_params_token_policy,
   }
 }
 
@@ -97,13 +102,14 @@ pub fn test_refs() -> CrossValidatorRefs {
   }
 }
 
+/// Protocol parameters with the deployment values (all times in POSIX ms).
 pub fn test_params() -> ProtocolParams {
   ProtocolParams {
     min_self_stake: 10_000_000,
     min_endorsement: 5_000_000,
     min_challenge_stake: 25_000_000,
-    stake_cooldown: 21_600,
-    endorsement_cooldown: 43_200,
+    stake_cooldown: 86_400_000,
+    endorsement_cooldown: 172_800_000,
     decay_rate: 100,
     activity_window: 180,
     decay_collector_fee: 500,
@@ -111,18 +117,22 @@ pub fn test_params() -> ProtocolParams {
     max_endorsement_multiplier: 3,
     slash_rate_endorser: 5_000,
     protocol_fee_rate: 500,
-    challenge_response_deadline: 10_800,
-    min_agent_age: 21_600,
-    escalation_window: 5_400,
+    challenge_response_deadline: 43_200_000,
+    min_agent_age: 86_400_000,
+    escalation_window: 21_600_000,
     default_judgment_fee: 100,
     genesis_agent_cap: 100,
     genesis_bonus_amount: 100_000_000,
-    genesis_minting_window: 604_800,
-    genesis_protection_period: 129_600,
+    genesis_minting_window: test_genesis_minting_end,
+    genesis_protection_period: 5_184_000_000,
     valid_capabilities: ["code_review", "testing", "deployment"],
-    epoch_length: 900,
+    epoch_length: 14_400_000,
   }
 }
+
+/// POSIX ms at which genesis minting closes in the test parameters
+/// (2025-01-01T00:00:00Z).
+pub const test_genesis_minting_end: Int = 1_735_689_600_000
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Address builders
@@ -204,9 +214,13 @@ pub fn make_registry_ref_input(
 // Protocol params reference input builder
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// The ProtocolParams record: at the params holder, holding the `params`
+/// record token.
 pub fn make_params_ref_input() -> Input {
   let params = test_params()
-  let value = assets.from_lovelace(2_000_000)
+  let value =
+    assets.from_lovelace(2_000_000)
+      |> assets.add(test_params_token_policy, record_auth.params_token_name, 1)
   let output =
     make_output(script_address(test_params_script_hash), value, params)
   make_input(test_tx_hash, 200, output)

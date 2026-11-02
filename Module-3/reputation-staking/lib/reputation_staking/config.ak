@@ -41,6 +41,11 @@ pub type ReputationConfig {
   ap3x_asset_name: ByteArray,
   /// Foundation oracle credential (for Phase 1.0 challenge/decay resolution)
   oracle_credential: ByteArray,
+  /// Policy ID of the one-shot record token policy
+  /// (shared/holder-scripts/validators/record_token.ak). The ProtocolParams
+  /// record at params_script_hash holds its `params` token. Outputs at the
+  /// params holder without that token are ignored.
+  params_token_policy: PolicyId,
 }
 
 /// Runtime cross-validator references — stored as an inline datum on a UTxO

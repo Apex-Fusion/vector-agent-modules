@@ -10,6 +10,7 @@ use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output, Transaction}
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
+use reputation_staking/time
 use reputation_staking/types.{
   Challenge, EndorsementDatum, EndorsementValidatorDatum, Open, StakeDatum,
 }
@@ -33,6 +34,7 @@ use reputation_staking/utils.{
 ///   6. endorsed_capabilities is non-empty and subset of target's staked_capabilities
 ///   7. EndorsementUTXO created at endorsement validator address
 ///   8. Transaction signed by endorser_credential
+///   9. created_at is the lower bound of a validity range of at most one hour
 pub fn validate_mint_endorsement(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -114,7 +116,15 @@ pub fn validate_mint_endorsement(
   // Rule 8: Signed by endorser
   let signed = has_credential_signed(tx, output_datum.endorser_credential)
 
-  endorser_exists && target_exists && target_has_stake && not_self_endorse && has_correct_token && token_is_new && meets_minimum && has_capabilities && capabilities_valid && at_validator && value_correct && signed
+  // Rule 9: created_at is the time of this transaction. The withdrawal
+  // cooldown counts from created_at.
+  let created_now =
+    when time.bounded_lower_bound(tx) is {
+      Some(lo) -> output_datum.created_at == lo
+      None -> False
+    }
+
+  endorser_exists && target_exists && target_has_stake && not_self_endorse && has_correct_token && token_is_new && meets_minimum && has_capabilities && capabilities_valid && at_validator && value_correct && signed && created_now
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

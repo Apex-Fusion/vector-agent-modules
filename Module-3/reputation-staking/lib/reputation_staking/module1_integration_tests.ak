@@ -200,7 +200,6 @@ test escalate_to_audit_happy_path() {
     input_datum,
     output_datum,
     audit_claim_ref,
-    3_000,
   )
 }
 
@@ -234,7 +233,6 @@ test escalate_to_audit_by_target() {
     input_datum,
     output_datum,
     audit_claim_ref,
-    3_000,
   )
 }
 
@@ -266,7 +264,7 @@ test escalate_to_audit_no_response_fails() fail {
     }
 
   challenge_validation.validate_escalate_to_audit(
-    tx, cfg, params, input_datum, output_datum, audit_claim_ref, 3_000,
+    tx, cfg, params, input_datum, output_datum, audit_claim_ref,
   )
 }
 
@@ -283,17 +281,46 @@ test escalate_to_audit_past_window_fails() fail {
 
   let claim_hash = expected_claim_hash_for(input_datum)
   let claim_output = make_module1_claim_output(cfg, claim_hash)
-  // current_slot far past escalation deadline
-  // deadline = created_at(1000) + challenge_response_deadline(10800) + escalation_window(5400) = 17200
+  // Validity range starts at the escalation deadline
+  // deadline = created_at(1_000) + challenge_response_deadline(43_200_000)
+  //   + escalation_window(21_600_000) = 64_801_000
   let tx =
     Transaction {
-      ..base_tx(20_000),
+      ..base_tx(64_801_000),
       outputs: [claim_output],
       extra_signatories: [test_owner_key_hash_2],
     }
 
   challenge_validation.validate_escalate_to_audit(
-    tx, cfg, params, input_datum, output_datum, audit_claim_ref, 20_000,
+    tx, cfg, params, input_datum, output_datum, audit_claim_ref,
+  )
+}
+
+/// The old rule compared the lower bound of the validity range with the
+/// escalation deadline. The new rule compares the upper bound, so a range
+/// that starts before the deadline and ends after it does not pass.
+test escalate_to_audit_with_upper_bound_after_window_fails() {
+  let cfg = test_config()
+  let params = test_params()
+  let input_datum = test_challenge_datum()
+  let audit_claim_ref = test_audit_claim_ref()
+  let output_datum =
+    ReputationChallengeDatum {
+      ..input_datum,
+      state: Escalated { audit_claim_ref },
+    }
+  let claim_output =
+    make_module1_claim_output(cfg, expected_claim_hash_for(input_datum))
+  // lower bound 64_800_950 <= deadline 64_801_000 < upper bound 64_801_050
+  let tx =
+    Transaction {
+      ..base_tx(64_800_950),
+      outputs: [claim_output],
+      extra_signatories: [test_owner_key_hash_2],
+    }
+
+  !challenge_validation.validate_escalate_to_audit(
+    tx, cfg, params, input_datum, output_datum, audit_claim_ref,
   )
 }
 
@@ -319,7 +346,7 @@ test escalate_to_audit_unsigned_fails() fail {
     }
 
   challenge_validation.validate_escalate_to_audit(
-    tx, cfg, params, input_datum, output_datum, audit_claim_ref, 3_000,
+    tx, cfg, params, input_datum, output_datum, audit_claim_ref,
   )
 }
 

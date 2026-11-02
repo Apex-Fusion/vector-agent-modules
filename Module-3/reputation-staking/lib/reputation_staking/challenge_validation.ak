@@ -1,8 +1,11 @@
 /// Challenge validation logic for Module 3: Reputation Staking.
 ///
 /// Validates challenge operations: MintChallengeToken, RespondToChallenge,
-/// ResolveChallenge, DefaultJudgment, and DistributeOutcome.
+/// ResolveChallenge, DefaultJudgment, DistributeOutcome and ExpireChallenge.
 /// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.8–6.11.
+///
+/// Times are POSIX milliseconds; see reputation_staking/time for the rules
+/// on validity range bounds.
 
 use aiken/builtin
 use aiken/collection/list
@@ -12,6 +15,7 @@ use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
+use reputation_staking/time
 use reputation_staking/types.{
   AuditChallengeDatum, AuditClaimDatum, AuditJurorDatum,
   AuditResolved, AuditValidated, AuditVerdict,
@@ -42,6 +46,7 @@ use reputation_staking/utils.{
 ///   7. No existing open challenge from this challenger for same capability
 ///   8. ChallengeUTXO created with state = Open
 ///   9. Transaction signed by challenger_credential
+///  10. created_at is the lower bound of a validity range of at most one hour
 pub fn validate_mint_challenge(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -123,6 +128,14 @@ pub fn validate_mint_challenge(
   let initial_state_clean =
     output_datum.counter_evidence_hash == "" && output_datum.counter_evidence_uri == "" && output_datum.response_submitted_at == 0
 
+  // Rule 10: created_at is the time of this transaction. The deadlines of the
+  // challenge count from created_at.
+  let created_now =
+    when time.bounded_lower_bound(tx) is {
+      Some(lo) -> output_datum.created_at == lo
+      None -> False
+    }
+
   // Output at endorsement validator
   let at_validator =
     when output.address.payment_credential is {
@@ -138,7 +151,7 @@ pub fn validate_mint_challenge(
   // Rule 9: Signed by challenger
   let signed = has_credential_signed(tx, output_datum.challenger_credential)
 
-  challenger_exists && target_exists && target_stake_valid && not_self_challenge && challenger_old_enough && meets_minimum && evidence_valid && token_is_new && has_correct_token && state_open && initial_state_clean && at_validator && value_correct && signed
+  challenger_exists && target_exists && target_stake_valid && not_self_challenge && challenger_old_enough && meets_minimum && evidence_valid && token_is_new && has_correct_token && state_open && initial_state_clean && created_now && at_validator && value_correct && signed
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -150,11 +163,14 @@ pub fn validate_mint_challenge(
 /// MUST:
 ///   1. ChallengeUTXO consumed (with challenge token)
 ///   2. state == Open
-///   3. current slot <= created_at + CHALLENGE_RESPONSE_DEADLINE
+///   3. The upper bound of the validity range is at most
+///      created_at + CHALLENGE_RESPONSE_DEADLINE
 ///   4. Transaction signed by target agent's owner_credential
 ///   5. counter_evidence_hash is exactly 32 bytes
 ///   6. counter_evidence_uri is non-empty
-///   7. Continuing ChallengeUTXO with response fields populated
+///   7. Continuing ChallengeUTXO with response fields populated;
+///      response_submitted_at is the lower bound of a validity range of at
+///      most one hour
 pub fn validate_respond_to_challenge(
   tx: Transaction,
   params: ProtocolParams,
@@ -162,14 +178,17 @@ pub fn validate_respond_to_challenge(
   output_datum: ReputationChallengeDatum,
   counter_evidence_hash: ByteArray,
   counter_evidence_uri: ByteArray,
-  current_slot: Int,
 ) -> Bool {
   // Rule 2: State is Open
   let state_open = input_datum.state == Open
 
-  // Rule 3: Within response deadline
+  // Rule 3: Before the response deadline
   let within_deadline =
-    current_slot <= input_datum.created_at + params.challenge_response_deadline
+    when time.upper_bound(tx) is {
+      Some(hi) ->
+        hi <= input_datum.created_at + params.challenge_response_deadline
+      None -> False
+    }
 
   // Rule 4: Signed by target
   let signed = has_credential_signed(tx, input_datum.target_credential)
@@ -186,7 +205,11 @@ pub fn validate_respond_to_challenge(
 
   // Response fields updated
   let response_updated =
-    output_datum.counter_evidence_hash == counter_evidence_hash && output_datum.counter_evidence_uri == counter_evidence_uri && output_datum.response_submitted_at == current_slot
+    when time.bounded_lower_bound(tx) is {
+      Some(lo) ->
+        output_datum.counter_evidence_hash == counter_evidence_hash && output_datum.counter_evidence_uri == counter_evidence_uri && output_datum.response_submitted_at == lo
+      None -> False
+    }
 
   state_open && within_deadline && signed && evidence_valid && uri_valid && datum_preserved && response_updated
 }
@@ -292,7 +315,8 @@ pub fn validate_resolve_challenge(
 ///
 /// MUST:
 ///   1. Challenge state == Open (with response — both parties have submitted evidence)
-///   2. Within escalation window (created_at + challenge_response_deadline + escalation_window)
+///   2. Within escalation window: the upper bound of the validity range is at
+///      most created_at + challenge_response_deadline + escalation_window
 ///   3. Signed by either challenger or target (either party can escalate)
 ///   4. A Module 1 claim UTXO is created at the audit_claim_validator_hash address
 ///      (verified by checking for a token under that policy in tx outputs)
@@ -305,7 +329,6 @@ pub fn validate_escalate_to_audit(
   input_datum: ReputationChallengeDatum,
   output_datum: ReputationChallengeDatum,
   audit_claim_ref: OutputReference,
-  current_slot: Int,
 ) -> Bool {
   // Rule 1: State must be Open
   let state_open = input_datum.state == Open
@@ -316,7 +339,11 @@ pub fn validate_escalate_to_audit(
   // Rule 2: Within escalation window
   let escalation_deadline =
     input_datum.created_at + params.challenge_response_deadline + params.escalation_window
-  let within_window = current_slot <= escalation_deadline
+  let within_window =
+    when time.upper_bound(tx) is {
+      Some(hi) -> hi <= escalation_deadline
+      None -> False
+    }
 
   // Rule 3: Signed by either party
   let challenger_signed =
@@ -459,6 +486,78 @@ pub fn map_audit_verdict(verdict: AuditVerdict) -> RepChallengeOutcome {
     AuditorWins -> CapabilityFalsified
     AuditInconclusive -> Inconclusive
   }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ExpireChallenge — timeout when nobody resolves the challenge
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The POSIX ms time after which an unresolved challenge can be closed.
+///
+/// The timeout starts when the escalation window closes
+/// (created_at + challenge_response_deadline + escalation_window) and lasts
+/// one activity window (activity_window × epoch_length). With the deployment
+/// values this is 12 h + 6 h + 180 × 4 h = 30 days and 18 hours after
+/// created_at. The timeout comes from existing parameters only.
+pub fn challenge_timeout(params: ProtocolParams, created_at: Int) -> Int {
+  created_at + params.challenge_response_deadline + params.escalation_window + params.activity_window * params.epoch_length
+}
+
+/// Validate the closing of a challenge that nobody resolved before the
+/// challenge timeout.
+///
+/// Callable by anyone (permissionless — the outcome is fixed).
+///
+/// MUST:
+///   1. The challenge is Open with a response, or Escalated. (An Open
+///      challenge without a response is closed by DefaultJudgment instead.)
+///   2. The lower bound of the validity range is after challenge_timeout.
+///   3. The challenge token is burned.
+///   4. The challenger receives at least stake_amount AP3X.
+/// The target's stake is not touched: its StakeUTXO is not an input, so the
+/// target keeps its whole stake. No fee is taken.
+pub fn validate_expire_challenge(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  refs: CrossValidatorRefs,
+  params: ProtocolParams,
+  challenge_datum: ReputationChallengeDatum,
+) -> Bool {
+  // Rule 1: Unresolved after a response
+  let unresolved =
+    when challenge_datum.state is {
+      Open -> challenge_datum.response_submitted_at > 0
+      Escalated { .. } -> True
+      Resolved { .. } -> False
+    }
+
+  // Rule 2: After the challenge timeout
+  let timed_out =
+    when time.lower_bound(tx) is {
+      Some(lo) -> lo > challenge_timeout(params, challenge_datum.created_at)
+      None -> False
+    }
+
+  // Rule 3: Challenge token burned
+  let expected_token_name =
+    derive_challenge_token_name(
+      challenge_datum.challenger_did,
+      challenge_datum.target_did,
+      challenge_datum.challenged_capability,
+    )
+  let token_burned =
+    assets.quantity_of(tx.mint, refs.endorsement_policy_id, expected_token_name) == -1
+
+  // Rule 4: Challenger receives the challenge stake
+  let challenger_paid =
+    verify_payment_to_credential(
+      tx.outputs,
+      challenge_datum.challenger_credential,
+      cfg,
+      challenge_datum.stake_amount,
+    )
+
+  unresolved && timed_out && token_burned && challenger_paid
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

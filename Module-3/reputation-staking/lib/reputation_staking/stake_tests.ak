@@ -282,9 +282,9 @@ test increase_stake_decrease_fails() fail {
 test decrease_stake_happy_path() {
   let cfg = test_config()
   let params = test_params()
-  // Cooldown is 21_600 — set last_updated old enough
+  // Cooldown is 86_400_000 ms (24 h) — set last_updated old enough
   let last_updated = 1000
-  let current_slot = last_updated + 21_600 + 1
+  let current_slot = last_updated + 86_400_000 + 1
 
   let owner_cred = VerificationKey(test_owner_key_hash)
   let decrease_amount = 5_000_000
@@ -406,7 +406,7 @@ test decrease_stake_below_minimum_fails() fail {
   let cfg = test_config()
   let params = test_params()
   let last_updated = 1000
-  let current_slot = last_updated + 21_600 + 1
+  let current_slot = last_updated + 86_400_000 + 1
 
   let owner_cred = VerificationKey(test_owner_key_hash)
   // Decrease so much that remaining < min_self_stake (10_000_000)
@@ -468,7 +468,7 @@ test update_capabilities_happy_path() {
   let cfg = test_config()
   let params = test_params()
   let last_updated = 1000
-  let current_slot = last_updated + 21_600 + 1
+  let current_slot = last_updated + 86_400_000 + 1
 
   let owner_cred = VerificationKey(test_owner_key_hash)
   let new_caps = ["testing", "deployment"]
