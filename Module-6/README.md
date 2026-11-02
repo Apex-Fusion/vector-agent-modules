@@ -76,14 +76,16 @@ aiken build    # Compile only
 | `redeploy_ref_scripts.py` | Redeploy reference scripts to unspendable addresses |
 
 ```bash
-# Prerequisites: nix-shell, funded wallet, .env with endpoints
+# Prerequisites: nix-shell, funded wallet (a new Foundation operator key),
+# .env with endpoints and VECTOR_IDENTITY_HASH (the script hash of the
+# identity registry; deploy the identity registry, Module-1 and Module-3 first)
 nix-shell shell.nix --run "python scripts/deploy.py"
 nix-shell shell.nix --run "python scripts/smoke_test.py"
 ```
 
-## Contract Hashes — Mainnet (v8, agent-registry v2)
+## Contract Hashes — Mainnet (v8, agent-registry v2, previous deployment)
 
-Built against agent-registry **v2** (`be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`). For testnet hashes see [`deploy/testnet/DEPLOY.md`](deploy/testnet/DEPLOY.md); validators are parameterized per-network so testnet and mainnet have different script hashes.
+Built against agent-registry **v2** (`be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`). The next deployment reads agent records from the identity registry instead (config field `identity_hash`, Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in agents-marketplace), so its hashes differ. For testnet hashes see [`deploy/testnet/DEPLOY.md`](deploy/testnet/DEPLOY.md); validators are parameterized per-network so testnet and mainnet have different script hashes.
 
 | Validator | Script Hash |
 |-----------|-------------|

@@ -4,12 +4,13 @@
 use aiken/builtin
 use aiken/collection/list
 use cardano/address.{Script as ScriptCredential}
-use cardano/transaction.{InlineDatum, Input, OutputReference, Transaction}
-
+use cardano/transaction.{
+  InlineDatum, Input, OutputReference, Transaction, ValidityRange,
+}
 use governance_suggestion/settlement
 use governance_suggestion/types.{
   Amendment, CritiqueDatum, GovernanceConfig, GovernanceCrossRefs,
-  GovernanceParams, GovernanceEndorsementDatum, ProposalDatum,
+  GovernanceEndorsementDatum, GovernanceParams, ProposalDatum,
 }
 use governance_suggestion/utils
 
@@ -25,10 +26,20 @@ pub fn validate_submit_critique(
   datum: CritiqueDatum,
   reference_inputs: List<Input>,
   signatories: List<ByteArray>,
+  validity_range: ValidityRange,
 ) -> Bool {
-  // 1. Critic has active DID
-  let did_valid =
-    utils.verify_active_did(config, datum.critic_did, reference_inputs)
+  // 1. The critic's identity record is Active over a validity range of at
+  //    most one hour, and the critic credential is a declared credential of
+  //    the record that signed (Part 2 §7, Module-6 row)
+  let identity_valid =
+    utils.verify_active_agent(
+      config,
+      datum.critic_did,
+      datum.critic_credential,
+      reference_inputs,
+      signatories,
+      validity_range,
+    )
 
   // 2. Referenced proposal exists and is active (Open or Amended)
   let proposal_valid =
@@ -48,10 +59,9 @@ pub fn validate_submit_critique(
   let not_incorporated = !datum.incorporated
 
   // 9. Signed by critic
-  let signer_valid =
-    utils.verify_signer(datum.critic_credential, signatories)
+  let signer_valid = utils.verify_signer(datum.critic_credential, signatories)
 
-  did_valid && proposal_valid && self_critique_check && stake_valid && hash_valid && not_incorporated && signer_valid
+  identity_valid && proposal_valid && self_critique_check && stake_valid && hash_valid && not_incorporated && signer_valid
 }
 
 // ============================================================================
@@ -73,8 +83,7 @@ pub fn validate_withdraw_critique(
     verify_proposal_is_active(refs, datum.proposal_ref, reference_inputs)
 
   // 6. Signed by critic
-  let signer_valid =
-    utils.verify_signer(datum.critic_credential, signatories)
+  let signer_valid = utils.verify_signer(datum.critic_credential, signatories)
 
   not_incorporated && proposal_active && signer_valid
 }
@@ -91,10 +100,20 @@ pub fn validate_submit_endorsement(
   datum: GovernanceEndorsementDatum,
   reference_inputs: List<Input>,
   signatories: List<ByteArray>,
+  validity_range: ValidityRange,
 ) -> Bool {
-  // 1. Endorser has active DID
-  let did_valid =
-    utils.verify_active_did(config, datum.endorser_did, reference_inputs)
+  // 1. The endorser's identity record is Active over a validity range of at
+  //    most one hour, and the endorser credential is a declared credential
+  //    of the record that signed (Part 2 §7, Module-6 row)
+  let identity_valid =
+    utils.verify_active_agent(
+      config,
+      datum.endorser_did,
+      datum.endorser_credential,
+      reference_inputs,
+      signatories,
+      validity_range,
+    )
 
   // 2. Referenced proposal exists and is active
   let proposal_valid =
@@ -108,10 +127,9 @@ pub fn validate_submit_endorsement(
   let stake_valid = datum.stake_amount >= params.min_governance_endorsement
 
   // 7. Signed by endorser
-  let signer_valid =
-    utils.verify_signer(datum.endorser_credential, signatories)
+  let signer_valid = utils.verify_signer(datum.endorser_credential, signatories)
 
-  did_valid && proposal_valid && no_self_endorse && stake_valid && signer_valid
+  identity_valid && proposal_valid && no_self_endorse && stake_valid && signer_valid
 }
 
 // ============================================================================
@@ -328,11 +346,7 @@ fn verify_no_self_endorsement(
   reference_inputs: List<Input>,
 ) -> Bool {
   let proposer_did =
-    get_proposal_proposer_did(
-      refs,
-      endorsement.proposal_ref,
-      reference_inputs,
-    )
+    get_proposal_proposer_did(refs, endorsement.proposal_ref, reference_inputs)
   when proposer_did is {
     Some(did) -> endorsement.endorser_did != did
     None -> False

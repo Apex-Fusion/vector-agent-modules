@@ -6,17 +6,16 @@ use aiken/collection/dict
 use aiken/collection/list
 use cardano/address.{Credential, Script as ScriptCredential}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, Output, OutputReference}
-
+use cardano/transaction.{
+  InlineDatum, Input, Output, OutputReference, ValidityRange,
+}
 use governance_suggestion/activity_tracking
 use governance_suggestion/emergency
 use governance_suggestion/params as gov_params
-use governance_suggestion/types
 use governance_suggestion/types.{
-  Amended, Emergency, GameActivation, GeneralSuggestion,
-  GovernanceConfig, GovernanceCrossRefs, GovernanceParams, Open,
-  ParameterChange, ProposalDatum, ProposalType, ProtocolUpgrade, Standard,
-  TreasurySpend,
+  Amended, Emergency, GameActivation, GeneralSuggestion, GovernanceConfig,
+  GovernanceCrossRefs, GovernanceParams, Open, ParameterChange, ProposalDatum,
+  ProposalType, ProtocolUpgrade, Standard, TreasurySpend,
 }
 use governance_suggestion/utils
 
@@ -25,6 +24,9 @@ use governance_suggestion/utils
 // ============================================================================
 
 /// Validate a new proposal submission.
+///
+/// `validity_range` is the transaction's validity range; `current_slot` is
+/// its lower bound.
 pub fn validate_submit_proposal(
   config: GovernanceConfig,
   refs: GovernanceCrossRefs,
@@ -37,10 +39,20 @@ pub fn validate_submit_proposal(
   signatories: List<ByteArray>,
   mint: assets.Value,
   own_ref: OutputReference,
+  validity_range: ValidityRange,
 ) -> Bool {
-  // 1. Proposer has active DID
-  let did_valid =
-    utils.verify_active_did(config, datum.proposer_did, reference_inputs)
+  // 1. The proposer's identity record is Active over a validity range of at
+  //    most one hour, and the proposer credential is a declared credential
+  //    of the record that signed (Part 2 §7, Module-6 row)
+  let identity_valid =
+    utils.verify_active_agent(
+      config,
+      datum.proposer_did,
+      datum.proposer_credential,
+      reference_inputs,
+      signatories,
+      validity_range,
+    )
 
   // 2. Stake check (includes emergency reputation gate if Emergency priority)
   let stake_valid =
@@ -66,8 +78,7 @@ pub fn validate_submit_proposal(
     datum.amendment_count == 0 && datum.incorporated_critiques == []
 
   // 11. Signed by proposer
-  let signer_valid =
-    utils.verify_signer(datum.proposer_credential, signatories)
+  let signer_valid = utils.verify_signer(datum.proposer_credential, signatories)
 
   // 12-16. Rate limiting
   let rate_valid =
@@ -83,14 +94,9 @@ pub fn validate_submit_proposal(
 
   // Verify proposal token is minted (exactly 1)
   // Use the script UTxO being spent (own_ref) as the seed for token name
-  let expected_token_name =
-    utils.proposal_token_name(own_ref)
+  let expected_token_name = utils.proposal_token_name(own_ref)
   let token_minted =
-    assets.quantity_of(
-      mint,
-      refs.proposal_mint_hash,
-      expected_token_name,
-    ) == 1
+    assets.quantity_of(mint, refs.proposal_mint_hash, expected_token_name) == 1
 
   // Verify proposal output is at the proposal validator address with stake
   let output_at_validator =
@@ -107,8 +113,8 @@ pub fn validate_submit_proposal(
       },
     )
 
-  if !did_valid {
-    fail @"FAIL:did_valid"
+  if !identity_valid {
+    fail @"FAIL:identity_valid"
   } else if !stake_valid {
     fail @"FAIL:stake_valid"
   } else if !hash_valid {
@@ -154,8 +160,7 @@ pub fn validate_withdraw_proposal(
   let state_valid = utils.is_proposal_active(datum.state)
 
   // 3. Signed by proposer
-  let signer_valid =
-    utils.verify_signer(datum.proposer_credential, signatories)
+  let signer_valid = utils.verify_signer(datum.proposer_credential, signatories)
 
   // 4. Proposal token burned
   let token_burned = verify_proposal_token_burned(refs, inputs, mint)
@@ -198,6 +203,9 @@ pub fn validate_withdraw_proposal(
 // ============================================================================
 
 /// Validate proposal amendment incorporating critiques.
+///
+/// An amendment is an action of the proposer on its open proposal, so it has
+/// the identity check of a submission (check 9).
 pub fn validate_amend_proposal(
   config: GovernanceConfig,
   refs: GovernanceCrossRefs,
@@ -206,8 +214,10 @@ pub fn validate_amend_proposal(
   new_hash: ByteArray,
   new_uri: ByteArray,
   incorporated_refs: List<OutputReference>,
+  reference_inputs: List<Input>,
   outputs: List<Output>,
   signatories: List<ByteArray>,
+  validity_range: ValidityRange,
 ) -> Bool {
   // 1. Proposal state is Open or Amended
   let state_valid = utils.is_proposal_active(datum.state)
@@ -228,8 +238,20 @@ pub fn validate_amend_proposal(
   let count_valid = datum.amendment_count + 1 <= params.max_amendments
 
   // 8. Signed by proposer
-  let signer_valid =
-    utils.verify_signer(datum.proposer_credential, signatories)
+  let signer_valid = utils.verify_signer(datum.proposer_credential, signatories)
+
+  // 9. The proposer's identity record is Active over a validity range of at
+  //    most one hour, and the proposer credential is a declared credential
+  //    of the record that signed (Part 2 §7, Module-6 row)
+  let identity_valid =
+    utils.verify_active_agent(
+      config,
+      datum.proposer_did,
+      datum.proposer_credential,
+      reference_inputs,
+      signatories,
+      validity_range,
+    )
 
   // Verify each incorporated critique has a continuing output with incorporated=True
   let critiques_valid =
@@ -271,9 +293,7 @@ pub fn validate_amend_proposal(
             expect out_datum: ProposalDatum = out_raw
             // State must be Amended with previous hash
             let state_correct =
-              out_datum.state == Amended {
-                previous_hash: datum.proposal_hash,
-              }
+              out_datum.state == Amended { previous_hash: datum.proposal_hash }
             let hash_correct = out_datum.proposal_hash == new_hash
             let uri_correct = out_datum.storage_uri == new_uri
             let count_correct =
@@ -293,7 +313,7 @@ pub fn validate_amend_proposal(
       },
     )
 
-  state_valid && hash_valid && uri_valid && inc_count_valid && count_valid && signer_valid && critiques_valid && output_valid
+  state_valid && hash_valid && uri_valid && inc_count_valid && count_valid && signer_valid && identity_valid && critiques_valid && output_valid
 }
 
 // ============================================================================
@@ -343,13 +363,7 @@ pub fn validate_adopt_proposal(
 
   // 15-16. cross-module bonus: proposer +10 AP3X, each incorporated critic +5 AP3X
   // Only enforced if Module 3 is deployed (reputation_validator_hash != zeroed)
-  let bonus_valid =
-    validate_cross_game_bonus(
-      config,
-      datum,
-      outputs,
-      mint,
-    )
+  let bonus_valid = validate_cross_game_bonus(config, datum, outputs, mint)
 
   oracle_valid && state_valid && reward_valid && reasoning_valid && token_burned && activity_valid && bonus_valid
 }
@@ -605,7 +619,8 @@ fn validate_proposal_type(
   proposal_type: ProposalType,
 ) -> Bool {
   when proposal_type is {
-    ParameterChange { param_name, .. } -> gov_params.is_governable_param(param_name)
+    ParameterChange { param_name, .. } ->
+      gov_params.is_governable_param(param_name)
     TreasurySpend { amount, .. } ->
       amount > 0 && amount <= params.max_treasury_request
     ProtocolUpgrade { upgrade_description_hash } ->
@@ -722,6 +737,5 @@ fn validate_cross_game_bonus(
     proposer_bonus_exists && bonus_token_minted
   }
 }
-
 // Emergency proposal reputation gate is now in governance_suggestion/emergency.ak
 // Use emergency.verify_proposer_reputation() for direct access.

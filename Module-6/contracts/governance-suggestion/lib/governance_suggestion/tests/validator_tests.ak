@@ -12,27 +12,26 @@ use aiken/crypto.{blake2b_256}
 use cardano/address.{VerificationKey}
 use cardano/assets
 use cardano/transaction.{Input, NoDatum, OutputReference}
-
 use governance_suggestion/critique_validation
 use governance_suggestion/params
 use governance_suggestion/proposal_validation
+use governance_suggestion/tests/test_helpers.{
+  activity_input, activity_output, activity_token_mint, critic_agent,
+  critic_cred, critic_did, critic_key_hash, critique_mint_hash, critique_own_ref,
+  cross_refs_ref_input, default_proposal_datum, identity_ref_input, oracle_cred,
+  oracle_key_hash, oracle_ref_input, oracle_ref_inputs, oracle_script_hash,
+  params_ref_input, params_script_hash, payment_output, proposal_input,
+  proposal_mint_hash, proposal_output, proposal_own_ref, proposal_ref_input,
+  proposal_token_mint, proposal_validator_hash, proposer_agent, proposer_cred,
+  proposer_did, proposer_key_hash, protocol_params_ref_input,
+  standard_ref_inputs, test_config, test_cross_refs, validity_range_from,
+}
 use governance_suggestion/types.{
-  Amended, CritiqueDatum, Emergency, GeneralSuggestion, GovernanceEndorsementDatum,
-  Open, ParameterChange, ProposalDatum, Standard, Supportive,
+  Amended, CritiqueDatum, Emergency, GeneralSuggestion,
+  GovernanceEndorsementDatum, Open, ParameterChange, ProposalDatum, Standard,
+  Supportive,
 }
 use governance_suggestion/utils
-
-use governance_suggestion/tests/test_helpers.{
-  activity_input, activity_output, activity_token_mint, critic_cred,
-  critic_did, critic_key_hash, cross_refs_ref_input, default_proposal_datum,
-  oracle_cred, oracle_key_hash, oracle_ref_input, oracle_ref_inputs,
-  oracle_script_hash, params_ref_input, params_script_hash, payment_output,
-  proposal_input, proposal_mint_hash, proposal_output, proposal_own_ref,
-  proposal_ref_input, proposal_token_mint, proposal_validator_hash,
-  proposer_cred, proposer_did, proposer_key_hash, protocol_params_ref_input,
-  registry_ref_input, standard_ref_inputs, test_config, test_cross_refs,
-  critique_own_ref, critique_mint_hash,
-}
 
 // ============================================================================
 // §5.1 SubmitProposal Tests
@@ -48,14 +47,11 @@ test submit_proposal_valid() {
 
   // Inputs: activity UTXO (first-time proposer uses InitActivity, so no activity input needed)
   // For first-time: no activity input, outputs must contain activity with count=1
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
 
   // Outputs: proposal UTXO + activity UTXO (count=1)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
 
   // Mint: proposal token + activity token (first time)
   let mint =
@@ -77,6 +73,7 @@ test submit_proposal_valid() {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -88,14 +85,11 @@ test submit_proposal_missing_did() fail {
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  // No registry reference input — DID check will fail
+  // No identity record reference input — the identity check fails
   let reference_inputs = [cross_refs_ref_input(), params_ref_input()]
 
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -113,6 +107,7 @@ test submit_proposal_missing_did() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -126,12 +121,9 @@ test submit_proposal_insufficient_stake() fail {
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -149,6 +141,7 @@ test submit_proposal_insufficient_stake() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -165,12 +158,9 @@ test submit_proposal_bad_hash_length() fail {
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -188,6 +178,7 @@ test submit_proposal_bad_hash_length() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -199,12 +190,9 @@ test submit_proposal_empty_uri() fail {
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -222,6 +210,7 @@ test submit_proposal_empty_uri() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -233,12 +222,9 @@ test submit_proposal_wrong_signer() fail {
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -257,6 +243,7 @@ test submit_proposal_wrong_signer() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -265,17 +252,13 @@ test submit_proposal_window_too_short() fail {
   let refs = test_cross_refs()
   let gov_params = params.default_governance_params()
   // Review window below min (259_200_000 = ~3 days)
-  let datum =
-    ProposalDatum { ..default_proposal_datum(), review_window: 1_000 }
+  let datum = ProposalDatum { ..default_proposal_datum(), review_window: 1_000 }
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -293,6 +276,7 @@ test submit_proposal_window_too_short() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -302,19 +286,13 @@ test submit_proposal_window_too_long() fail {
   let gov_params = params.default_governance_params()
   // Review window above max (2_419_200_000 = ~28 days)
   let datum =
-    ProposalDatum {
-      ..default_proposal_datum(),
-      review_window: 9_999_999_999,
-    }
+    ProposalDatum { ..default_proposal_datum(), review_window: 9_999_999_999 }
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -332,6 +310,7 @@ test submit_proposal_window_too_long() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -342,19 +321,14 @@ test submit_proposal_non_open_state() fail {
   let datum =
     ProposalDatum {
       ..default_proposal_datum(),
-      state: Amended {
-        previous_hash: blake2b_256("old"),
-      },
+      state: Amended { previous_hash: blake2b_256("old") },
     }
   let own_ref = proposal_own_ref()
   let current_slot = 2_000_000_000
 
-  let reference_inputs = standard_ref_inputs(proposer_did)
+  let reference_inputs = standard_ref_inputs(proposer_agent)
   let outputs =
-    [
-      proposal_output(datum),
-      activity_output(proposer_did, 1, current_slot),
-    ]
+    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
   let mint =
     proposal_token_mint(own_ref, 1)
       |> assets.merge(activity_token_mint(proposer_did, 1))
@@ -372,6 +346,7 @@ test submit_proposal_non_open_state() fail {
     signatories,
     mint,
     own_ref,
+    validity_range_from(current_slot),
   )
 }
 
@@ -525,9 +500,9 @@ test adopt_proposal_valid() {
   let own_ref = proposal_own_ref()
   let reasoning_hash = blake2b_256("adoption reasoning")
   let reward_amount = 100_000_000
-  // 100 AP3X
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  // 100 AP3X
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
 
   let inputs =
     [
@@ -571,7 +546,7 @@ test adopt_proposal_no_oracle_sig() fail {
   let reasoning_hash = blake2b_256("adoption reasoning")
   let reward_amount = 100_000_000
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
 
   let inputs =
     [
@@ -612,7 +587,7 @@ test adopt_proposal_reward_too_low() fail {
   // Below min_adoption_reward (50_000_000)
   let reward_amount = 1_000_000
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
   let inputs =
     [
       proposal_input(datum, own_ref),
@@ -651,7 +626,7 @@ test adopt_proposal_reward_too_high() fail {
   // Above max_adoption_reward (500_000_000)
   let reward_amount = 999_000_000
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
   let inputs =
     [
       proposal_input(datum, own_ref),
@@ -691,7 +666,7 @@ test reject_proposal_valid() {
   let own_ref = proposal_own_ref()
   let reasoning_hash = blake2b_256("rejection reasoning")
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
   let inputs =
     [
       proposal_input(datum, own_ref),
@@ -725,7 +700,7 @@ test reject_proposal_no_oracle_sig() fail {
   let own_ref = proposal_own_ref()
   let reasoning_hash = blake2b_256("rejection reasoning")
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
   let inputs =
     [
       proposal_input(datum, own_ref),
@@ -763,7 +738,7 @@ test extend_review_valid() {
   let datum = default_proposal_datum()
   let additional_slots = 100_000_000
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
 
   // Continuing output with updated review_window
   let updated_datum =
@@ -792,7 +767,7 @@ test extend_review_exceeds_max() fail {
   // Push total past max_review_window (2_419_200_000)
   let additional_slots = 9_999_999_999
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
 
   let updated_datum =
     ProposalDatum {
@@ -819,7 +794,7 @@ test extend_review_no_oracle_sig() fail {
   let datum = default_proposal_datum()
   let additional_slots = 100_000_000
 
-  let reference_inputs = oracle_ref_inputs(proposer_did)
+  let reference_inputs = oracle_ref_inputs(proposer_agent)
 
   let updated_datum =
     ProposalDatum {
@@ -876,8 +851,10 @@ test amend_proposal_valid() {
     new_hash,
     new_uri,
     incorporated_refs,
+    standard_ref_inputs(proposer_agent),
     outputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -886,8 +863,7 @@ test amend_proposal_max_amendments() fail {
   let refs = test_cross_refs()
   let gov_params = params.default_governance_params()
   // Already at max amendments (5)
-  let datum =
-    ProposalDatum { ..default_proposal_datum(), amendment_count: 5 }
+  let datum = ProposalDatum { ..default_proposal_datum(), amendment_count: 5 }
   let new_hash = blake2b_256("amended proposal content v7")
   let new_uri = "ipfs://QmAmended7"
   let incorporated_refs = []
@@ -911,8 +887,10 @@ test amend_proposal_max_amendments() fail {
     new_hash,
     new_uri,
     incorporated_refs,
+    standard_ref_inputs(proposer_agent),
     outputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -935,8 +913,7 @@ test expire_stale_proposal_valid() {
   let own_ref = proposal_own_ref()
 
   // Reference inputs must include ProtocolParams at protocol_params_hash
-  let reference_inputs =
-    [cross_refs_ref_input(), protocol_params_ref_input()]
+  let reference_inputs = [cross_refs_ref_input(), protocol_params_ref_input()]
 
   let inputs =
     [
@@ -968,8 +945,7 @@ test expire_stale_proposal_not_param_change() fail {
   let datum = default_proposal_datum()
   let own_ref = proposal_own_ref()
 
-  let reference_inputs =
-    [cross_refs_ref_input(), protocol_params_ref_input()]
+  let reference_inputs = [cross_refs_ref_input(), protocol_params_ref_input()]
   let inputs =
     [
       proposal_input(datum, own_ref),
@@ -1005,7 +981,7 @@ test submit_critique_valid() {
 
   let critique_datum =
     CritiqueDatum {
-      critic_did: critic_did,
+      critic_did,
       critic_credential: critic_cred(),
       proposal_ref: proposal_own_ref(),
       critique_hash: blake2b_256("critique content"),
@@ -1021,7 +997,7 @@ test submit_critique_valid() {
     [
       cross_refs_ref_input(),
       params_ref_input(),
-      registry_ref_input(critic_did),
+      identity_ref_input(critic_agent),
       proposal_ref_input(proposal_datum),
     ]
 
@@ -1034,6 +1010,7 @@ test submit_critique_valid() {
     critique_datum,
     reference_inputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -1061,7 +1038,7 @@ test submit_critique_self_critique_supportive() fail {
     [
       cross_refs_ref_input(),
       params_ref_input(),
-      registry_ref_input(proposer_did),
+      identity_ref_input(proposer_agent),
       proposal_ref_input(proposal_datum),
     ]
   let signatories = [proposer_key_hash]
@@ -1073,6 +1050,7 @@ test submit_critique_self_critique_supportive() fail {
     critique_datum,
     reference_inputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -1102,7 +1080,7 @@ test submit_critique_self_amendment_allowed() {
     [
       cross_refs_ref_input(),
       params_ref_input(),
-      registry_ref_input(proposer_did),
+      identity_ref_input(proposer_agent),
       proposal_ref_input(proposal_datum),
     ]
   let signatories = [proposer_key_hash]
@@ -1114,6 +1092,7 @@ test submit_critique_self_amendment_allowed() {
     critique_datum,
     reference_inputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -1125,7 +1104,7 @@ test submit_critique_missing_did() fail {
 
   let critique_datum =
     CritiqueDatum {
-      critic_did: critic_did,
+      critic_did,
       critic_credential: critic_cred(),
       proposal_ref: proposal_own_ref(),
       critique_hash: blake2b_256("critique"),
@@ -1136,7 +1115,7 @@ test submit_critique_missing_did() fail {
       incorporated: False,
     }
 
-  // No critic DID in registry
+  // No identity record of the critic
   let reference_inputs =
     [
       cross_refs_ref_input(),
@@ -1152,6 +1131,7 @@ test submit_critique_missing_did() fail {
     critique_datum,
     reference_inputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -1163,7 +1143,7 @@ test submit_critique_insufficient_stake() fail {
 
   let critique_datum =
     CritiqueDatum {
-      critic_did: critic_did,
+      critic_did,
       critic_credential: critic_cred(),
       proposal_ref: proposal_own_ref(),
       critique_hash: blake2b_256("critique"),
@@ -1179,7 +1159,7 @@ test submit_critique_insufficient_stake() fail {
     [
       cross_refs_ref_input(),
       params_ref_input(),
-      registry_ref_input(critic_did),
+      identity_ref_input(critic_agent),
       proposal_ref_input(proposal_datum),
     ]
   let signatories = [critic_key_hash]
@@ -1191,6 +1171,7 @@ test submit_critique_insufficient_stake() fail {
     critique_datum,
     reference_inputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -1204,7 +1185,7 @@ test withdraw_critique_valid() {
 
   let critique_datum =
     CritiqueDatum {
-      critic_did: critic_did,
+      critic_did,
       critic_credential: critic_cred(),
       proposal_ref: proposal_own_ref(),
       critique_hash: blake2b_256("critique"),
@@ -1234,7 +1215,7 @@ test withdraw_critique_incorporated() fail {
   // Already incorporated — can't withdraw
   let critique_datum =
     CritiqueDatum {
-      critic_did: critic_did,
+      critic_did,
       critic_credential: critic_cred(),
       proposal_ref: proposal_own_ref(),
       critique_hash: blake2b_256("critique"),
@@ -1262,7 +1243,7 @@ test withdraw_critique_wrong_signer() fail {
 
   let critique_datum =
     CritiqueDatum {
-      critic_did: critic_did,
+      critic_did,
       critic_credential: critic_cred(),
       proposal_ref: proposal_own_ref(),
       critique_hash: blake2b_256("critique"),
@@ -1308,7 +1289,7 @@ test submit_endorsement_valid() {
     [
       cross_refs_ref_input(),
       params_ref_input(),
-      registry_ref_input(critic_did),
+      identity_ref_input(critic_agent),
       proposal_ref_input(proposal_datum),
     ]
   let signatories = [critic_key_hash]
@@ -1320,6 +1301,7 @@ test submit_endorsement_valid() {
     endorsement_datum,
     reference_inputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 
@@ -1343,7 +1325,7 @@ test submit_endorsement_self_endorse() fail {
     [
       cross_refs_ref_input(),
       params_ref_input(),
-      registry_ref_input(proposer_did),
+      identity_ref_input(proposer_agent),
       proposal_ref_input(proposal_datum),
     ]
   let signatories = [proposer_key_hash]
@@ -1355,6 +1337,7 @@ test submit_endorsement_self_endorse() fail {
     endorsement_datum,
     reference_inputs,
     signatories,
+    validity_range_from(1_500_000_000),
   )
 }
 

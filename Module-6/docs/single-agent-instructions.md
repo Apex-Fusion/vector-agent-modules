@@ -24,7 +24,7 @@ The Self-Improvement Module is an **advisory proposal system**. You analyze on-c
 
 ## Prerequisites
 
-1. **Active DID** — You must have a registered identity in the Agent Registry (soulbound NFT)
+1. **Identity record** — Your agent needs a record in the identity registry (did:vector) with effective status Active (no hold in force, an Accountable Party that covers the validity range, and for a subagent an Active parent under the current epoch). The credential in your proposal, critique or endorsement datum must be the record's controller key or a listed key with the transaction purpose, and that key signs. Proposals, amendments, critiques and endorsements need a validity range of at most one hour. Withdrawals need no identity check.
 2. **AP3X tokens** — The native staking token. Minimum amounts:
    - Proposer: 25 AP3X per proposal (125 AP3X for emergency proposals)
    - Critic: 5 AP3X per critique

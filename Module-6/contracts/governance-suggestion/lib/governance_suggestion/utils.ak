@@ -1,17 +1,15 @@
 // Module 6: Self-Improvement Module — Utilities
-// DID verification, oracle checks, and token name derivation.
+// Identity checks, oracle checks, and token name derivation.
 // Delegates to shared library (vector/shared) for cross-module functions.
 
 use aiken/builtin
+use aiken/collection/list
 use cardano/address.{Credential}
 use cardano/assets
-use aiken/collection/list
-use cardano/transaction.{InlineDatum, Input, OutputReference}
-
+use cardano/transaction.{InlineDatum, Input, OutputReference, ValidityRange}
 use governance_suggestion/types.{GovernanceConfig, GovernanceCrossRefs}
-
 use shared/credential
-use shared/did_verification
+use shared/identity
 use shared/oracle
 use shared/token_naming
 
@@ -43,22 +41,56 @@ pub fn get_cross_refs(
 }
 
 // ============================================================================
-// DID Verification (delegates to shared)
+// Identity Check (Part 2 §7 of docs/IDENTITY_REGISTRY.md, Module-6 row)
 // ============================================================================
 
-/// Verify that a DID is active in the Agent Registry.
-/// Wraps shared/did_verification.verify_agent_exists with GovernanceConfig.
-pub fn verify_active_did(
+/// The identity check of an action by an agent that opens or extends a
+/// position: proposal submission and amendment, critique submission and
+/// endorsement submission. Exits and settlements have no identity check.
+///
+/// MUST:
+///   1. The validity range has finite bounds, lo <= hi and hi - lo <= one
+///      hour (shared/identity.window).
+///   2. The record of `agent_did` is a reference input at the exact identity
+///      address that holds exactly one token (config.identity_hash,
+///      agent_did), and its effective status over the whole range [lo, hi]
+///      is Active (shared/identity.active_record). The transaction fails when
+///      a subagent's ancestor record is not a reference input.
+///   3. `agent_credential` is a declared credential of the record: a
+///      verification key whose hash is the hash of the controller or of a
+///      listed Ed25519 key with the transaction purpose
+///      (shared/identity.declared_credential). A script credential never
+///      passes.
+///   4. The key of `agent_credential` signed the transaction.
+///
+/// With the transaction's reference inputs, signatories and validity range,
+/// this is shared/identity.credential_opens.
+pub fn verify_active_agent(
   config: GovernanceConfig,
   agent_did: ByteArray,
+  agent_credential: Credential,
   reference_inputs: List<Input>,
+  signatories: List<ByteArray>,
+  validity_range: ValidityRange,
 ) -> Bool {
-  did_verification.verify_agent_exists(
-    reference_inputs,
-    config.registry_script_hash,
-    config.registry_policy_id,
-    agent_did,
-  )
+  when identity.window(validity_range) is {
+    Some(w) ->
+      when
+        identity.active_record(
+          reference_inputs,
+          config.identity_hash,
+          agent_did,
+          w,
+        )
+      is {
+        Some(record) -> and {
+            identity.declared_credential(record, agent_credential),
+            credential.verify_signer(agent_credential, signatories),
+          }
+        None -> False
+      }
+    None -> False
+  }
 }
 
 // ============================================================================
@@ -86,10 +118,7 @@ pub fn verify_oracle_signature(
 // ============================================================================
 
 /// Check that a payment credential is a VerificationKey and has signed.
-pub fn verify_signer(
-  cred: Credential,
-  signatories: List<ByteArray>,
-) -> Bool {
+pub fn verify_signer(cred: Credential, signatories: List<ByteArray>) -> Bool {
   credential.verify_signer(cred, signatories)
 }
 

@@ -10,9 +10,13 @@ use cardano/transaction.{OutputReference}
 
 /// A governance proposal submitted by an agent
 pub type ProposalDatum {
-  /// DID of the proposing agent (policy_id of registry NFT)
+  /// Identifier of the proposing agent: the identifier of its identity record
+  /// (did:vector, 32 bytes; config.identity_hash)
   proposer_did: ByteArray,
-  /// Payment credential of proposer (for stake return + rewards)
+  /// Payment credential of proposer (for stake return + rewards). Submission
+  /// and amendment need a declared credential of the proposer's record: a
+  /// verification key whose hash is the hash of the controller or of a listed
+  /// key with the transaction purpose (utils.verify_active_agent)
   proposer_credential: Credential,
   /// blake2b_256 hash of the full proposal document (stored off-chain)
   proposal_hash: ByteArray,
@@ -39,7 +43,11 @@ pub type ProposalDatum {
 /// Category of governance proposal
 pub type ProposalType {
   /// Change a protocol parameter (e.g., MIN_CLAIM_STAKE, JURY_SIZE)
-  ParameterChange { param_name: ByteArray, current_value: Int, proposed_value: Int }
+  ParameterChange {
+    param_name: ByteArray,
+    current_value: Int,
+    proposed_value: Int,
+  }
   /// Allocate treasury funds for a specific purpose
   TreasurySpend { amount: Int, recipient_description: ByteArray }
   /// Propose a protocol upgrade or new feature
@@ -110,9 +118,12 @@ pub type ProposalAction {
 
 /// A critique of an existing proposal
 pub type CritiqueDatum {
-  /// DID of the critiquing agent
+  /// Identifier of the critiquing agent: the identifier of its identity record
+  /// (did:vector, 32 bytes; config.identity_hash)
   critic_did: ByteArray,
-  /// Payment credential of critic (for potential reward sharing)
+  /// Payment credential of critic (for potential reward sharing). Submission
+  /// needs a declared credential of the critic's record
+  /// (utils.verify_active_agent)
   critic_credential: Credential,
   /// Reference to the proposal being critiqued
   proposal_ref: OutputReference,
@@ -161,9 +172,11 @@ pub type CritiqueAction {
 /// An endorsement: Agent stakes AP3X signaling support for a proposal.
 /// Endorsements are weighted signals to the Foundation — they don't determine outcomes.
 pub type GovernanceEndorsementDatum {
-  /// DID of the endorsing agent
+  /// Identifier of the endorsing agent: the identifier of its identity record
+  /// (did:vector, 32 bytes; config.identity_hash)
   endorser_did: ByteArray,
-  /// Payment credential of endorser
+  /// Payment credential of endorser. Submission needs a declared credential
+  /// of the endorser's record (utils.verify_active_agent)
   endorser_credential: Credential,
   /// Reference to the proposal being endorsed
   proposal_ref: OutputReference,
@@ -274,10 +287,6 @@ pub type GovernanceConfig {
   refs_token_policy: ByteArray,
   /// Script hash of the prediction validator (Phase 1.2, zeroed until deployed)
   prediction_validator_hash: ByteArray,
-  /// Policy ID of the Agent Registry
-  registry_policy_id: ByteArray,
-  /// Script hash of the Agent Registry
-  registry_script_hash: ByteArray,
   /// Script hash of Module 3 reputation validator (zeroed if not available)
   reputation_validator_hash: ByteArray,
   /// Script hash of Module 1 jury pool (zeroed if not available)
@@ -297,6 +306,14 @@ pub type GovernanceConfig {
   /// record holds its `params` token and the oracle record holds its `oracle`
   /// token. Records without the token are ignored.
   record_token_policy: ByteArray,
+  /// Script hash (= policy ID) of the identity registry contract `identity`
+  /// (did:vector, Part 2 §2 of docs/IDENTITY_REGISTRY.md in agents-marketplace).
+  /// An agent's record is the reference input at the exact identity address
+  /// (Script(identity_hash), no stake credential) that holds exactly one token
+  /// of this policy, named with the agent's identifier (vector_identity). The
+  /// hash is known after the identity deployment, which comes before the
+  /// Module-6 deployment (Part 2 §7).
+  identity_hash: ByteArray,
 }
 
 /// Runtime cross-validator references — stored as inline datum on a UTxO

@@ -5,14 +5,12 @@ use aiken/collection/list
 use aiken/interval.{Finite}
 use cardano/address.{Script as ScriptCredential}
 use cardano/transaction.{OutputReference, Transaction}
-
 use governance_suggestion/params
 use governance_suggestion/proposal_validation
 use governance_suggestion/types.{
   AdoptProposal, AmendProposal, ExpireProposal, ExpireStaleProposal,
   ExtendReview, GovernanceConfig, GovernanceCrossRefs, ProposalAction,
-  ProposalDatum, RejectProposal, SpendActivity, SubmitProposal,
-  WithdrawProposal,
+  ProposalDatum, RejectProposal, SpendActivity, SubmitProposal, WithdrawProposal,
 }
 use governance_suggestion/utils
 
@@ -42,15 +40,13 @@ validator proposal_mint(config: GovernanceConfig) {
       )
 
     when redeemer is {
-      SubmitProposal -> {
+      SubmitProposal ->
         // For submit, the proposal validator spend is consuming the proposer's
         // activity UTXO or a locked ProposalDatum UTXO.
         has_proposal_spend
-      }
-      _ -> {
+      _ ->
         // Burning during finalization: spend validator must be running
         has_proposal_spend
-      }
     }
   }
 
@@ -72,11 +68,9 @@ validator proposal_spend(config: GovernanceConfig) {
     tx: Transaction,
   ) {
     trace @"ENTER:proposal_spend"
-    let gov_params =
-      params.read_governance_params(config, tx.reference_inputs)
+    let gov_params = params.read_governance_params(config, tx.reference_inputs)
     trace @"OK:read_params"
-    let refs =
-      utils.get_cross_refs(config, tx.reference_inputs)
+    let refs = utils.get_cross_refs(config, tx.reference_inputs)
     trace @"OK:get_cross_refs"
 
     // Extract the current slot from validity range
@@ -103,6 +97,7 @@ validator proposal_spend(config: GovernanceConfig) {
           tx.extra_signatories,
           tx.mint,
           own_ref,
+          tx.validity_range,
         )
       }
 
@@ -133,8 +128,10 @@ validator proposal_spend(config: GovernanceConfig) {
           new_hash,
           new_uri,
           incorporated,
+          tx.reference_inputs,
           tx.outputs,
           tx.extra_signatories,
+          tx.validity_range,
         )
       }
 
@@ -219,7 +216,7 @@ validator proposal_spend(config: GovernanceConfig) {
         )
       }
 
-      SpendActivity -> {
+      SpendActivity ->
         // Activity UTXOs are validated by the proposal UTXO's evaluation
         // (via validate_finalize_activity in the Withdraw/Adopt/Reject/Expire case).
         // Guard: another input at the proposal validator address must also be spent.
@@ -234,7 +231,6 @@ validator proposal_spend(config: GovernanceConfig) {
             }
           },
         )
-      }
     }
   }
 
@@ -255,4 +251,3 @@ fn get_lower_bound_slot(tx: Transaction) -> Option<Int> {
     _ -> None
   }
 }
-

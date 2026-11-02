@@ -7,18 +7,21 @@
 
 use aiken/builtin
 use aiken/crypto.{blake2b_256}
+use aiken/interval
 use cardano/address.{Address, Credential, Script, VerificationKey}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, NoDatum, Output, OutputReference}
-
+use cardano/transaction.{
+  InlineDatum, Input, NoDatum, Output, OutputReference, ValidityRange,
+}
 use governance_suggestion/params
 use governance_suggestion/types.{
-  GovernanceConfig, GovernanceCrossRefs, GovernanceParams,
-  ProposalDatum, ProposerActivityDatum,
+  GovernanceConfig, GovernanceCrossRefs, GovernanceParams, ProposalDatum,
+  ProposerActivityDatum,
 }
 use governance_suggestion/utils
-
-use shared/did_verification.{AgentDatum}
+use shared/identity_fixtures.{
+  agent_id, controller_hash, identity_hash, record, record_input,
+}
 use shared/oracle.{GovernanceOracleDatum}
 use shared/record_auth
 
@@ -41,12 +44,6 @@ pub const critique_mint_hash: ByteArray =
 pub const refs_token_policy: ByteArray =
   #"ee00000000000000000000000000000000000000000000000000ee00"
 
-pub const registry_policy_id: ByteArray =
-  #"ff00000000000000000000000000000000000000000000000000ff00"
-
-pub const registry_script_hash: ByteArray =
-  #"1100000000000000000000000000000000000000000000000000001100"
-
 pub const oracle_script_hash: ByteArray =
   #"2200000000000000000000000000000000000000000000000000002200"
 
@@ -68,22 +65,28 @@ pub const zeroed_hash: ByteArray =
   #"00000000000000000000000000000000000000000000000000000000"
 
 // ============================================================================
-// Agent Credentials and DIDs
+// Agents, Credentials and DIDs
 // ============================================================================
 
-pub const proposer_did: ByteArray = "did_proposer_test_001"
+// The proposer and the critic are test agents of shared/identity_fixtures:
+// the DID is agent_id(n) and the credential is the controller key hash
+// controller_hash(n).
 
-pub const proposer_key_hash: ByteArray =
-  #"aabb0000000000000000000000000000000000000000000000000000"
+pub const proposer_agent: Int = 1
+
+pub const proposer_did: ByteArray = agent_id(proposer_agent)
+
+pub const proposer_key_hash: ByteArray = controller_hash(proposer_agent)
 
 pub fn proposer_cred() -> Credential {
   VerificationKey(proposer_key_hash)
 }
 
-pub const critic_did: ByteArray = "did_critic_test_002"
+pub const critic_agent: Int = 2
 
-pub const critic_key_hash: ByteArray =
-  #"ccdd0000000000000000000000000000000000000000000000000000"
+pub const critic_did: ByteArray = agent_id(critic_agent)
+
+pub const critic_key_hash: ByteArray = controller_hash(critic_agent)
 
 pub fn critic_cred() -> Credential {
   VerificationKey(critic_key_hash)
@@ -96,33 +99,38 @@ pub fn oracle_cred() -> Credential {
   VerificationKey(oracle_key_hash)
 }
 
+/// A validity range of 10 minutes that starts at `lo`. A transaction that
+/// reads identity records has a range of at most one hour.
+pub fn validity_range_from(lo: Int) -> ValidityRange {
+  interval.between(lo, lo + 600_000)
+}
+
 // ============================================================================
 // GovernanceConfig + CrossRefs
 // ============================================================================
 
 pub fn test_config() -> GovernanceConfig {
   GovernanceConfig {
-    refs_token_policy: refs_token_policy,
+    refs_token_policy,
     prediction_validator_hash: zeroed_hash,
-    registry_policy_id: registry_policy_id,
-    registry_script_hash: registry_script_hash,
     reputation_validator_hash: zeroed_hash,
     jury_pool_hash: zeroed_hash,
     governance_oracle_hash: oracle_script_hash,
     governance_params_hash: params_script_hash,
     governance_treasury_hash: treasury_script_hash,
     credibility_pool_hash: zeroed_hash,
-    protocol_params_hash: protocol_params_hash,
-    record_token_policy: record_token_policy,
+    protocol_params_hash,
+    record_token_policy,
+    identity_hash,
   }
 }
 
 pub fn test_cross_refs() -> GovernanceCrossRefs {
   GovernanceCrossRefs {
-    proposal_validator_hash: proposal_validator_hash,
-    critique_validator_hash: critique_validator_hash,
-    proposal_mint_hash: proposal_mint_hash,
-    critique_mint_hash: critique_mint_hash,
+    proposal_validator_hash,
+    critique_validator_hash,
+    proposal_mint_hash,
+    critique_mint_hash,
   }
 }
 
@@ -203,7 +211,7 @@ pub fn oracle_ref_input() -> Input {
   let oracle_datum =
     GovernanceOracleDatum {
       oracle_credential: oracle_cred(),
-      treasury_script_hash: treasury_script_hash,
+      treasury_script_hash,
       oracle_active: True,
     }
   Input {
@@ -224,34 +232,11 @@ pub fn oracle_ref_input() -> Input {
   }
 }
 
-/// Agent Registry reference input: UTXO at registry address with DID NFT
-pub fn registry_ref_input(did: ByteArray) -> Input {
-  let agent_datum =
-    AgentDatum {
-      owner: proposer_cred(),
-      name: "TestAgent",
-      description: "Test agent for governance",
-      capabilities: ["governance"],
-      framework: "test",
-      endpoint: "http://localhost",
-      registered_at: 0,
-    }
-  Input {
-    output_reference: make_ref(
-      #"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0004",
-      0,
-    ),
-    output: Output {
-      address: Address {
-        payment_credential: Script(registry_script_hash),
-        stake_credential: None,
-      },
-      value: assets.from_asset(registry_policy_id, did, 1)
-        |> assets.add(assets.ada_policy_id, assets.ada_asset_name, 2_000_000),
-      datum: InlineDatum(agent_datum),
-      reference_script: None,
-    },
-  }
+/// Identity record of test agent `n` (shared/identity_fixtures): an Active
+/// root record at the identity address with the token
+/// (identity_hash, agent_id(n)) and controller key controller_key(n)
+pub fn identity_ref_input(n: Int) -> Input {
+  record_input(agent_id(n), record(n, []))
 }
 
 /// Protocol params reference input (for stale proposal detection)
@@ -298,17 +283,18 @@ pub fn proposal_ref_input(proposal_datum: ProposalDatum) -> Input {
   }
 }
 
-/// Standard reference inputs for most actions: [cross_refs, params, registry]
-pub fn standard_ref_inputs(did: ByteArray) -> List<Input> {
-  [cross_refs_ref_input(), params_ref_input(), registry_ref_input(did)]
+/// Standard reference inputs for most actions: [cross_refs, params, the
+/// identity record of test agent `n`]
+pub fn standard_ref_inputs(n: Int) -> List<Input> {
+  [cross_refs_ref_input(), params_ref_input(), identity_ref_input(n)]
 }
 
 /// Oracle reference inputs: standard + oracle datum
-pub fn oracle_ref_inputs(did: ByteArray) -> List<Input> {
+pub fn oracle_ref_inputs(n: Int) -> List<Input> {
   [
     cross_refs_ref_input(),
     params_ref_input(),
-    registry_ref_input(did),
+    identity_ref_input(n),
     oracle_ref_input(),
   ]
 }
@@ -318,15 +304,11 @@ pub fn oracle_ref_inputs(did: ByteArray) -> List<Input> {
 // ============================================================================
 
 /// Activity UTXO input at proposal validator address with pact_ token
-pub fn activity_input(
-  agent_did: ByteArray,
-  count: Int,
-  last_slot: Int,
-) -> Input {
+pub fn activity_input(agent_did: ByteArray, count: Int, last_slot: Int) -> Input {
   let activity_token = utils.activity_token_name(agent_did)
   let activity_datum =
     ProposerActivityDatum {
-      agent_did: agent_did,
+      agent_did,
       agent_credential: proposer_cred(),
       active_proposal_count: count,
       last_proposal_slot: last_slot,
@@ -350,10 +332,7 @@ pub fn activity_input(
 }
 
 /// Proposal UTXO input at proposal validator address with prop_ token
-pub fn proposal_input(
-  datum: ProposalDatum,
-  own_ref: OutputReference,
-) -> Input {
+pub fn proposal_input(datum: ProposalDatum, own_ref: OutputReference) -> Input {
   let token_name = utils.proposal_token_name(own_ref)
   Input {
     output_reference: make_ref(
@@ -386,7 +365,7 @@ pub fn activity_output(
   let activity_token = utils.activity_token_name(agent_did)
   let activity_datum =
     ProposerActivityDatum {
-      agent_did: agent_did,
+      agent_did,
       agent_credential: proposer_cred(),
       active_proposal_count: count,
       last_proposal_slot: last_slot,
@@ -424,10 +403,7 @@ pub fn proposal_output(datum: ProposalDatum) -> Output {
 /// Payment output to a credential (for stake returns, rewards)
 pub fn payment_output(credential: Credential, lovelace: Int) -> Output {
   Output {
-    address: Address {
-      payment_credential: credential,
-      stake_credential: None,
-    },
+    address: Address { payment_credential: credential, stake_credential: None },
     value: assets.from_lovelace(lovelace),
     datum: NoDatum,
     reference_script: None,
@@ -456,7 +432,7 @@ pub fn activity_token_mint(agent_did: ByteArray, qty: Int) -> assets.Value {
 
 pub fn default_proposal_datum() -> ProposalDatum {
   ProposalDatum {
-    proposer_did: proposer_did,
+    proposer_did,
     proposer_credential: proposer_cred(),
     proposal_hash: blake2b_256("test proposal content v1"),
     proposal_type: types.GeneralSuggestion,

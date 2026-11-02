@@ -4,7 +4,6 @@
 use aiken/collection/list
 use cardano/address.{Script as ScriptCredential}
 use cardano/transaction.{OutputReference, Transaction}
-
 use governance_suggestion/critique_validation
 use governance_suggestion/params
 use governance_suggestion/types.{
@@ -31,8 +30,7 @@ validator critique_mint(config: GovernanceConfig) {
       tx.inputs,
       fn(input) {
         when input.output.address.payment_credential is {
-          ScriptCredential(hash) ->
-            hash == refs.critique_validator_hash
+          ScriptCredential(hash) -> hash == refs.critique_validator_hash
           _ -> False
         }
       },
@@ -55,10 +53,8 @@ validator critique_spend(config: GovernanceConfig) {
     own_ref: OutputReference,
     tx: Transaction,
   ) {
-    let gov_params =
-      params.read_governance_params(config, tx.reference_inputs)
-    let refs =
-      utils.get_cross_refs(config, tx.reference_inputs)
+    let gov_params = params.read_governance_params(config, tx.reference_inputs)
+    let refs = utils.get_cross_refs(config, tx.reference_inputs)
 
     when redeemer is {
       MintCritiqueToken -> {
@@ -74,6 +70,7 @@ validator critique_spend(config: GovernanceConfig) {
           datum,
           tx.reference_inputs,
           tx.extra_signatories,
+          tx.validity_range,
         )
       }
 
@@ -139,10 +136,8 @@ validator endorsement_spend(config: GovernanceConfig) {
     own_ref: OutputReference,
     tx: Transaction,
   ) {
-    let gov_params =
-      params.read_governance_params(config, tx.reference_inputs)
-    let refs =
-      utils.get_cross_refs(config, tx.reference_inputs)
+    let gov_params = params.read_governance_params(config, tx.reference_inputs)
+    let refs = utils.get_cross_refs(config, tx.reference_inputs)
 
     when redeemer is {
       MintEndorsementToken -> {
@@ -156,6 +151,7 @@ validator endorsement_spend(config: GovernanceConfig) {
           datum,
           tx.reference_inputs,
           tx.extra_signatories,
+          tx.validity_range,
         )
       }
 
@@ -175,12 +171,7 @@ validator endorsement_spend(config: GovernanceConfig) {
         expect Some(raw_datum) = datum_opt
         expect datum: GovernanceEndorsementDatum = raw_datum
 
-        critique_validation.validate_burn_endorsement(
-          refs,
-          datum,
-          own_ref,
-          tx,
-        )
+        critique_validation.validate_burn_endorsement(refs, datum, own_ref, tx)
       }
     }
   }

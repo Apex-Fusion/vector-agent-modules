@@ -7,19 +7,16 @@ use aiken/crypto.{blake2b_256}
 use cardano/address.{Address, Script}
 use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output}
-
 use governance_suggestion/params
 use governance_suggestion/proposal_validation
-use governance_suggestion/types.{GovernanceParams}
-
 use governance_suggestion/tests/test_helpers.{
   activity_input, activity_output, cross_refs_ref_input, default_proposal_datum,
-  make_ref, oracle_cred, oracle_key_hash, oracle_script_hash, params_ref_input,
-  params_script_hash, payment_output, proposal_input, proposal_own_ref,
-  proposal_token_mint, proposer_cred, proposer_did, registry_ref_input,
-  test_config, test_cross_refs, treasury_script_hash,
+  identity_ref_input, make_ref, oracle_cred, oracle_key_hash, oracle_script_hash,
+  params_ref_input, params_script_hash, payment_output, proposal_input,
+  proposal_own_ref, proposal_token_mint, proposer_agent, proposer_cred,
+  proposer_did, test_config, test_cross_refs, treasury_script_hash,
 }
-
+use governance_suggestion/types.{GovernanceParams}
 use shared/oracle.{GovernanceOracleDatum}
 use shared/record_auth
 
@@ -96,10 +93,13 @@ fn adopt_with_oracle(oracle_input: Input) -> Bool {
     [
       cross_refs_ref_input(),
       params_ref_input(),
-      registry_ref_input(proposer_did),
+      identity_ref_input(proposer_agent),
       oracle_input,
     ],
-    [proposal_input(datum, own_ref), activity_input(proposer_did, 1, 1_000_000_000)],
+    [
+      proposal_input(datum, own_ref),
+      activity_input(proposer_did, 1, 1_000_000_000),
+    ],
     [
       payment_output(proposer_cred(), datum.stake_amount),
       activity_output(proposer_did, 0, 1_000_000_000),
@@ -115,7 +115,8 @@ fn adopt_with_oracle(oracle_input: Input) -> Bool {
 
 /// The old lookup accepted any output at the params holder.
 test read_params_rejects_output_without_record_token() fail {
-  let gov_params = params.read_governance_params(
+  let gov_params =
+    params.read_governance_params(
       test_config(),
       [params_without_token(params.default_governance_params())],
     )
@@ -125,7 +126,10 @@ test read_params_rejects_output_without_record_token() fail {
 /// The old lookup took the first output at the params holder.
 test read_params_skips_output_without_record_token() {
   let forged =
-    GovernanceParams { ..params.default_governance_params(), min_proposal_stake: 1 }
+    GovernanceParams {
+      ..params.default_governance_params(),
+      min_proposal_stake: 1,
+    }
   let gov_params =
     params.read_governance_params(
       test_config(),
