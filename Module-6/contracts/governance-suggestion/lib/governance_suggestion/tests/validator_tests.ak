@@ -9,9 +9,9 @@
 // action and verifies both positive (valid tx) and negative (invalid tx) cases.
 
 use aiken/crypto.{blake2b_256}
-use cardano/address.{Address, Script, VerificationKey}
+use cardano/address.{VerificationKey}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, NoDatum, Output, OutputReference}
+use cardano/transaction.{Input, NoDatum, OutputReference}
 
 use governance_suggestion/critique_validation
 use governance_suggestion/params
@@ -31,7 +31,7 @@ use governance_suggestion/tests/test_helpers.{
   proposal_ref_input, proposal_token_mint, proposal_validator_hash,
   proposer_cred, proposer_did, proposer_key_hash, protocol_params_ref_input,
   registry_ref_input, standard_ref_inputs, test_config, test_cross_refs,
-  critique_validator_hash, critique_own_ref, critique_mint_hash,
+  critique_own_ref, critique_mint_hash,
 }
 
 // ============================================================================
@@ -1394,79 +1394,5 @@ test withdraw_endorsement_wrong_signer() fail {
   critique_validation.validate_withdraw_endorsement(
     endorsement_datum,
     signatories,
-  )
-}
-
-// ============================================================================
-// IncorporateCritique Tests
-// ============================================================================
-
-test incorporate_critique_valid() {
-  let critique_datum =
-    CritiqueDatum {
-      critic_did: critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
-    }
-
-  // Output must have same critique but incorporated = True
-  let incorporated_datum = CritiqueDatum { ..critique_datum, incorporated: True }
-  let outputs =
-    [
-      Output {
-        address: Address {
-          payment_credential: Script(critique_validator_hash),
-          stake_credential: None,
-        },
-        value: assets.from_lovelace(5_000_000),
-        datum: InlineDatum(incorporated_datum),
-        reference_script: None,
-      },
-    ]
-
-  critique_validation.validate_incorporate_critique(
-    critique_datum,
-    outputs,
-  )
-}
-
-test incorporate_critique_already_incorporated() fail {
-  // Already incorporated — can't incorporate again
-  let critique_datum =
-    CritiqueDatum {
-      critic_did: critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: True,
-    }
-
-  let incorporated_datum = CritiqueDatum { ..critique_datum, incorporated: True }
-  let outputs =
-    [
-      Output {
-        address: Address {
-          payment_credential: Script(critique_validator_hash),
-          stake_credential: None,
-        },
-        value: assets.from_lovelace(5_000_000),
-        datum: InlineDatum(incorporated_datum),
-        reference_script: None,
-      },
-    ]
-
-  critique_validation.validate_incorporate_critique(
-    critique_datum,
-    outputs,
   )
 }

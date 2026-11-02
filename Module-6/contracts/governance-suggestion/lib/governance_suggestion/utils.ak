@@ -66,7 +66,8 @@ pub fn verify_active_did(
 // ============================================================================
 
 /// Verify that the Foundation oracle is active and has signed the transaction.
-/// Wraps shared/oracle.verify_oracle_signature with GovernanceConfig.
+/// The oracle record must hold the `oracle` record token
+/// (config.record_token_policy), and its credential must be a verification key.
 pub fn verify_oracle_signature(
   config: GovernanceConfig,
   reference_inputs: List<Input>,
@@ -74,6 +75,7 @@ pub fn verify_oracle_signature(
 ) -> Bool {
   oracle.verify_oracle_signature(
     config.governance_oracle_hash,
+    config.record_token_policy,
     reference_inputs,
     signatories,
   )

@@ -52,7 +52,7 @@ validator critique_spend(config: GovernanceConfig) {
   spend(
     datum_opt: Option<Data>,
     redeemer: CritiqueAction,
-    _own_ref: OutputReference,
+    own_ref: OutputReference,
     tx: Transaction,
   ) {
     let gov_params =
@@ -90,27 +90,35 @@ validator critique_spend(config: GovernanceConfig) {
       }
 
       IncorporateCritique -> {
+        // Only inside a proposal amendment that lists this critique; the
+        // critique continues unchanged except incorporated = True.
         expect Some(raw_datum) = datum_opt
         expect datum: CritiqueDatum = raw_datum
 
-        critique_validation.validate_incorporate_critique(datum, tx.outputs)
+        critique_validation.validate_incorporate_critique(
+          refs,
+          datum,
+          own_ref,
+          tx,
+        )
       }
 
       RewardCritique { reward_share: _ } -> {
-        // Reward distribution happens during AdoptProposal
-        // The proposal validator handles the overall validation;
-        // here we just verify the critique is being consumed properly
+        // Only inside a proposal adoption; the critique tokens are burned and
+        // the critic receives at least the returned lovelace.
         expect Some(raw_datum) = datum_opt
         expect datum: CritiqueDatum = raw_datum
 
-        // Must be incorporated to receive reward
-        datum.incorporated
+        critique_validation.validate_reward_critique(refs, datum, own_ref, tx)
       }
 
       BurnCritiqueToken -> {
-        // Burning during proposal finalization — always allowed
-        // The proposal validator ensures this only happens during adopt/reject/expire
-        True
+        // Only inside a proposal finalisation; the critique tokens are burned
+        // and the critic receives at least the returned lovelace.
+        expect Some(raw_datum) = datum_opt
+        expect datum: CritiqueDatum = raw_datum
+
+        critique_validation.validate_burn_critique(refs, datum, own_ref, tx)
       }
     }
   }
@@ -128,7 +136,7 @@ validator endorsement_spend(config: GovernanceConfig) {
   spend(
     datum_opt: Option<Data>,
     redeemer: GovernanceEndorsementAction,
-    _own_ref: OutputReference,
+    own_ref: OutputReference,
     tx: Transaction,
   ) {
     let gov_params =
@@ -162,8 +170,17 @@ validator endorsement_spend(config: GovernanceConfig) {
       }
 
       BurnEndorsementToken -> {
-        // Burning during proposal finalization — always allowed
-        True
+        // Only inside a proposal finalisation; the endorsement tokens are
+        // burned and the endorser receives at least the returned lovelace.
+        expect Some(raw_datum) = datum_opt
+        expect datum: GovernanceEndorsementDatum = raw_datum
+
+        critique_validation.validate_burn_endorsement(
+          refs,
+          datum,
+          own_ref,
+          tx,
+        )
       }
     }
   }

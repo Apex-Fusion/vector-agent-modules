@@ -1,33 +1,30 @@
 // Module 6: Self-Improvement Module — Parameter Reading
 // Read GovernanceParams from reference input UTXO
 
-use aiken/collection/list
-use cardano/address.{Script as ScriptCredential}
-use cardano/transaction.{InlineDatum, Input}
+use cardano/transaction.{Input}
 
 use governance_suggestion/types.{GovernanceConfig, GovernanceParams}
+
+use shared/record_auth
 
 // ============================================================================
 // GovernanceParams Reading
 // ============================================================================
 
-/// Read GovernanceParams from a reference input at the governance params address.
-/// Returns the params or fails if not found.
+/// Read GovernanceParams from the params record: the reference input at the
+/// governance params holder that holds the `params` record token
+/// (config.record_token_policy). Fails if no such reference input exists.
 pub fn read_governance_params(
   config: GovernanceConfig,
   reference_inputs: List<Input>,
 ) -> GovernanceParams {
-  expect Some(params_input) =
-    list.find(
+  expect Some(raw_datum) =
+    record_auth.find_record(
       reference_inputs,
-      fn(input) {
-        when input.output.address.payment_credential is {
-          ScriptCredential(hash) -> hash == config.governance_params_hash
-          _ -> False
-        }
-      },
+      config.governance_params_hash,
+      config.record_token_policy,
+      record_auth.params_token_name,
     )
-  expect InlineDatum(raw_datum) = params_input.output.datum
   expect params: GovernanceParams = raw_datum
   params
 }

@@ -20,6 +20,7 @@ use governance_suggestion/utils
 
 use shared/did_verification.{AgentDatum}
 use shared/oracle.{GovernanceOracleDatum}
+use shared/record_auth
 
 // ============================================================================
 // Deterministic Hash Constants (28 bytes each, distinct)
@@ -58,9 +59,13 @@ pub const treasury_script_hash: ByteArray =
 pub const protocol_params_hash: ByteArray =
   #"5500000000000000000000000000000000000000000000000000005500"
 
-// Zeroed hashes for unused modules
+pub const record_token_policy: ByteArray =
+  #"7700000000000000000000000000000000000000000000000000007700"
+
+// Zeroed hashes for unused modules (28 bytes, the same constant the
+// validators compare against)
 pub const zeroed_hash: ByteArray =
-  #"0000000000000000000000000000000000000000000000000000"
+  #"00000000000000000000000000000000000000000000000000000000"
 
 // ============================================================================
 // Agent Credentials and DIDs
@@ -108,6 +113,7 @@ pub fn test_config() -> GovernanceConfig {
     governance_treasury_hash: treasury_script_hash,
     credibility_pool_hash: zeroed_hash,
     protocol_params_hash: protocol_params_hash,
+    record_token_policy: record_token_policy,
   }
 }
 
@@ -169,7 +175,8 @@ pub fn cross_refs_ref_input() -> Input {
   }
 }
 
-/// GovernanceParams reference input
+/// GovernanceParams reference input: the params record (holds the `params`
+/// record token)
 pub fn params_ref_input() -> Input {
   let gov_params = params.default_governance_params()
   Input {
@@ -182,14 +189,16 @@ pub fn params_ref_input() -> Input {
         payment_credential: Script(params_script_hash),
         stake_credential: None,
       },
-      value: assets.from_lovelace(2_000_000),
+      value: assets.from_lovelace(2_000_000)
+        |> assets.add(record_token_policy, record_auth.params_token_name, 1),
       datum: InlineDatum(gov_params),
       reference_script: None,
     },
   }
 }
 
-/// Oracle reference input (active, with oracle credential)
+/// Oracle reference input: the oracle record (active, with oracle credential,
+/// holds the `oracle` record token)
 pub fn oracle_ref_input() -> Input {
   let oracle_datum =
     GovernanceOracleDatum {
@@ -207,7 +216,8 @@ pub fn oracle_ref_input() -> Input {
         payment_credential: Script(oracle_script_hash),
         stake_credential: None,
       },
-      value: assets.from_lovelace(2_000_000),
+      value: assets.from_lovelace(2_000_000)
+        |> assets.add(record_token_policy, record_auth.oracle_token_name, 1),
       datum: InlineDatum(oracle_datum),
       reference_script: None,
     },

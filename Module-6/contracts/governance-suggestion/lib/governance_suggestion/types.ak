@@ -282,7 +282,7 @@ pub type GovernanceConfig {
   reputation_validator_hash: ByteArray,
   /// Script hash of Module 1 jury pool (zeroed if not available)
   jury_pool_hash: ByteArray,
-  /// Script hash of the governance oracle
+  /// Script hash of the governance oracle holder
   governance_oracle_hash: ByteArray,
   /// Script hash of governance parameters holder
   governance_params_hash: ByteArray,
@@ -292,6 +292,11 @@ pub type GovernanceConfig {
   credibility_pool_hash: ByteArray,
   /// Script hash of protocol params (for parameter proposals + stale detection)
   protocol_params_hash: ByteArray,
+  /// Policy ID of the one-shot record token policy
+  /// (shared/holder-scripts/validators/record_token.ak). The GovernanceParams
+  /// record holds its `params` token and the oracle record holds its `oracle`
+  /// token. Records without the token are ignored.
+  record_token_policy: ByteArray,
 }
 
 /// Runtime cross-validator references — stored as inline datum on a UTxO
