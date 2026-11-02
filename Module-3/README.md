@@ -15,7 +15,7 @@ Register DID → Create Self-Stake → Receive Endorsements → Handle Challenge
      │           Decay if            Slash if               History bonus
      │           inactive            falsified              if verified
      ▼
-Agent Registry
+Identity registry (did:vector)
 (Module-independent)
 ```
 
@@ -37,7 +37,7 @@ Two Aiken multi-validators on Plutus V3 (Conway), deployed to both testnet and m
 | `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `7e0d53b6797cd770...` | `5168e1871cfdb1e5...` |
 | `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `715726f3670743b1...` | `77196bed7fb84576...` |
 
-110 Aiken unit tests, 136 Python SDK tests, 12/12 smoke test steps passing on both Vector testnet and mainnet (includes CapabilityVerified and CapabilityFalsified paths).
+Aiken unit tests (`aiken check`), 136 Python SDK tests, 12/12 smoke test steps passing on both Vector testnet and mainnet with the previous deployment (includes CapabilityVerified and CapabilityFalsified paths). The new deployment for the identity registry is not deployed yet.
 
 ## Python SDK
 
@@ -237,11 +237,13 @@ Module-3/
     tests/                                    # 136 unit tests
 
   scripts/
+    deploy_common.py                          # Config builders; deployment inputs and order
     deploy_docker.py                          # Deploy to Vector testnet via Docker
     deploy_ogmios.py                          # Deploy to Vector testnet via Ogmios (remote)
     deploy_mainnet_ogmios.py                  # Deploy to Vector mainnet via Ogmios
-    smoke_test_ogmios.py                      # Full lifecycle smoke test — testnet (12 steps)
-    smoke_test_mainnet_ogmios.py              # Full lifecycle smoke test — mainnet (12 steps)
+    test_deploy_config.py                     # Offline checks of the config builder and the inputs
+    smoke_test_ogmios.py                      # Full lifecycle smoke test — testnet (12 steps, legacy registry)
+    smoke_test_mainnet_ogmios.py              # Full lifecycle smoke test — mainnet (12 steps, legacy registry)
     smoke_test_docker.py                      # Legacy smoke test — Docker/cardano-cli
     setup_wallet_docker.py                    # Docker-based wallet setup
     demo_seed_mainnet.py                      # Resumable demo seed — spans all 5 tiers + sybil cluster
@@ -268,8 +270,15 @@ Module-3/
 # Build contracts
 cd reputation-staking && aiken build
 
-# Run 110 unit tests
+# Run the unit tests
 aiken check
+
+# Check the vendored identity library, then run aiken check in shared/,
+# Module-3 and Module-6
+../shared/scripts/test-contracts.sh
+
+# Offline checks of the deploy config builder (needs cbor2)
+cd Module-3/scripts && python3 test_deploy_config.py
 
 # Run smoke test on Vector testnet (remote — no Docker required)
 cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_ogmios.py
@@ -292,7 +301,7 @@ cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m indexer --with-api
 
 ## External Dependencies
 
-- **Agent Registry** (`be1a0a...`): Agents must have a soulbound NFT before staking
+- **Identity registry** (did:vector, Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in agents-marketplace): an agent's record is a reference input at the exact `identity` script address with its identity token. Stake creation, stake increase, capability update, endorsements, challenges and history bonuses need effective status Active over a validity range of at most one hour, each staked capability in the record, and the controller's signature (the target of an endorsement or a challenge needs status Active and the capabilities, no signature). Exits (DecreaseStake, WithdrawEndorsement, WithdrawChallenge) need only the controller's signature, also for a revoked or retired record. The library is vendored in `shared/lib/vector_identity*` (see `shared/VENDORED.md`). The config field `identity_hash` names the registry.
 - **ProtocolParams**: Datum UTxO at a holder address (22 fields, Module 3-specific)
 - **AP3X Token**: native coin on Vector (= ADA/lovelace)
 - **Foundation Oracle**: Phase 1.0 uses dev wallet key for challenge resolution

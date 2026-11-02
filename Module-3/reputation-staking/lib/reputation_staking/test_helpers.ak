@@ -9,7 +9,7 @@ use cardano/transaction.{
 }
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
-use shared/did_verification.{AgentDatum}
+use shared/identity_fixtures
 use shared/record_auth
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -24,11 +24,7 @@ pub const test_endorsement_policy_id: ByteArray =
 
 pub const test_refs_token_policy: ByteArray = #"cc"
 
-pub const test_registry_policy_id: ByteArray =
-  #"cc00000000000000000000000000000000000000000000000000000000000003"
-
-pub const test_registry_script_hash: ByteArray =
-  #"dd00000000000000000000000000000000000000000000000000000000000004"
+// The identity registry hash of the tests is identity_fixtures.identity_hash.
 
 pub const test_params_script_hash: ByteArray =
   #"ee00000000000000000000000000000000000000000000000000000000000005"
@@ -80,8 +76,6 @@ pub const test_tx_hash: ByteArray =
 pub fn test_config() -> ReputationConfig {
   ReputationConfig {
     refs_token_policy: test_refs_token_policy,
-    registry_policy_id: test_registry_policy_id,
-    registry_script_hash: test_registry_script_hash,
     audit_claim_validator_hash: test_audit_claim_hash,
     audit_challenge_validator_hash: test_audit_challenge_hash,
     audit_jury_pool_hash: test_audit_jury_pool_hash,
@@ -92,6 +86,7 @@ pub fn test_config() -> ReputationConfig {
     ap3x_asset_name: test_ap3x_asset_name,
     oracle_credential: test_oracle_credential,
     params_token_policy: test_params_token_policy,
+    identity_hash: identity_fixtures.identity_hash,
   }
 }
 
@@ -185,29 +180,39 @@ pub fn make_input(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Agent registry reference input builder
+// Identity registry reference input builders
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub fn make_registry_ref_input(
-  agent_did: ByteArray,
-  owner_key_hash: ByteArray,
-) -> Input {
-  let agent_datum =
-    AgentDatum {
-      owner: VerificationKey(owner_key_hash),
-      name: "Test Agent",
-      description: "A test agent",
-      capabilities: ["code_review", "testing", "deployment"],
-      framework: "aiken",
-      endpoint: "https://example.com",
-      registered_at: 0,
-    }
-  let value =
-    assets.from_lovelace(2_000_000)
-      |> assets.add(test_registry_policy_id, agent_did, 1)
-  let output =
-    make_output(script_address(test_registry_script_hash), value, agent_datum)
-  make_input(test_tx_hash, 100, output)
+/// The capabilities of the test identity records.
+pub const test_capabilities: List<ByteArray> =
+  ["code_review", "testing", "deployment"]
+
+/// The key hash of controller key `n` of the identity fixtures. The record of
+/// test_agent_did uses controller 1, the record of test_agent_did_2 uses
+/// controller 2.
+pub fn test_controller_hash(n: Int) -> ByteArray {
+  identity_fixtures.controller_hash(n)
+}
+
+/// The authentic identity record of `agent_did` (Active, controller key `n`,
+/// the test capabilities, created_at 0) as a reference input.
+pub fn make_identity_ref_input(agent_did: ByteArray, n: Int) -> Input {
+  identity_fixtures.record_input(
+    agent_did,
+    identity_fixtures.record(n, test_capabilities),
+  )
+}
+
+/// The signatures of the owner key and of the record controller of
+/// test_agent_did.
+pub fn agent_signers() -> List<ByteArray> {
+  [test_owner_key_hash, test_controller_hash(1)]
+}
+
+/// The signatures of the owner key and of the record controller of
+/// test_agent_did_2.
+pub fn agent_2_signers() -> List<ByteArray> {
+  [test_owner_key_hash_2, test_controller_hash(2)]
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

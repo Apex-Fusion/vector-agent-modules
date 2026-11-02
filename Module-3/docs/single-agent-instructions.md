@@ -25,7 +25,7 @@ You can participate in four roles:
 
 ## Prerequisites
 
-1. **Active DID** — You must have a registered identity in the Agent Registry (soulbound NFT minted under policy `be1a0a...`)
+1. **Identity record** — Your agent needs a record in the identity registry (did:vector). To stake, endorse, challenge or receive a history bonus, the record must have effective status Active (no hold in force, an Accountable Party that covers the transaction's validity range, and for a subagent an Active parent under the current epoch), the record must list each capability that you stake, and the record's controller key must sign. To withdraw a stake, an endorsement or a challenge, only the controller key signs; this also works for a revoked or retired record. Each of these transactions has a validity range of at most one hour.
 2. **AP3X tokens** — The native staking token (= ADA on Vector testnet). Minimum amounts:
    - Staker: 10 AP3X to create a self-stake
    - Endorser: 5 AP3X per endorsement
@@ -205,7 +205,7 @@ Only challenge when you're confident the claim is false. The oracle/jury evaluat
      challenger_did: <your DID>,
      challenger_credential: <your payment credential>,
      target_did: <target's DID>,
-     target_credential: <target's payment credential>,
+     target_credential: <owner_credential of the target's StakeUTXO>,
      challenged_capability: "code_review",
      stake_amount: 25000000,
      evidence_hash: <32 bytes>,
@@ -218,13 +218,15 @@ Only challenge when you're confident the claim is false. The oracle/jury evaluat
    }
    ```
 
+   The contract checks that `target_credential` is the `owner_credential` of the target's StakeUTXO (a reference input), that your record is old enough (`created_at` of your identity record + `min_agent_age` ≤ the lower bound of the validity range), and that the target's record is Active and lists the challenged capability.
+
 4. **Wait for resolution** — The target can respond with counter-evidence within 12 hours. After that, the Foundation oracle resolves the challenge.
 
 ### Possible Outcomes
 
 | Outcome | Effect on You (Challenger) | Effect on Target |
 |---------|---------------------------|-----------------|
-| **CapabilityVerified** | Lose your stake | Target keeps stake, receives history bonus |
+| **CapabilityVerified** | Lose your stake | Target keeps stake and receives your stake (minus fees); a history bonus needs the target's Active record and its controller's signature |
 | **CapabilityFalsified** | Receive target's slashed stake (minus fees) | Stake slashed, endorsers slashed 50% |
 | **Inconclusive** | Stakes returned minus protocol fee (5%) | Stakes returned minus protocol fee |
 
@@ -246,18 +248,18 @@ These govern the module economics. Read them from the Protocol Parameters refere
 | min_self_stake | 10 AP3X | Minimum to create a self-stake |
 | min_endorsement | 5 AP3X | Minimum to mint an endorsement |
 | min_challenge_stake | 25 AP3X | Minimum to create a challenge |
-| stake_cooldown | 21,600 slots (~24h) | Wait time after decreasing stake |
-| endorsement_cooldown | 43,200 slots (~48h) | Wait time after withdrawing endorsement |
+| stake_cooldown | 86,400,000 ms (24h) | Wait time after decreasing stake |
+| endorsement_cooldown | 172,800,000 ms (48h) | Wait time after withdrawing endorsement |
 | decay_rate | 100 bp (1%) | Stake decay per inactive epoch |
 | activity_window | 180 epochs (~30d) | Grace period before decay starts |
 | decay_collector_fee | 500 bp (5%) | Collector's share of claimed decay |
 | max_endorsement_multiplier | 3x | Endorsement cap relative to self-stake |
 | slash_rate_endorser | 5,000 bp (50%) | Endorser slash on falsified target |
 | protocol_fee_rate | 500 bp (5%) | Protocol fee on challenge resolution |
-| challenge_response_deadline | 10,800 slots (~12h) | Time for target to respond |
-| min_agent_age | 21,600 slots (~24h) | Minimum DID age to participate |
-| escalation_window | 5,400 slots (~6h) | Window to escalate to Module 1 |
-| epoch_length | 900 slots (~15m) | Epoch length for decay calculation |
+| challenge_response_deadline | 43,200,000 ms (12h) | Time for target to respond |
+| min_agent_age | 86,400,000 ms (24h) | Minimum age of the challenger's identity record (from its `created_at`) |
+| escalation_window | 21,600,000 ms (6h) | Window to escalate to Module 1 |
+| epoch_length | 14,400,000 ms (4h) | Epoch length for decay calculation |
 
 ---
 
@@ -272,7 +274,7 @@ Both validators (reputation and endorsement) reference each other via a shared `
 ### Reference Inputs (CIP-31)
 
 Most Module 3 transactions use reference inputs rather than consuming shared UTxOs:
-- **Agent Registry NFT** — proves your DID is active (read, not consumed)
+- **Identity records** — your agent's record (and the records of its parents, for a subagent; the target's record for an endorsement or a challenge) at the exact `identity` script address with the identity token (read, not consumed)
 - **Protocol Parameters** — reads module configuration
 - **Cross-Validator References** — reads both validator policy IDs
 
@@ -374,13 +376,13 @@ LOOP:
 
 To set up and run a complete Module 3 instance:
 
-1. Deploy contracts: `python3 scripts/deploy_docker.py`
-2. Register 2+ agent DIDs in the Agent Registry
+1. Deploy the identity registry and the new Module-1 first, then the contracts: `python3 scripts/deploy_docker.py` with `VECTOR_IDENTITY_HASH` and the `VECTOR_MODULE1_*` values set (see `scripts/deploy_common.py`)
+2. Register 2+ agents in the identity registry, each with an Accountable Party
 3. Agent A creates a seed UTXO + self-stake (10+ AP3X)
 4. Agent B mints an endorsement for Agent A (5+ AP3X)
 5. Agent B mints a challenge against Agent A's capability (25+ AP3X)
 6. Foundation oracle resolves the challenge
-7. DistributeOutcome: burns challenge token, mints history bonus, pays target + treasury
+7. DistributeOutcome: burns challenge token, pays target + treasury (a history bonus for the target needs its Active record and its controller's signature)
 8. Verify: indexer shows correct scores, tiers, and history bonuses
 
 For full deployment details, see [`../deploy/DEPLOY.md`](../deploy/DEPLOY.md) or run the smoke test:

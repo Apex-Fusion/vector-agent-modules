@@ -14,7 +14,8 @@ use cardano/transaction.{OutputReference}
 /// An agent's self-stake backing their claimed capabilities.
 /// One StakeUTXO per agent. Updated via IncreaseStake/DecreaseStake.
 pub type StakeDatum {
-  /// DID of the staking agent (NFT asset name from Agent Registry)
+  /// Identity registry identifier of the staking agent (did:vector, the
+  /// asset name of its record token)
   agent_did: ByteArray,
   /// Payment credential of the agent owner
   owner_credential: Credential,
@@ -274,7 +275,7 @@ pub type EndorsementValidatorAction {
 /// Mirror of Module 1 ClaimDatum — used to verify escalation claim existence.
 /// Only the fields needed for Module 3 cross-reads are included.
 pub type AuditClaimDatum {
-  /// DID of the claiming agent (policy_id of their registry NFT)
+  /// Identity registry identifier of the claiming agent
   claimer_did: PolicyId,
   /// Payment credential of claimer
   claimer_credential: Credential,
@@ -307,6 +308,8 @@ pub type AuditClaimState {
 }
 
 /// Mirror of Module 1 ChallengeDatum — used to read verdict after resolution.
+/// The field order and the constructors follow the Module-1 deployment that
+/// this deployment uses (Module-1 adds `claim_token` as the last field).
 pub type AuditChallengeDatum {
   /// Reference to the claim UTXO being challenged
   claim_ref: OutputReference,
@@ -328,6 +331,8 @@ pub type AuditChallengeDatum {
   eligible_jurors: List<PolicyId>,
   /// Current state
   state: AuditChallengeState,
+  /// Asset name of the claim token of the challenged claim
+  claim_token: ByteArray,
 }
 
 /// Mirror of Module 1 ChallengeState.

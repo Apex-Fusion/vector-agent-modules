@@ -26,9 +26,10 @@ use reputation_staking/types.{
   genesis_bonus_token_prefix, history_bonus_token_prefix, stake_token_prefix,
 }
 use reputation_staking/utils.{
-  count_script_inputs, derive_stake_token_name,
-  has_key_signed, has_script_input, starts_with, verify_agent_exists,
+  count_script_inputs, derive_stake_token_name, has_key_signed, has_script_input,
+  starts_with,
 }
+use shared/identity
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -78,6 +79,10 @@ fn resolve_own_hash(own_ref: OutputReference, tx: Transaction) -> ByteArray {
 
 /// Validate the history bonus mint by checking the bonus output datum source.
 /// Dispatches to source-specific validation (Module 1 claim won, jury duty, etc.)
+///
+/// The bonus agent's identity record is Active over the validity range (at
+/// most one hour) and its controller signed the transaction (Part 2 §7 of
+/// `docs/IDENTITY_REGISTRY.md` in agents-marketplace, Module-3 row).
 fn validate_history_bonus_mint(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -108,9 +113,19 @@ fn validate_history_bonus_mint(
   expect InlineDatum(raw) = bonus_output.datum
   expect bonus_datum: HistoryBonusDatum = raw
 
-  // Agent must have active DID
-  let agent_exists =
-    verify_agent_exists(tx.reference_inputs, cfg, bonus_datum.agent_did)
+  // The agent's identity record is Active and its controller signed
+  let agent_ok =
+    when identity.window(tx.validity_range) is {
+      Some(w) ->
+        identity.controller_opens(
+          tx,
+          cfg.identity_hash,
+          bonus_datum.agent_did,
+          w,
+          [],
+        )
+      None -> False
+    }
 
   // Source-specific validation
   let source_valid =
@@ -134,7 +149,7 @@ fn validate_history_bonus_mint(
       _ -> True
     }
 
-  agent_exists && source_valid
+  agent_ok && source_valid
 }
 
 /// Validate genesis bonus minting rules.

@@ -4,7 +4,7 @@
 /// and history bonus minting from Module 1 events.
 
 use aiken/builtin
-use cardano/address.{VerificationKey}
+use cardano/address.{Credential, VerificationKey}
 use cardano/assets
 use cardano/transaction.{Input, Output, OutputReference, Transaction}
 use reputation_staking/challenge_validation
@@ -114,6 +114,7 @@ fn make_module1_resolved_challenge_ref_input(
       resolution_deadline: 5_400_000,
       eligible_jurors: [],
       state: AuditResolved { verdict },
+      claim_token: "claim_token_001",
     }
   let value = assets.from_lovelace(27_000_000)
   let output =
@@ -508,6 +509,64 @@ test resolve_escalation_not_escalated_fails() fail {
   let tx =
     Transaction { ..base_tx(10_000), reference_inputs: [] }
 
+  challenge_validation.validate_resolve_escalation(tx, cfg, input_datum, output_datum)
+}
+
+/// The Module-1 ChallengeDatum of the previous Module-1 deployment: the
+/// current fields without `claim_token`.
+type PreviousAuditChallengeDatum {
+  claim_ref: OutputReference,
+  auditor_did: ByteArray,
+  auditor_credential: Credential,
+  stake_amount: Int,
+  evidence_hash: ByteArray,
+  evidence_uri: ByteArray,
+  challenged_at: Int,
+  resolution_deadline: Int,
+  eligible_jurors: List<ByteArray>,
+  state: types.AuditChallengeState,
+}
+
+/// A challenge of the previous Module-1 layout does not decode as the mirror
+/// of the Module-1 deployment that Module-3 uses.
+test resolve_escalation_previous_module1_layout_fails() fail {
+  let cfg = test_config()
+  let audit_claim_ref = test_audit_claim_ref()
+  let input_datum =
+    ReputationChallengeDatum {
+      ..test_challenge_datum(),
+      state: Escalated { audit_claim_ref },
+    }
+  let output_datum =
+    ReputationChallengeDatum {
+      ..input_datum,
+      state: Resolved { outcome: CapabilityVerified },
+    }
+  let previous_datum =
+    PreviousAuditChallengeDatum {
+      claim_ref: audit_claim_ref,
+      auditor_did: test_agent_did_2,
+      auditor_credential: VerificationKey(test_owner_key_hash_2),
+      stake_amount: 25_000_000,
+      evidence_hash: #"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      evidence_uri: "ipfs://audit-evidence",
+      challenged_at: 5_000,
+      resolution_deadline: 5_400_000,
+      eligible_jurors: [],
+      state: AuditResolved { verdict: ClaimerWins },
+    }
+  let g1_challenge_ref =
+    make_input(
+      #"3333333333333333333333333333333333333333333333333333333333333333",
+      0,
+      make_output(
+        script_address(cfg.audit_challenge_validator_hash),
+        assets.from_lovelace(27_000_000),
+        previous_datum,
+      ),
+    )
+  let tx =
+    Transaction { ..base_tx(10_000), reference_inputs: [g1_challenge_ref] }
   challenge_validation.validate_resolve_escalation(tx, cfg, input_datum, output_datum)
 }
 

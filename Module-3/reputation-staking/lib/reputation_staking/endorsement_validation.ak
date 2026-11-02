@@ -3,6 +3,15 @@
 /// Validates endorsement operations: MintEndorsementToken, IncreaseEndorsement,
 /// and WithdrawEndorsement.
 /// See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 6.3, 6.3b, 6.4.
+///
+/// Identity registry checks (Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in
+/// agents-marketplace, Module-3 row): creating or increasing an endorsement
+/// needs the endorser's record with effective status Active and the
+/// endorser's controller signature (in addition to the endorser_credential
+/// signature), and the target's record with effective status Active that
+/// lists each endorsed capability. Withdrawing (an exit) needs only the
+/// endorser's controller signature; the record can have any status. Each of
+/// these actions has a validity range of at most one hour.
 
 use aiken/collection/list
 use cardano/address.{Script}
@@ -10,14 +19,15 @@ use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output, Transaction}
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
-use reputation_staking/time
 use reputation_staking/types.{
   Challenge, EndorsementDatum, EndorsementValidatorDatum, Open, StakeDatum,
 }
 use reputation_staking/utils.{
   derive_endorsement_token_name, derive_stake_token_name, get_ap3x_amount,
-  has_credential_signed, is_non_empty, is_subset, starts_with, verify_agent_exists,
+  has_credential_signed, is_non_empty, is_subset, starts_with,
 }
+use shared/identity
+use shared/identity.{Window}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // MintEndorsementToken (Section 6.3)
@@ -26,15 +36,17 @@ use reputation_staking/utils.{
 /// Validate creation of a new endorsement.
 ///
 /// MUST:
-///   1. Endorser has active DID in Agent Registry
-///   2. Target agent has active DID AND active StakeUTXO
+///   1. The endorser's identity record is Active over the validity range,
+///      the endorser's controller signed, and endorser_credential signed
+///   2. The target's identity record is Active over the validity range and
+///      lists each endorsed capability; the target has an active StakeUTXO
 ///   3. endorser_did != target_did (cannot self-endorse)
 ///   4. Endorsement token asset name = deterministic hash of pair
 ///   5. stake_amount >= MIN_ENDORSEMENT
 ///   6. endorsed_capabilities is non-empty and subset of target's staked_capabilities
 ///   7. EndorsementUTXO created at endorsement validator address
-///   8. Transaction signed by endorser_credential
-///   9. created_at is the lower bound of a validity range of at most one hour
+///   8. The validity range is at most one hour long
+///   9. created_at is the lower bound of the validity range
 pub fn validate_mint_endorsement(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -43,14 +55,6 @@ pub fn validate_mint_endorsement(
   output_datum: EndorsementDatum,
   output: Output,
 ) -> Bool {
-  // Rule 1: Endorser exists in registry
-  let endorser_exists =
-    verify_agent_exists(tx.reference_inputs, cfg, output_datum.endorser_did)
-
-  // Rule 2: Target exists in registry
-  let target_exists =
-    verify_agent_exists(tx.reference_inputs, cfg, output_datum.target_did)
-
   // Rule 2: Target has active StakeUTXO (verified via reference input)
   let target_has_stake =
     verify_target_has_stake(
@@ -113,18 +117,45 @@ pub fn validate_mint_endorsement(
     get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
   let value_correct = output_ap3x >= output_datum.stake_amount
 
-  // Rule 8: Signed by endorser
-  let signed = has_credential_signed(tx, output_datum.endorser_credential)
+  // Rules 1, 2, 8 and 9: identity records, signature and created_at
+  when identity.window(tx.validity_range) is {
+    Some(w) -> and {
+        endorsement_identities_ok(tx, cfg, output_datum, w),
+        output_datum.created_at == w.lo,
+        target_has_stake,
+        not_self_endorse,
+        has_correct_token,
+        token_is_new,
+        meets_minimum,
+        has_capabilities,
+        capabilities_valid,
+        at_validator,
+        value_correct,
+        has_credential_signed(tx, output_datum.endorser_credential),
+      }
+    None -> False
+  }
+}
 
-  // Rule 9: created_at is the time of this transaction. The withdrawal
-  // cooldown counts from created_at.
-  let created_now =
-    when time.bounded_lower_bound(tx) is {
-      Some(lo) -> output_datum.created_at == lo
-      None -> False
-    }
-
-  endorser_exists && target_exists && target_has_stake && not_self_endorse && has_correct_token && token_is_new && meets_minimum && has_capabilities && capabilities_valid && at_validator && value_correct && signed && created_now
+/// The identity checks of creating or increasing an endorsement: the
+/// endorser's record is Active over `w` and its controller signed; the
+/// target's record is Active over `w` and lists each endorsed capability.
+fn endorsement_identities_ok(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  datum: EndorsementDatum,
+  w: Window,
+) -> Bool {
+  and {
+    identity.controller_opens(tx, cfg.identity_hash, datum.endorser_did, w, []),
+    identity.active_with_capabilities(
+      tx.reference_inputs,
+      cfg.identity_hash,
+      datum.target_did,
+      w,
+      datum.endorsed_capabilities,
+    ),
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -140,7 +171,10 @@ pub fn validate_mint_endorsement(
 ///   4. Additional AP3X provided
 ///   5. endorsed_capabilities may be updated (cannot remove challenged ones)
 ///   6. Continuing EndorsementUTXO with updated amount, preserved created_at
-///   7. Transaction signed by endorser_credential
+///   7. The endorser's record is Active and its controller signed; the
+///      target's record is Active and lists each endorsed capability; the
+///      validity range is at most one hour long
+///   8. Transaction signed by endorser_credential
 pub fn validate_increase_endorsement(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -191,17 +225,30 @@ pub fn validate_increase_endorsement(
       _ -> False
     }
 
-  // Rule 7: Signed by endorser
-  let signed = has_credential_signed(tx, input_datum.endorser_credential)
-
-  same_endorser && same_target && same_credential && amount_increased && capabilities_unchanged && created_at_preserved && value_correct && has_token && at_validator && signed
+  // Rule 7: identity records and the endorser's controller signature
+  when identity.window(tx.validity_range) is {
+    Some(w) -> and {
+        endorsement_identities_ok(tx, cfg, input_datum, w),
+        same_endorser,
+        same_target,
+        same_credential,
+        amount_increased,
+        capabilities_unchanged,
+        created_at_preserved,
+        value_correct,
+        has_token,
+        at_validator,
+        has_credential_signed(tx, input_datum.endorser_credential),
+      }
+    None -> False
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // WithdrawEndorsement (Section 6.4)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Validate withdrawal of an endorsement.
+/// Validate withdrawal of an endorsement (an exit).
 ///
 /// MUST:
 ///   1. Endorsement exists (endorsement token present in input)
@@ -209,7 +256,9 @@ pub fn validate_increase_endorsement(
 ///   3. Target agent has no active challenges
 ///   4. Stake returned to endorser_credential
 ///   5. Endorsement token burned
-///   6. Transaction signed by endorser_credential
+///   6. Transaction signed by the controller of the endorser's identity
+///      record. The record can have any status (also a revoked or retired
+///      record), and the validity range is at most one hour.
 pub fn validate_withdraw_endorsement(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -257,10 +306,21 @@ pub fn validate_withdraw_endorsement(
       expected_token_name,
     ) == -1
 
-  // Rule 6: Signed by endorser
-  let signed = has_credential_signed(tx, input_datum.endorser_credential)
-
-  cooldown_met && no_active_challenges && endorser_paid && token_burned && signed
+  // Rule 6: Signed by the endorser's controller (no status gate)
+  when identity.window(tx.validity_range) is {
+    Some(_) -> and {
+        identity.controller_exits(
+          tx,
+          cfg.identity_hash,
+          input_datum.endorser_did,
+        ),
+        cooldown_met,
+        no_active_challenges,
+        endorser_paid,
+        token_burned,
+      }
+    None -> False
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

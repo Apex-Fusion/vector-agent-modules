@@ -11,11 +11,12 @@ use cardano/transaction.{Input, Output, OutputReference, Transaction}
 use endorsement
 use reputation_staking/challenge_validation.{challenge_timeout}
 use reputation_staking/test_helpers.{
-  base_tx, key_address, make_input, make_output, make_output_no_datum,
-  make_params_ref_input, script_address, test_agent_did, test_agent_did_2,
-  test_ap3x_asset_name, test_ap3x_policy_id, test_config,
-  test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
-  test_params, test_refs, test_refs_token_policy, test_tx_hash,
+  base_tx, key_address, make_identity_ref_input, make_input, make_output,
+  make_output_no_datum, make_params_ref_input, script_address, test_agent_did,
+  test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
+  test_controller_hash, test_endorsement_policy_id, test_owner_key_hash,
+  test_owner_key_hash_2, test_params, test_refs, test_refs_token_policy,
+  test_tx_hash,
 }
 use reputation_staking/types.{
   CapabilityFalsified, Challenge, ChallengeSpend, DefaultJudgment,
@@ -257,14 +258,22 @@ test default_judgment_taking_more_than_fee_fails() fail {
 // WithdrawChallenge: the deadline check uses the upper bound
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// A challenge withdrawal: the challenger's identity record is a reference
+/// input and its controller signs.
 fn withdraw_tx(validity_range: interval.Interval) -> Transaction {
-  Transaction {
-    ..challenge_tx(
+  let tx =
+    challenge_tx(
       open_challenge(),
       0,
       [ap3x_to(test_owner_key_hash, challenge_stake)],
-      [test_owner_key_hash],
-    ),
+      [test_controller_hash(1)],
+    )
+  Transaction {
+    ..tx,
+    reference_inputs: [
+      make_identity_ref_input(test_agent_did, 1),
+      ..tx.reference_inputs
+    ],
     validity_range,
     mint: assets.from_asset(test_endorsement_policy_id, challenge_token(), -1),
   }

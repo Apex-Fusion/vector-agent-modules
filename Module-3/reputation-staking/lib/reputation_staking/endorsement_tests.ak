@@ -8,8 +8,8 @@ use reputation_staking/endorsement_validation.{
   validate_withdraw_endorsement,
 }
 use reputation_staking/test_helpers.{
-  base_tx, key_address, make_input, make_output,
-  make_registry_ref_input, script_address, test_agent_did, test_agent_did_2,
+  agent_signers, base_tx, key_address, make_identity_ref_input, make_input,
+  make_output, script_address, test_agent_did, test_agent_did_2,
   test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
   test_params, test_refs, test_reputation_policy_id, test_tx_hash,
@@ -84,9 +84,9 @@ test mint_endorsement_happy_path() {
       output_datum,
     )
 
-  // Reference inputs: both agents in registry + target's stake
-  let endorser_reg = make_registry_ref_input(test_agent_did, test_owner_key_hash)
-  let target_reg = make_registry_ref_input(test_agent_did_2, test_owner_key_hash_2)
+  // Reference inputs: both identity records + target's stake
+  let endorser_reg = make_identity_ref_input(test_agent_did, 1)
+  let target_reg = make_identity_ref_input(test_agent_did_2, 2)
   let target_stake = make_target_stake_ref(test_agent_did_2, test_owner_key_hash_2)
 
   let tx =
@@ -96,7 +96,7 @@ test mint_endorsement_happy_path() {
             ..t,
             reference_inputs: [endorser_reg, target_reg, target_stake],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -135,7 +135,7 @@ test mint_endorsement_self_endorse_fails() fail {
       output_datum,
     )
 
-  let agent_reg = make_registry_ref_input(test_agent_did, test_owner_key_hash)
+  let agent_reg = make_identity_ref_input(test_agent_did, 1)
   let agent_stake = make_target_stake_ref(test_agent_did, test_owner_key_hash)
 
   let tx =
@@ -145,7 +145,7 @@ test mint_endorsement_self_endorse_fails() fail {
             ..t,
             reference_inputs: [agent_reg, agent_stake],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -185,8 +185,8 @@ test mint_endorsement_below_minimum_fails() fail {
       output_datum,
     )
 
-  let endorser_reg = make_registry_ref_input(test_agent_did, test_owner_key_hash)
-  let target_reg = make_registry_ref_input(test_agent_did_2, test_owner_key_hash_2)
+  let endorser_reg = make_identity_ref_input(test_agent_did, 1)
+  let target_reg = make_identity_ref_input(test_agent_did_2, 2)
   let target_stake = make_target_stake_ref(test_agent_did_2, test_owner_key_hash_2)
 
   let tx =
@@ -196,7 +196,7 @@ test mint_endorsement_below_minimum_fails() fail {
             ..t,
             reference_inputs: [endorser_reg, target_reg, target_stake],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -251,8 +251,12 @@ test increase_endorsement_happy_path() {
       |> fn(t) {
           Transaction {
             ..t,
+            reference_inputs: [
+              make_identity_ref_input(test_agent_did, 1),
+              make_identity_ref_input(test_agent_did_2, 2),
+            ],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -299,11 +303,11 @@ test withdraw_endorsement_happy_path() {
       |> fn(t) {
           Transaction {
             ..t,
-            reference_inputs: [],
+            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
             outputs: [endorser_return_output],
             mint: assets.from_lovelace(0)
               |> assets.add(test_endorsement_policy_id, token_name, -1),
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -337,9 +341,10 @@ test withdraw_endorsement_too_early_fails() fail {
       |> fn(t) {
           Transaction {
             ..t,
+            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
             mint: assets.from_lovelace(0)
               |> assets.add(test_endorsement_policy_id, token_name, -1),
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -382,12 +387,12 @@ fn mint_endorsement_with(
       ..base_tx(0),
       validity_range,
       reference_inputs: [
-        make_registry_ref_input(test_agent_did, test_owner_key_hash),
-        make_registry_ref_input(test_agent_did_2, test_owner_key_hash_2),
+        make_identity_ref_input(test_agent_did, 1),
+        make_identity_ref_input(test_agent_did_2, 2),
         make_target_stake_ref(test_agent_did_2, test_owner_key_hash_2),
       ],
       outputs: [output],
-      extra_signatories: [test_owner_key_hash],
+      extra_signatories: agent_signers(),
     }
   validate_mint_endorsement(tx, test_config(), test_refs(), test_params(), output_datum, output)
 }

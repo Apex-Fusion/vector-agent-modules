@@ -15,9 +15,9 @@ use reputation_staking/challenge_validation.{
   validate_resolve_challenge,
 }
 use reputation_staking/test_helpers.{
-  base_tx, key_address, make_input, make_output, make_output_no_datum,
-  make_registry_ref_input, script_address, test_agent_did, test_agent_did_2,
-  test_ap3x_asset_name, test_ap3x_policy_id, test_config,
+  agent_signers, base_tx, key_address, make_identity_ref_input, make_input,
+  make_output, make_output_no_datum, script_address, test_agent_did,
+  test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_endorsement_policy_id, test_oracle_credential, test_owner_key_hash,
   test_owner_key_hash_2, test_params, test_refs, test_reputation_policy_id,
   test_tx_hash,
@@ -432,8 +432,8 @@ test expire_challenge_without_token_burn_fails() {
 // MintChallengeToken: created_at is the time of the transaction
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Time of the challenge transactions below. The challenger registered at 0,
-/// so it is older than min_agent_age (24 h).
+/// Time of the challenge transactions below. The challenger's record has
+/// created_at 0, so it is older than min_agent_age (24 h).
 const challenge_time: Int = 1_700_000_000_000
 
 fn target_stake_ref() -> transaction.Input {
@@ -491,12 +491,12 @@ fn mint_challenge_with(
       ..base_tx(0),
       validity_range,
       reference_inputs: [
-        make_registry_ref_input(test_agent_did, test_owner_key_hash),
-        make_registry_ref_input(test_agent_did_2, test_owner_key_hash_2),
+        make_identity_ref_input(test_agent_did, 1),
+        make_identity_ref_input(test_agent_did_2, 2),
         target_stake_ref(),
       ],
       outputs: [output],
-      extra_signatories: [test_owner_key_hash],
+      extra_signatories: agent_signers(),
     }
   validate_mint_challenge(tx, test_config(), test_refs(), test_params(), output_datum, output)
 }

@@ -32,9 +32,10 @@ use reputation_staking/types.{
   endorsement_token_prefix,
 }
 use reputation_staking/utils.{
-  count_script_inputs, derive_challenge_token_name, derive_endorsement_token_name,
-  get_ap3x_amount, has_credential_signed, has_script_input, starts_with,
+  count_script_inputs, derive_challenge_token_name,
+  derive_endorsement_token_name, get_ap3x_amount, has_script_input, starts_with,
 }
+use shared/identity
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers (must come before validator for Aiken parser)
@@ -324,10 +325,14 @@ fn validate_endorsement_slash(
   at_endorsement && has_challenge_token && same_target && is_falsified && capability_endorsed && output_valid && payouts_valid && treasury_paid
 }
 
-/// Validate challenge withdrawal.
+/// Validate challenge withdrawal (an exit).
 ///
 /// The upper bound of the validity range is before
-/// created_at + challenge_response_deadline.
+/// created_at + challenge_response_deadline. The controller of the
+/// challenger's identity record signs; the record can have any status (also
+/// a revoked or retired record), and the validity range is at most one hour
+/// long (Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in agents-marketplace,
+/// Module-3 row).
 fn validate_challenge_withdrawal(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -356,7 +361,12 @@ fn validate_challenge_withdrawal(
       refs.endorsement_policy_id,
       token_name,
     ) == -1
-  let signed = has_credential_signed(tx, challenge_datum.challenger_credential)
+  let signed =
+    identity.controller_exits(
+      tx,
+      cfg.identity_hash,
+      challenge_datum.challenger_did,
+    )
 
   // Verify AP3X returned to challenger
   let challenger_paid =
@@ -371,7 +381,17 @@ fn validate_challenge_withdrawal(
       },
     )
 
-  state_open && before_deadline && no_response && token_burned && signed && challenger_paid
+  when identity.window(tx.validity_range) is {
+    Some(_) -> and {
+        signed,
+        state_open,
+        before_deadline,
+        no_response,
+        token_burned,
+        challenger_paid,
+      }
+    None -> False
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

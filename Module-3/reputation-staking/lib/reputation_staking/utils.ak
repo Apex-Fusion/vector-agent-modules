@@ -1,84 +1,24 @@
 /// Utility functions for Module 3: Reputation Staking.
 ///
-/// DID verification, capability matching, credential checks, and byte helpers
-/// delegate to the shared library (shared/). Token name derivation and AP3X
-/// helpers remain Module 3–specific.
+/// Credential checks and byte helpers delegate to the shared library
+/// (shared/). Token name derivation and AP3X helpers remain Module 3–specific.
+/// Identity registry checks are in shared/identity.
 ///
-/// This module re-exports shared functions with Module 3's config-based
-/// signatures so that all validation code can import from a single place.
+/// Validation code imports these helpers from this single place.
 
 use aiken/builtin
 use aiken/collection/list
 use cardano/address.{Credential, Script, VerificationKey}
 use cardano/assets
 use cardano/transaction.{Input, OutputReference, Transaction}
-use reputation_staking/config.{ReputationConfig}
 use reputation_staking/types.{
   challenge_token_prefix, endorsement_token_prefix, history_bonus_token_prefix,
   stake_token_prefix,
 }
 use shared/bytearray as shared_bytearray
 use shared/credential as shared_credential
-use shared/did_verification
 use shared/token_naming
 use shared/utxo
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Agent DID verification (delegates to shared/did_verification)
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Agent Registry datum type — re-exported from shared for backwards compatibility.
-pub type AgentDatum =
-  did_verification.AgentDatum
-
-/// Find and return the AgentDatum for a given DID from reference inputs.
-pub fn find_agent_registry_datum(
-  reference_inputs: List<Input>,
-  cfg: ReputationConfig,
-  agent_did: ByteArray,
-) -> AgentDatum {
-  did_verification.find_agent_registry_datum(
-    reference_inputs,
-    cfg.registry_script_hash,
-    cfg.registry_policy_id,
-    agent_did,
-  )
-}
-
-/// Verify that an agent DID exists in the registry (boolean check).
-pub fn verify_agent_exists(
-  reference_inputs: List<Input>,
-  cfg: ReputationConfig,
-  agent_did: ByteArray,
-) -> Bool {
-  did_verification.verify_agent_exists(
-    reference_inputs,
-    cfg.registry_script_hash,
-    cfg.registry_policy_id,
-    agent_did,
-  )
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Capability matching (delegates to shared/did_verification)
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Verify that claimed capabilities are a subset of the agent's registered
-/// capabilities in the Agent Registry.
-pub fn verify_capabilities_match(
-  reference_inputs: List<Input>,
-  cfg: ReputationConfig,
-  agent_did: ByteArray,
-  claimed_capabilities: List<ByteArray>,
-) -> Bool {
-  did_verification.verify_capabilities_match(
-    reference_inputs,
-    cfg.registry_script_hash,
-    cfg.registry_policy_id,
-    agent_did,
-    claimed_capabilities,
-  )
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Credential / signature checks

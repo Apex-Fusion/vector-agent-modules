@@ -8,10 +8,10 @@ use reputation_staking/stake_validation.{
   validate_update_capabilities,
 }
 use reputation_staking/test_helpers.{
-  base_tx, key_address, make_output, make_output_no_datum, make_params_ref_input,
-  make_registry_ref_input,
-  script_address, test_agent_did, test_ap3x_asset_name, test_ap3x_policy_id,
-  test_config, test_owner_key_hash, test_params, test_refs, test_reputation_policy_id,
+  agent_signers, base_tx, key_address, make_identity_ref_input, make_output,
+  make_output_no_datum, make_params_ref_input, script_address, test_agent_did,
+  test_ap3x_asset_name, test_ap3x_policy_id, test_config, test_owner_key_hash,
+  test_params, test_refs, test_reputation_policy_id,
 }
 use reputation_staking/types.{StakeDatum}
 use reputation_staking/utils.{derive_stake_token_name}
@@ -51,7 +51,7 @@ test create_stake_happy_path() {
       output_datum,
     )
 
-  let registry_ref = make_registry_ref_input(test_agent_did, test_owner_key_hash)
+  let registry_ref = make_identity_ref_input(test_agent_did, 1)
   let params_ref = make_params_ref_input()
 
   let tx =
@@ -61,7 +61,7 @@ test create_stake_happy_path() {
             ..t,
             reference_inputs: [registry_ref, params_ref],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -100,7 +100,7 @@ test create_stake_below_minimum_fails() fail {
       output_datum,
     )
 
-  let registry_ref = make_registry_ref_input(test_agent_did, test_owner_key_hash)
+  let registry_ref = make_identity_ref_input(test_agent_did, 1)
   let params_ref = make_params_ref_input()
 
   let tx =
@@ -110,7 +110,7 @@ test create_stake_below_minimum_fails() fail {
             ..t,
             reference_inputs: [registry_ref, params_ref],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -149,7 +149,7 @@ test create_stake_empty_capabilities_fails() fail {
       output_datum,
     )
 
-  let registry_ref = make_registry_ref_input(test_agent_did, test_owner_key_hash)
+  let registry_ref = make_identity_ref_input(test_agent_did, 1)
   let params_ref = make_params_ref_input()
 
   let tx =
@@ -159,7 +159,7 @@ test create_stake_empty_capabilities_fails() fail {
             ..t,
             reference_inputs: [registry_ref, params_ref],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -214,8 +214,9 @@ test increase_stake_happy_path() {
       |> fn(t) {
           Transaction {
             ..t,
+            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -267,8 +268,9 @@ test increase_stake_decrease_fails() fail {
       |> fn(t) {
           Transaction {
             ..t,
+            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -334,9 +336,9 @@ test decrease_stake_happy_path() {
       |> fn(t) {
           Transaction {
             ..t,
-            reference_inputs: [],
+            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
             outputs: [output, owner_withdrawal_output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -392,8 +394,9 @@ test decrease_stake_cooldown_not_met_fails() fail {
       |> fn(t) {
           Transaction {
             ..t,
+            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -450,8 +453,9 @@ test decrease_stake_below_minimum_fails() fail {
       |> fn(t) {
           Transaction {
             ..t,
+            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 
@@ -506,7 +510,7 @@ test update_capabilities_happy_path() {
       output_datum,
     )
 
-  let registry_ref = make_registry_ref_input(test_agent_did, test_owner_key_hash)
+  let registry_ref = make_identity_ref_input(test_agent_did, 1)
 
   let tx =
     base_tx(current_slot)
@@ -515,7 +519,7 @@ test update_capabilities_happy_path() {
             ..t,
             reference_inputs: [registry_ref],
             outputs: [output],
-            extra_signatories: [test_owner_key_hash],
+            extra_signatories: agent_signers(),
           }
         }
 

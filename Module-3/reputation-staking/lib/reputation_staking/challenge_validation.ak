@@ -6,11 +6,18 @@
 ///
 /// Times are POSIX milliseconds; see reputation_staking/time for the rules
 /// on validity range bounds.
+///
+/// Identity registry checks (Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in
+/// agents-marketplace, Module-3 row): opening a challenge needs the
+/// challenger's record with effective status Active, old enough by its
+/// `created_at`, and the challenger's controller signature (in addition to
+/// the challenger_credential signature), and the target's record with
+/// effective status Active that lists the challenged capability. The
+/// validity range is at most one hour long.
 
 use aiken/builtin
 use aiken/collection/list
-use aiken/interval.{Finite}
-use cardano/address.{Script, VerificationKey}
+use cardano/address.{Credential, Script, VerificationKey}
 use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
@@ -22,13 +29,14 @@ use reputation_staking/types.{
   AuditorWins, ClaimerWins, AuditInconclusive,
   CapabilityFalsified, CapabilityVerified, Escalated, Inconclusive, Open,
   RepChallengeOutcome, ReputationChallengeDatum, Resolved, StakeDatum,
-  history_bonus_token_prefix,
 }
 use reputation_staking/utils.{
-  derive_challenge_token_name, derive_stake_token_name, find_agent_registry_datum,
-  get_ap3x_amount, has_credential_signed,
-  has_key_signed, starts_with, verify_agent_exists,
+  derive_challenge_token_name, derive_stake_token_name, get_ap3x_amount,
+  has_credential_signed, has_key_signed,
 }
+use shared/identity
+use shared/identity.{Window}
+use vector_identity.{controller_signed}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // MintChallengeToken (Section 6.8)
@@ -37,10 +45,14 @@ use reputation_staking/utils.{
 /// Validate creation of a new reputation challenge.
 ///
 /// MUST:
-///   1. Challenger has active DID in Agent Registry
-///   2. Target agent has active DID AND active StakeUTXO
+///   1. The challenger's identity record is Active over the validity range,
+///      its controller signed, and it was created at least MIN_AGENT_AGE
+///      before the lower bound of the validity range (`created_at`)
+///   2. The target's identity record is Active over the validity range and
+///      lists the challenged capability; the target has an active StakeUTXO
 ///   3. challenger_did != target_did
-///   4. challenged_capability is in target's staked_capabilities
+///   4. challenged_capability is in target's staked_capabilities, and
+///      target_credential is the owner_credential of the target's StakeUTXO
 ///   5. stake_amount >= MIN_CHALLENGE_STAKE
 ///   6. evidence_hash is exactly 32 bytes
 ///   7. No existing open challenge from this challenger for same capability
@@ -55,38 +67,20 @@ pub fn validate_mint_challenge(
   output_datum: ReputationChallengeDatum,
   output: Output,
 ) -> Bool {
-  // Rule 1: Challenger exists
-  let challenger_exists =
-    verify_agent_exists(tx.reference_inputs, cfg, output_datum.challenger_did)
-
-  // Rule 2: Target exists
-  let target_exists =
-    verify_agent_exists(tx.reference_inputs, cfg, output_datum.target_did)
-
-  // Rule 2: Target has active StakeUTXO with the challenged capability
+  // Rules 2 and 4: Target has active StakeUTXO with the challenged
+  // capability, and the challenge names the stake's owner credential
   let target_stake_valid =
-    verify_target_capability(
+    verify_target_stake(
       tx.reference_inputs,
       refs,
       output_datum.target_did,
       output_datum.challenged_capability,
+      output_datum.target_credential,
     )
 
   // Rule 3: No self-challenge
   let not_self_challenge =
     output_datum.challenger_did != output_datum.target_did
-
-  // MIN_AGENT_AGE check: challenger must have been registered for min_agent_age slots
-  let challenger_agent =
-    find_agent_registry_datum(tx.reference_inputs, cfg, output_datum.challenger_did)
-  let validity_lower =
-    when tx.validity_range.lower_bound.bound_type is {
-      Finite(slot) -> slot
-      _ -> 0
-    }
-  let challenger_old_enough =
-    validity_lower >= challenger_agent.registered_at + params.min_agent_age
-
   // Rule 5: Minimum challenge stake
   let meets_minimum = output_datum.stake_amount >= params.min_challenge_stake
 
@@ -128,14 +122,6 @@ pub fn validate_mint_challenge(
   let initial_state_clean =
     output_datum.counter_evidence_hash == "" && output_datum.counter_evidence_uri == "" && output_datum.response_submitted_at == 0
 
-  // Rule 10: created_at is the time of this transaction. The deadlines of the
-  // challenge count from created_at.
-  let created_now =
-    when time.bounded_lower_bound(tx) is {
-      Some(lo) -> output_datum.created_at == lo
-      None -> False
-    }
-
   // Output at endorsement validator
   let at_validator =
     when output.address.payment_credential is {
@@ -151,7 +137,60 @@ pub fn validate_mint_challenge(
   // Rule 9: Signed by challenger
   let signed = has_credential_signed(tx, output_datum.challenger_credential)
 
-  challenger_exists && target_exists && target_stake_valid && not_self_challenge && challenger_old_enough && meets_minimum && evidence_valid && token_is_new && has_correct_token && state_open && initial_state_clean && created_now && at_validator && value_correct && signed
+  // Rules 1, 2 and 10: identity records, the challenger's age and signature,
+  // and created_at (the deadlines of the challenge count from created_at)
+  when identity.window(tx.validity_range) is {
+    Some(w) -> and {
+        challenger_ok(tx, cfg, params, output_datum.challenger_did, w),
+        identity.active_with_capabilities(
+          tx.reference_inputs,
+          cfg.identity_hash,
+          output_datum.target_did,
+          w,
+          [output_datum.challenged_capability],
+        ),
+        output_datum.created_at == w.lo,
+        target_stake_valid,
+        not_self_challenge,
+        meets_minimum,
+        evidence_valid,
+        token_is_new,
+        has_correct_token,
+        state_open,
+        initial_state_clean,
+        at_validator,
+        value_correct,
+        signed,
+      }
+    None -> False
+  }
+}
+
+/// The challenger's identity record is Active over `w`, its controller
+/// signed, and it was created at least `min_agent_age` before `w.lo`. The age
+/// comes from the record's `created_at` (the upper bound of the validity
+/// range of the registering transaction).
+fn challenger_ok(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  params: ProtocolParams,
+  challenger_did: ByteArray,
+  w: Window,
+) -> Bool {
+  when
+    identity.active_record(
+      tx.reference_inputs,
+      cfg.identity_hash,
+      challenger_did,
+      w,
+    )
+  is {
+    Some(record) -> and {
+        controller_signed(record, tx),
+        record.created_at + params.min_agent_age <= w.lo,
+      }
+    None -> False
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -201,7 +240,7 @@ pub fn validate_respond_to_challenge(
 
   // Rule 7: Continuing datum — all fields preserved except response fields
   let datum_preserved =
-    output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.state == Open
+    same_terms(output_datum, input_datum) && output_datum.state == Open
 
   // Response fields updated
   let response_updated =
@@ -271,8 +310,7 @@ pub fn validate_default_judgment(
     }
 
   // All other datum fields preserved (stake_amount preserved — fee deducted during DistributeOutcome)
-  let datum_preserved =
-    output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
+  let datum_preserved = same_terms_and_response(output_datum, input_datum)
 
   state_open && past_deadline && no_response && resolved_correctly && fee_paid && datum_preserved
 }
@@ -301,8 +339,7 @@ pub fn validate_resolve_challenge(
   let resolved_correctly = output_datum.state == Resolved { outcome }
 
   // All other datum fields preserved
-  let datum_preserved =
-    output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
+  let datum_preserved = same_terms_and_response(output_datum, input_datum)
 
   state_open && oracle_signed && resolved_correctly && datum_preserved
 }
@@ -390,8 +427,7 @@ pub fn validate_escalate_to_audit(
     output_datum.state == Escalated { audit_claim_ref }
 
   // Rule 6: All other datum fields preserved
-  let datum_preserved =
-    output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
+  let datum_preserved = same_terms_and_response(output_datum, input_datum)
 
   state_open && has_response && within_window && authorized && claim_output_valid && state_escalated && datum_preserved
 }
@@ -470,8 +506,7 @@ pub fn validate_resolve_escalation(
   let resolved_correctly = output_datum.state == Resolved { outcome: mapped_outcome }
 
   // Rule 6: All other datum fields preserved
-  let datum_preserved =
-    output_datum.challenger_did == input_datum.challenger_did && output_datum.challenger_credential == input_datum.challenger_credential && output_datum.target_did == input_datum.target_did && output_datum.target_credential == input_datum.target_credential && output_datum.challenged_capability == input_datum.challenged_capability && output_datum.stake_amount == input_datum.stake_amount && output_datum.evidence_hash == input_datum.evidence_hash && output_datum.evidence_uri == input_datum.evidence_uri && output_datum.created_at == input_datum.created_at && output_datum.counter_evidence_hash == input_datum.counter_evidence_hash && output_datum.counter_evidence_uri == input_datum.counter_evidence_uri && output_datum.response_submitted_at == input_datum.response_submitted_at
+  let datum_preserved = same_terms_and_response(output_datum, input_datum)
 
   identity_linked && resolved_correctly && datum_preserved
 }
@@ -611,7 +646,7 @@ pub fn validate_distribute_outcome(
       CapabilityFalsified ->
         validate_falsified_payouts(tx, cfg, refs, params, challenge_datum)
       CapabilityVerified ->
-        validate_verified_payouts(tx, cfg, refs, params, challenge_datum)
+        validate_verified_payouts(tx, cfg, params, challenge_datum)
       Inconclusive ->
         validate_inconclusive_payouts(tx, cfg, params, challenge_datum)
     }
@@ -682,10 +717,16 @@ fn validate_falsified_payouts(
 }
 
 /// Validate payouts when capability is verified (target wins).
+///
+/// The ChallengeWon history bonus of the target is not a condition. A
+/// history bonus needs the target's identity record with effective status
+/// Active and the target's controller signature (MintHistoryBonus), so a
+/// required bonus would lock the challenge stake while the target is
+/// suspended, revoked or retired, or when its controller does not sign. The
+/// transaction can still mint the bonus (MintHistoryBonus).
 fn validate_verified_payouts(
   tx: Transaction,
   cfg: ReputationConfig,
-  refs: CrossValidatorRefs,
   params: ProtocolParams,
   challenge_datum: ReputationChallengeDatum,
 ) -> Bool {
@@ -706,19 +747,7 @@ fn validate_verified_payouts(
   let treasury_paid =
     verify_treasury_payment(tx.outputs, cfg, protocol_fee)
 
-  // ChallengeWon history bonus: target should receive a history bonus token
-  // for successfully defending their capability claim.
-  // Verify a history bonus token is minted under the reputation policy.
-  let history_bonus_minted =
-    list.any(
-      assets.flatten(tx.mint),
-      fn(entry) {
-        let (pid, name, qty) = entry
-        pid == refs.reputation_policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
-      },
-    )
-
-  target_paid && treasury_paid && history_bonus_minted
+  target_paid && treasury_paid
 }
 
 /// Validate payouts for inconclusive outcome.
@@ -784,7 +813,7 @@ pub fn validate_audit_claim_won_bonus(
           when input.output.datum is {
             InlineDatum(raw) -> {
               expect claim: AuditClaimDatum = raw
-              // claimer_did in Module 1 = agent DID (NFT asset name)
+              // claimer_did in Module 1 = the agent's identity identifier
               claim.claimer_did == agent_did && claim.state == AuditValidated
             }
             _ -> False
@@ -847,12 +876,17 @@ pub fn validate_juror_duty_bonus(
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Verify that the target agent has the challenged capability in their StakeUTXO.
-fn verify_target_capability(
+/// Verify that the target agent has the challenged capability in their
+/// StakeUTXO, and that `target_credential` is the owner_credential of that
+/// StakeUTXO. The payouts to the target (CapabilityVerified) and the
+/// signature of RespondToChallenge use target_credential, so it must be the
+/// target's own credential.
+fn verify_target_stake(
   reference_inputs: List<Input>,
   refs: CrossValidatorRefs,
   target_did: ByteArray,
   capability: ByteArray,
+  target_credential: Credential,
 ) -> Bool {
   let target_stake_token = derive_stake_token_name(target_did)
   expect Some(stake_input) =
@@ -875,7 +909,7 @@ fn verify_target_capability(
     )
   expect InlineDatum(raw_stake) = stake_input.output.datum
   expect stake_datum: StakeDatum = raw_stake
-  list.has(stake_datum.staked_capabilities, capability)
+  list.has(stake_datum.staked_capabilities, capability) && stake_datum.owner_credential == target_credential
 }
 
 /// Verify that a credential receives at least the specified AP3X amount
@@ -951,4 +985,34 @@ fn verify_reduced_stake_output(
       is_at_reputation && has_token && ap3x >= expected_remaining_stake
     },
   )
+}
+
+/// True when the two challenges have the same terms: the fields from
+/// challenger_did to created_at are equal.
+fn same_terms(a: ReputationChallengeDatum, b: ReputationChallengeDatum) -> Bool {
+  and {
+    a.challenger_did == b.challenger_did,
+    a.challenger_credential == b.challenger_credential,
+    a.target_did == b.target_did,
+    a.target_credential == b.target_credential,
+    a.challenged_capability == b.challenged_capability,
+    a.stake_amount == b.stake_amount,
+    a.evidence_hash == b.evidence_hash,
+    a.evidence_uri == b.evidence_uri,
+    a.created_at == b.created_at,
+  }
+}
+
+/// True when the two challenges have the same terms and the same response:
+/// all fields except `state` are equal.
+fn same_terms_and_response(
+  a: ReputationChallengeDatum,
+  b: ReputationChallengeDatum,
+) -> Bool {
+  and {
+    same_terms(a, b),
+    a.counter_evidence_hash == b.counter_evidence_hash,
+    a.counter_evidence_uri == b.counter_evidence_uri,
+    a.response_submitted_at == b.response_submitted_at,
+  }
 }
