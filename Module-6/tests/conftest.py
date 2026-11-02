@@ -33,7 +33,8 @@ from pycardano import (
 from pycardano.serialization import RawCBOR
 
 MODULE_ROOT = Path(__file__).resolve().parent.parent
-for path in (MODULE_ROOT / "scripts", MODULE_ROOT / "dashboard"):
+SHARED_PYTHON = MODULE_ROOT.parent / "shared" / "python"
+for path in (MODULE_ROOT / "scripts", MODULE_ROOT / "dashboard", SHARED_PYTHON):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
@@ -349,9 +350,12 @@ class World:
         )
         return dataclasses.replace(datum, **changes)
 
-    def proposal_utxo(self, datum: gi.ProposalDatum, byte: int = 0x70, token: bool = True) -> UTxO:
-        """A submitted proposal: at the proposal validator with its token."""
-        assets = {self.deployment.proposal_mint.hash: {gi.proposal_token_name(tx_in(0x71)): 1}} if token else {}
+    def proposal_utxo(self, datum: gi.ProposalDatum, byte: int = 0x70, token: bool = True,
+                      seed: TransactionInput | None = None) -> UTxO:
+        """A submitted proposal: at the proposal validator with the token of
+        its seed (``PROPOSAL_SEED`` by default)."""
+        name = gi.proposal_token_name(PROPOSAL_SEED if seed is None else seed)
+        assets = {self.deployment.proposal_mint.hash: {name: 1}} if token else {}
         value = Value(datum.stake_amount + gi.POSITION_DEPOSIT, MultiAsset.from_primitive(assets))
         utxo = UTxO(tx_in(byte), TransactionOutput(
             self.deployment.proposal_spend.address, value, datum=gi.inline_datum(datum.to_data())
@@ -359,8 +363,11 @@ class World:
         self.chain.add(utxo)
         return utxo
 
-    def activity_utxo(self, agent_id: bytes, count: int, last: int, byte: int = 0x80) -> gi.ActivityRecord:
-        datum = gi.ActivityDatum(agent_id, gi.Credential.key(self.key_hash), count, last)
+    def activity_utxo(self, agent_id: bytes, count: int, last: int, byte: int = 0x80,
+                      next_did: bytes = b"", key_hash: bytes | None = None) -> gi.ActivityRecord:
+        """The node of ``agent_id`` in the activity list."""
+        credential = gi.Credential.key(self.key_hash if key_hash is None else key_hash)
+        datum = gi.ActivityDatum(agent_id, credential, count, last, next_did)
         assets = {self.deployment.proposal_mint.hash: {gi.activity_token_name(agent_id): 1}}
         utxo = UTxO(tx_in(byte), TransactionOutput(
             self.deployment.proposal_spend.address,
@@ -369,6 +376,25 @@ class World:
         ))
         self.chain.add(utxo)
         return gi.ActivityRecord(utxo, datum)
+
+    def head(self, next_did: bytes = b"") -> gi.ActivityRecord:
+        """Replace the head of the activity list (as deploy.py creates it)
+        with a head whose next_did is ``next_did``."""
+        address = str(self.deployment.proposal_spend.address)
+        self.chain.store[address] = [
+            u for u in self.chain.store.get(address, []) if u.input != HEAD_REF
+        ]
+        datum = gi.ActivityDatum(b"", gi.Credential.key(self.key_hash), 0, 0, next_did)
+        utxo = UTxO(HEAD_REF, TransactionOutput(
+            self.deployment.proposal_spend.address,
+            Value(3_000_000, MultiAsset.from_primitive({RECORD_TOKEN_POLICY: {gi.ACTIVITY_TOKEN_NAME: 1}})),
+            datum=gi.inline_datum(datum.to_data()),
+        ))
+        self.chain.add(utxo)
+        return gi.ActivityRecord(utxo, datum)
+
+    def activity_list(self) -> gi.ActivityList:
+        return gi.find_activity_list(self.chain.utxos(self.deployment.proposal_spend.address), self.deployment)
 
     def locked(self, script: gi.DeployedScript, datum, lovelace: int, byte: int = 0x90) -> UTxO:
         """A lock output as the lock builders make it."""
@@ -409,8 +435,51 @@ def make_world(state: dict | None = None) -> World:
         datum=gi.inline_datum(deployment.cross_refs.to_data()),
     ))
     chain.add(params, oracle, cross_refs)
+    for script in (deployment.proposal_spend, deployment.proposal_mint, deployment.critique_spend,
+                   deployment.critique_mint, deployment.endorsement_spend):
+        if script.reference is not None:
+            chain.add(script.reference)
     clock = gi.SlotClock.from_genesis(chain.genesis_param)
-    return World(chain, deployment, wallet, wallet_address, clock, params, cross_refs, oracle)
+    world = World(chain, deployment, wallet, wallet_address, clock, params, cross_refs, oracle)
+    world.head()  # the head of the empty activity list (deploy.py step 5a)
+    return world
+
+
+#: The seed of the proposals of World.proposal_utxo.
+PROPOSAL_SEED = tx_in(0x71)
+
+#: The UTxO of the head of the activity list.
+HEAD_REF = tx_in(0x8F)
+
+BLUEPRINT = MODULE_ROOT / "contracts" / "governance-suggestion" / "plutus.json"
+
+
+def applied_state() -> dict:
+    """A deploy state with the validators of the committed blueprint, applied
+    with the GovernanceConfig of this module's test deployment (11 fields, as
+    scripts/deploy_common.py builds it), and reference-script transactions."""
+    from aiken_simulate import apply_validator
+    from deploy_common import build_governance_config_cbor
+
+    config = build_governance_config_cbor(
+        refs_token_policy=REFS_TOKEN_POLICY.hex(), oracle_holder_hash=ORACLE_HOLDER.hex(),
+        params_holder_hash=PARAMS_HOLDER.hex(), treasury_holder_hash=TREASURY_HOLDER.hex(),
+        record_token_policy=RECORD_TOKEN_POLICY.hex(), identity_hash=IDENTITY_HASH.hex(),
+    )
+    validators = {}
+    for title in SCRIPTS:
+        module, validator, _ = title.split(".")
+        applied = apply_validator(BLUEPRINT, module, validator, config)
+        validators[title] = {"hash": applied.hash, "compiled_code": applied.compiled_code}
+    tx_hashes = {"params_utxo": "aa" * 32, "oracle_utxo": "aa" * 32, "activity_head": "aa" * 32,
+                 "cross_refs_nft": CROSS_REFS_TX.hex()}
+    tx_hashes.update({key: f"{i:02x}" * 32 for i, key in enumerate(gi.REFERENCE_SCRIPT_KEYS.values(), 0xE1)})
+    return deploy_state(
+        validators=validators,
+        proposal_validator_hash=validators[gi.PROPOSAL_SPEND]["hash"],
+        critique_validator_hash=validators[gi.CRITIQUE_SPEND]["hash"],
+        tx_hashes=tx_hashes,
+    )
 
 
 @pytest.fixture

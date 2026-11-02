@@ -18,14 +18,25 @@ identity record. ``GovernanceClient`` of the Python SDK builds them.
 The contracts in ``contracts/governance-suggestion`` give the shapes:
 
 - ``validators/proposal.ak``: SubmitProposal spends a locked ProposalDatum
-  output, mints the proposal token (and the first activity token) and
-  updates the activity record of the proposer. AmendProposal spends the
-  proposal and can incorporate critiques (IncorporateCritique).
+  output and exactly one entry of the activity list (SpendActivity), and
+  mints the proposal token. The activity records are one list at the
+  proposal validator, sorted by agent identifier: the head (it holds the
+  ``activity`` record token) and one node per agent (it holds the activity
+  token of the agent). The next submission of an agent spends its node and
+  continues it with the count plus one. The first submission spends the
+  predecessor of the agent in the list, continues it with ``next_did`` =
+  the agent, creates the node of the agent and mints its activity token.
+  AmendProposal spends the proposal and can incorporate critiques
+  (IncorporateCritique).
 - ``validators/critique.ak``: MintCritiqueToken spends a locked CritiqueDatum
   output, and ``critique_mint`` mints the critique token.
-  MintEndorsementToken spends a locked endorsement output. ``critique_mint``
-  accepts a mint only when the transaction spends an output at the critique
-  validator, so an endorsement gets no token.
+  MintEndorsementToken spends a locked endorsement output, and
+  ``critique_mint`` mints the endorsement token (``gend_``). A critique or
+  an endorsement names its proposal by the seed: the output reference that
+  the SubmitProposal of the proposal spent (``Submission.seed``). The
+  proposal holds the token ``proposal_token_name(seed)``. Except for an
+  Amendment critique, the agent and the proposer must be different parties,
+  and the record of the proposer is a reference input.
 
 A new position needs two transactions: the lock (an output with the datum at
 the validator address) and the creation (the validator spends the lock with
@@ -81,7 +92,7 @@ from pycardano import (
 from pycardano.serialization import NonEmptyOrderedSet, RawCBOR
 
 import vector_identity as vid
-from deploy_common import DEPLOYMENT_ORDER, ORACLE_TOKEN_NAME, PARAMS_TOKEN_NAME
+from deploy_common import ACTIVITY_TOKEN_NAME, DEPLOYMENT_ORDER, ORACLE_TOKEN_NAME, PARAMS_TOKEN_NAME
 
 # ── Constants ───────────────────────────────────────────────────────────────
 
@@ -434,12 +445,17 @@ class ProposalDatum:
 
 @dataclass(frozen=True)
 class ActivityDatum:
-    """``ProposerActivityDatum``: the activity record of a proposer."""
+    """``ProposerActivityDatum`` (5 fields): an entry of the activity list.
+    The head has ``agent_did == b""``; a node holds the activity of one
+    proposer. ``last_proposal_slot`` is POSIX milliseconds (the ``lo`` of the
+    last submission). ``next_did`` is the agent identifier of the next node
+    in ascending byte order, or ``b""`` for the last entry."""
 
     agent_did: bytes
     agent_credential: Credential
     active_proposal_count: int
     last_proposal_slot: int
+    next_did: bytes = b""
 
     def to_data(self) -> cbor2.CBORTag:
         return _constr(0, [
@@ -447,16 +463,18 @@ class ActivityDatum:
             self.agent_credential.to_data(),
             self.active_proposal_count,
             self.last_proposal_slot,
+            self.next_did,
         ])
 
     @classmethod
     def from_data(cls, value: Any) -> "ActivityDatum":
-        f = _fields(_tree(value), 4, "ProposerActivityDatum")
+        f = _fields(_tree(value), 5, "ProposerActivityDatum")
         return cls(
             agent_did=_bytes(f[0], "agent_did"),
             agent_credential=Credential.from_data(f[1]),
             active_proposal_count=_int(f[2], "active_proposal_count"),
             last_proposal_slot=_int(f[3], "last_proposal_slot"),
+            next_did=_bytes(f[4], "next_did"),
         )
 
 
@@ -625,10 +643,11 @@ def amend_proposal_redeemer(new_hash: bytes, new_uri: bytes, incorporated: Seque
 # ── Token names (lib/governance_suggestion/utils.ak) ───────────────────────
 
 
-def proposal_token_name(locked_ref: TransactionInput) -> bytes:
-    """``"prop_" ++ blake2b_256(serialise(locked_ref))[0..27]``. The name
-    comes from the locked output that SubmitProposal spends."""
-    return b"prop_" + vid.hash_data(out_ref_data(locked_ref))[:27]
+def proposal_token_name(seed: TransactionInput) -> bytes:
+    """``"prop_" ++ blake2b_256(serialise(seed))[0..27]``. The seed is the
+    locked output that SubmitProposal spends. Critiques and endorsements name
+    the proposal by its seed (``proposal_ref``)."""
+    return b"prop_" + vid.hash_data(out_ref_data(seed))[:27]
 
 
 def critique_token_name(locked_ref: TransactionInput) -> bytes:
@@ -636,8 +655,17 @@ def critique_token_name(locked_ref: TransactionInput) -> bytes:
     return b"crit_" + vid.hash_data(out_ref_data(locked_ref))[:27]
 
 
+def endorsement_token_name(endorser_id: Union[bytes, str], seed: TransactionInput) -> bytes:
+    """``"gend_" ++ blake2b_256(endorser_did ++ serialise(seed))[0..27]``
+    (``utils.endorsement_token_name``): the token of the endorsement of the
+    agent ``endorser_id`` for the proposal with the seed ``seed``."""
+    data = vid.normalize_agent_id(endorser_id) + vid.serialise_data(out_ref_data(seed))
+    return b"gend_" + vid.blake2b_256(data)[:27]
+
+
 def activity_token_name(agent_id: Union[bytes, str]) -> bytes:
-    """``"pact_" ++ blake2b_256(agent identifier)[0..27]``."""
+    """``"pact_" ++ blake2b_256(agent identifier)[0..27]``: the token of the
+    node of the agent in the activity list."""
     return b"pact_" + vid.blake2b_256(vid.normalize_agent_id(agent_id))[:27]
 
 
@@ -1051,9 +1079,9 @@ def identity_records(
 def find_activity(
     utxos: Iterable[UTxO], deployment: GovernanceDeployment, agent_id: Union[bytes, str]
 ) -> Optional[ActivityRecord]:
-    """The activity record of ``agent_id`` at the proposal validator: it holds
-    exactly one activity token of the agent. None before the first
-    proposal."""
+    """The activity record of ``agent_id`` at the proposal validator (its
+    node in the activity list): it holds exactly one activity token of the
+    agent. None before the first proposal."""
     agent_id = vid.normalize_agent_id(agent_id)
     name = activity_token_name(agent_id)
     found = []
@@ -1071,8 +1099,125 @@ def find_activity(
     return found[0] if found else None
 
 
+@dataclass(frozen=True)
+class ActivityList:
+    """The activity list at the proposal validator (``activity_tracking.ak``):
+    the head and the nodes in list order, that is in ascending byte order of
+    the agent identifier. ``find_activity_list`` builds it and refuses a list
+    that the contract rules cannot produce."""
+
+    head: ActivityRecord
+    nodes: tuple[ActivityRecord, ...] = ()
+
+    @property
+    def entries(self) -> tuple[ActivityRecord, ...]:
+        return (self.head, *self.nodes)
+
+    def node(self, agent_id: Union[bytes, str]) -> Optional[ActivityRecord]:
+        """The node of ``agent_id``, or None before its first proposal."""
+        agent_id = vid.normalize_agent_id(agent_id)
+        return next((n for n in self.nodes if n.datum.agent_did == agent_id), None)
+
+    def predecessor(self, agent_id: Union[bytes, str]) -> ActivityRecord:
+        """The entry P after which the first submission of ``agent_id`` (X)
+        inserts the node of X: ``P.agent_did < X`` and (``P.next_did == b""``
+        or ``X < P.next_did``). Refuses an agent that has a node: the contract
+        accepts one node per agent."""
+        agent_id = vid.normalize_agent_id(agent_id)
+        if self.node(agent_id) is not None:
+            raise GovernanceClientError(
+                f"{vid.did_from_id(agent_id)} already has a node in the activity list; "
+                "its next submission spends that node"
+            )
+        for entry in self.entries:
+            datum = entry.datum
+            if datum.agent_did < agent_id and (datum.next_did == b"" or agent_id < datum.next_did):
+                return entry
+        raise GovernanceClientError(f"the activity list has no predecessor for {vid.did_from_id(agent_id)}")
+
+    def submission_input(self, agent_id: Union[bytes, str]) -> ActivityRecord:
+        """The entry that a submission of ``agent_id`` spends: its node, or for
+        its first proposal its predecessor."""
+        node = self.node(agent_id)
+        return node if node is not None else self.predecessor(agent_id)
+
+
+def find_activity_list(utxos: Iterable[UTxO], deployment: GovernanceDeployment) -> ActivityList:
+    """The activity list from the UTxOs at the proposal validator.
+
+    - The head: the output with the record token
+      ``(record_token_policy, "activity")`` (quantity 1), no token of the
+      proposal policy and ``agent_did == b""``.
+    - A node: an output with an activity token (``pact_``). It holds exactly
+      the activity token of the ``agent_did`` of its datum.
+
+    The client walks from the head through ``next_did``. Each named node must
+    exist, the order must be strictly ascending, and every node must be on
+    the walk. Refuses a missing head and a list that breaks these rules
+    (the contract rules cannot produce such a list)."""
+    heads: list[ActivityRecord] = []
+    nodes: dict[bytes, ActivityRecord] = {}
+    for utxo in utxos:
+        if _payment_script(utxo) != deployment.proposal_spend.hash:
+            continue
+        head_tokens = policy_tokens(utxo, deployment.record_token_policy).get(ACTIVITY_TOKEN_NAME, 0)
+        tokens = policy_tokens(utxo, deployment.proposal_mint.hash)
+        if not head_tokens and not any(name.startswith(b"pact_") for name in tokens):
+            continue  # proposals, locks and other outputs
+        if utxo.output.datum is None:
+            raise GovernanceClientError(f"the activity list entry {utxo.input} has no inline datum")
+        datum = ActivityDatum.from_data(utxo.output.datum)
+        if head_tokens:
+            if head_tokens != 1 or tokens or datum.agent_did != b"":
+                raise GovernanceClientError(
+                    f"{utxo.input} holds the activity record token but is not a valid head of the activity list"
+                )
+            heads.append(ActivityRecord(utxo, datum))
+            continue
+        if not datum.agent_did or tokens != {activity_token_name(datum.agent_did): 1}:
+            raise GovernanceClientError(f"{utxo.input} holds an activity token but is not the node of its agent")
+        if datum.agent_did in nodes:
+            raise GovernanceClientError(f"{vid.did_from_id(datum.agent_did)} has several nodes in the activity list")
+        nodes[datum.agent_did] = ActivityRecord(utxo, datum)
+    if not heads:
+        raise MissingReferenceError(
+            f"no head of the activity list at {deployment.proposal_spend.address}: no output there holds "
+            f"the record token {deployment.record_token_policy.hex()}.{ACTIVITY_TOKEN_NAME.decode()}. "
+            "scripts/deploy.py creates it in the record step (5a)."
+        )
+    if len(heads) > 1:
+        raise GovernanceClientError("several outputs hold the activity record token")
+    head = heads[0]
+    ordered: list[ActivityRecord] = []
+    previous, next_did = head.datum.agent_did, head.datum.next_did
+    while next_did:
+        node = nodes.get(next_did)
+        if node is None:
+            raise GovernanceClientError(f"the activity list names {vid.did_from_id(next_did)}, which has no node")
+        if not previous < next_did:
+            raise GovernanceClientError("the activity list is not in ascending order")
+        ordered.append(node)
+        previous, next_did = node.datum.agent_did, node.datum.next_did
+    if len(ordered) != len(nodes):
+        raise GovernanceClientError("some activity nodes are not in the list that starts at the head")
+    return ActivityList(head, tuple(ordered))
+
+
 def find_utxo(utxos: Iterable[UTxO], ref: TransactionInput) -> Optional[UTxO]:
     return next((u for u in utxos if u.input == ref), None)
+
+
+def find_proposal(utxos: Iterable[UTxO], deployment: GovernanceDeployment, seed: TransactionInput) -> Optional[UTxO]:
+    """The proposal that ``seed`` names: the output at the proposal validator
+    that holds ``proposal_token_name(seed)`` (also after amendments), or
+    None."""
+    name = proposal_token_name(seed)
+    return next(
+        (u for u in utxos
+         if _payment_script(u) == deployment.proposal_spend.hash
+         and policy_tokens(u, deployment.proposal_mint.hash).get(name, 0) == 1),
+        None,
+    )
 
 
 def proposal_token(utxo: UTxO, deployment: GovernanceDeployment) -> Optional[bytes]:
@@ -1229,26 +1374,30 @@ def check_rate_limit(
         )
 
 
-def _proposal_target(
-    proposal: UTxO, deployment: GovernanceDeployment, ref: Optional[TransactionInput] = None
-) -> ProposalDatum:
-    """An active, submitted proposal that a critique or an endorsement
-    names."""
-    if ref is not None and proposal.input != ref:
-        raise GovernanceClientError(f"the proposal reference input {proposal.input} is not {ref}")
+def _proposal_target(proposal: UTxO, deployment: GovernanceDeployment, seed: TransactionInput) -> ProposalDatum:
+    """The active, submitted proposal that a critique or an endorsement names
+    by its seed: ``proposal`` is at the proposal validator and holds
+    ``proposal_token_name(seed)`` (``critique_validation.named_proposal``)."""
     datum = _position_datum(proposal, deployment.proposal_spend, ProposalDatum.from_data, "proposal")
-    if datum.state not in ACTIVE_STATES:
-        raise GovernanceClientError(f"the proposal {proposal.input} is {datum.state.name}, not Open or Amended")
     if proposal_token(proposal, deployment) is None:
         raise GovernanceClientError(
             f"{proposal.input} holds no proposal token: it is a lock, not a submitted proposal. "
             "A position on it can never settle."
         )
+    if policy_tokens(proposal, deployment.proposal_mint.hash).get(proposal_token_name(seed), 0) != 1:
+        raise GovernanceClientError(
+            f"the proposal {proposal.input} does not hold the token of the seed {seed}: "
+            "a critique or an endorsement names its proposal by the output reference that the "
+            "SubmitProposal of the proposal spent (Submission.seed)"
+        )
+    if datum.state not in ACTIVE_STATES:
+        raise GovernanceClientError(f"the proposal {proposal.input} is {datum.state.name}, not Open or Amended")
     return datum
 
 
 def check_critique_rules(datum: CritiqueDatum, proposal: ProposalDatum, params: GovernanceParams) -> None:
-    """``validate_submit_critique`` rules besides identity and signature."""
+    """``validate_submit_critique`` rules besides identity, signature and the
+    rule of different parties (``check_distinct_parties``)."""
     problems = []
     if datum.stake_amount < params.min_critique_stake:
         problems.append(f"the stake is below {params.min_critique_stake} lovelace")
@@ -1263,8 +1412,8 @@ def check_critique_rules(datum: CritiqueDatum, proposal: ProposalDatum, params: 
 
 
 def check_endorsement_rules(datum: EndorsementDatum, proposal: ProposalDatum, params: GovernanceParams) -> None:
-    """``validate_submit_endorsement`` rules besides identity and
-    signature."""
+    """``validate_submit_endorsement`` rules besides identity, signature and
+    the rule of different parties (``check_distinct_parties``)."""
     problems = []
     if datum.stake_amount < params.min_governance_endorsement:
         problems.append(f"the stake is below {params.min_governance_endorsement} lovelace")
@@ -1272,6 +1421,54 @@ def check_endorsement_rules(datum: EndorsementDatum, proposal: ProposalDatum, pa
         problems.append("an agent cannot endorse its own proposal")
     if problems:
         raise GovernanceClientError("the endorsement does not meet the contract rules: " + "; ".join(problems))
+
+
+def check_distinct_parties(
+    deployment: GovernanceDeployment,
+    agent: vid.IdentityRecord,
+    agent_credential: Credential,
+    proposal: ProposalDatum,
+    proposer_record: Optional[vid.IdentityRecord],
+) -> vid.IdentityRecord:
+    """``critique_validation.distinct_parties`` for a critique (except an
+    Amendment critique) or an endorsement: the agent (its record and its
+    declared credential) and the proposer of ``proposal`` are different
+    parties. The contract reads the record of the proposer (any status, also a
+    tombstone) as a reference input, so ``proposer_record`` must be its
+    authentic record. It does not read the ancestors of the proposer. The
+    rule fails when the identifiers are equal, the controller keys are equal,
+    the credential is the proposer credential, one record is a direct
+    subagent of the other, or both are subagents of the same parent. Returns
+    the record of the proposer."""
+    did = vid.did_from_id(proposal.proposer_did)
+    if proposer_record is None:
+        raise MissingReferenceError(
+            f"the rule of different parties reads the record of the proposer {did}: pass proposer_record "
+            "(the authentic record at the identity address)"
+        )
+    authentic = None if proposer_record.utxo is None else vid.record_from_utxo(
+        proposer_record.utxo, deployment.identity_hash
+    )
+    if authentic is None or authentic.agent_id != proposal.proposer_did:
+        raise vid.IdentityError(f"proposer_record is not the authentic record of the proposer {did}")
+    agent_parent = agent.datum.lineage.parent
+    proposer_parent = authentic.datum.lineage.parent
+    problems = []
+    if agent.agent_id == proposal.proposer_did:
+        problems.append("the agent is the proposer")
+    if agent.datum.controller == authentic.datum.controller:
+        problems.append("the agent and the proposer have the same controller key")
+    if agent_credential == proposal.proposer_credential:
+        problems.append("the credential of the agent is the proposer credential")
+    if agent_parent == proposal.proposer_did:
+        problems.append("the agent is a subagent of the proposer")
+    if proposer_parent == agent.agent_id:
+        problems.append("the proposer is a subagent of the agent")
+    if agent_parent is not None and agent_parent == proposer_parent:
+        problems.append("the agent and the proposer are subagents of the same parent")
+    if problems:
+        raise GovernanceClientError("the agent and the proposer are not different parties: " + "; ".join(problems))
+    return authentic
 
 
 # ── Builders ────────────────────────────────────────────────────────────────
@@ -1355,7 +1552,7 @@ def prepare_proposal_lock(
     *,
     records: Sequence[vid.IdentityRecord],
     refs: GovernanceReferences,
-    activity: Optional[ActivityRecord],
+    activity_list: ActivityList,
     terms: ProposalTerms,
     credential_key_hash: bytes,
     window: TxWindow,
@@ -1365,7 +1562,9 @@ def prepare_proposal_lock(
     validator. ``window`` is the range of step 2; ``submitted_at`` is its
     ``lo``. The client checks every rule of SubmitProposal first: the
     identity record is Active over ``window``, the credential is declared,
-    and the stake, review window, type and rate limit are valid."""
+    the stake, review window and type are valid, and the node of the agent in
+    ``activity_list`` (``find_activity_list``) meets the rate limit (a first
+    proposal needs a predecessor in the list)."""
     agent_id = _agent_of(records)
     chain = _checked_chain(deployment, records, agent_id, window)
     credential = Credential.key(credential_key_hash)
@@ -1383,7 +1582,8 @@ def prepare_proposal_lock(
     )
     _check_references(deployment, refs)
     check_proposal_rules(datum, refs.params.params)
-    check_rate_limit(activity, agent_id, refs.params.params, window.lo)
+    check_rate_limit(activity_list.node(agent_id), agent_id, refs.params.params, window.lo)
+    activity_list.submission_input(agent_id)
     output = TransactionOutput(
         deployment.proposal_spend.address,
         Value(datum.stake_amount + POSITION_DEPOSIT),
@@ -1399,20 +1599,28 @@ def prepare_submit_proposal(
     locked: UTxO,
     records: Sequence[vid.IdentityRecord],
     refs: GovernanceReferences,
-    activity: Optional[ActivityRecord],
+    activity_list: ActivityList,
     window: TxWindow,
     wallet_address: Address,
 ) -> PreparedTx:
     """Step 2 of a proposal submission (SubmitProposal).
 
-    - Spends the locked proposal with SubmitProposal, and the activity record
-      of the proposer (if it exists) with SpendActivity.
+    - Spends the locked proposal with SubmitProposal, and exactly one entry
+      of ``activity_list`` with SpendActivity: the node of the proposer, or
+      for its first proposal its predecessor in the list (the head or a
+      node).
     - Mints the proposal token (name from the locked output) and, for the
-      first proposal of the agent, the activity token (proposal_mint,
+      first proposal of the agent, its activity token (proposal_mint,
       redeemer SubmitProposal).
-    - Output 0: the proposal with the token and ``submitted_at = lo``.
-      Output 1: the activity record with the count plus one and
-      ``last_proposal_slot = lo``.
+    - Output 0: the proposal with the token and ``submitted_at = lo``, at the
+      address of the lock.
+    - Output 1: the node of the proposer. The next submission continues it
+      (same address and value) with the count plus one and
+      ``last_proposal_slot = lo``. The first submission creates it at the
+      address of the lock with the activity token, count 1,
+      ``last_proposal_slot = lo`` and the ``next_did`` of the predecessor.
+    - Output 2 (first submission only): the predecessor (same address and
+      value) with ``next_did`` = the proposer.
     """
     datum = _position_datum(locked, deployment.proposal_spend, ProposalDatum.from_data, "proposal")
     if not _lovelace_only(locked):
@@ -1424,40 +1632,42 @@ def prepare_submit_proposal(
     _check_references(deployment, refs)
     params = refs.params.params
     check_proposal_rules(datum, params)
-    check_rate_limit(activity, agent_id, params, window.lo)
+    node = activity_list.node(agent_id)
+    check_rate_limit(node, agent_id, params, window.lo)
+    entry = activity_list.submission_input(agent_id)
 
     builder = _identity_builder(context, deployment, chain, refs, window, signer, wallet_address)
     token = proposal_token_name(locked.input)
     minted = {token: 1}
     builder.add_script_input(locked, script=deployment.proposal_spend.witness, redeemer=_redeemer(SUBMIT_PROPOSAL))
     builder.add_output(TransactionOutput(
-        deployment.proposal_spend.address,
+        locked.output.address,
         Value(_coin(locked), _assets(deployment.proposal_mint.hash, {token: 1})),
         datum=inline_datum(datum.to_data()),
     ))
-
-    activity_name = activity_token_name(agent_id)
-    if activity is None:
-        minted[activity_name] = 1
-        activity_datum = ActivityDatum(agent_id, Credential.key(signer), 1, window.lo)
-        activity_value = Value(ACTIVITY_LOVELACE, _assets(deployment.proposal_mint.hash, {activity_name: 1}))
-        activity_address = deployment.proposal_spend.address
-    else:
-        if _payment_script(activity.utxo) != deployment.proposal_spend.hash or policy_tokens(
-            activity.utxo, deployment.proposal_mint.hash
-        ).get(activity_name, 0) != 1:
-            raise GovernanceClientError(f"{activity.utxo.input} is not the activity record of {vid.did_from_id(agent_id)}")
-        builder.add_script_input(
-            activity.utxo, script=deployment.proposal_spend.witness, redeemer=_redeemer(SPEND_ACTIVITY)
-        )
-        activity_datum = dataclasses.replace(
-            activity.datum,
-            active_proposal_count=activity.datum.active_proposal_count + 1,
+    builder.add_script_input(entry.utxo, script=deployment.proposal_spend.witness, redeemer=_redeemer(SPEND_ACTIVITY))
+    if node is not None:
+        continued = dataclasses.replace(
+            node.datum,
+            active_proposal_count=node.datum.active_proposal_count + 1,
             last_proposal_slot=window.lo,
         )
-        activity_value = activity.utxo.output.amount
-        activity_address = activity.utxo.output.address
-    builder.add_output(TransactionOutput(activity_address, activity_value, datum=inline_datum(activity_datum.to_data())))
+        builder.add_output(TransactionOutput(
+            node.utxo.output.address, node.utxo.output.amount, datum=inline_datum(continued.to_data())
+        ))
+    else:
+        activity_name = activity_token_name(agent_id)
+        minted[activity_name] = 1
+        new_node = ActivityDatum(agent_id, datum.proposer_credential, 1, window.lo, entry.datum.next_did)
+        builder.add_output(TransactionOutput(
+            locked.output.address,
+            Value(ACTIVITY_LOVELACE, _assets(deployment.proposal_mint.hash, {activity_name: 1})),
+            datum=inline_datum(new_node.to_data()),
+        ))
+        predecessor = dataclasses.replace(entry.datum, next_did=agent_id)
+        builder.add_output(TransactionOutput(
+            entry.utxo.output.address, entry.utxo.output.amount, datum=inline_datum(predecessor.to_data())
+        ))
 
     builder.mint = _assets(deployment.proposal_mint.hash, minted)
     builder.add_minting_script(deployment.proposal_mint.witness, redeemer=_redeemer(SUBMIT_PROPOSAL))
@@ -1502,7 +1712,9 @@ def prepare_amend_proposal(
         critique = _position_datum(utxo, deployment.critique_spend, CritiqueDatum.from_data, "critique")
         if critique.incorporated:
             raise GovernanceClientError(f"the critique {utxo.input} is already incorporated")
-        if critique.proposal_ref != proposal.input:
+        # The critique names its proposal by the seed: the amended proposal
+        # holds proposal_token_name(critique.proposal_ref)
+        if policy_tokens(proposal, deployment.proposal_mint.hash).get(proposal_token_name(critique.proposal_ref), 0) != 1:
             raise GovernanceClientError(f"the critique {utxo.input} is about another proposal")
         critiques.append((utxo, critique))
     refs_in = [u.input for u, _ in critiques]
@@ -1565,23 +1777,29 @@ def prepare_critique_lock(
     records: Sequence[vid.IdentityRecord],
     refs: GovernanceReferences,
     proposal: UTxO,
+    seed: TransactionInput,
     terms: CritiqueTerms,
     credential_key_hash: bytes,
     window: TxWindow,
     wallet_address: Address,
+    proposer_record: Optional[vid.IdentityRecord] = None,
 ) -> PreparedTx:
     """Step 1 of a critique: lock the CritiqueDatum at the critique
-    validator, with ``submitted_at = window.lo`` (the range of step 2). The
-    client checks the rules of MintCritiqueToken first."""
+    validator, with ``submitted_at = window.lo`` (the range of step 2) and
+    ``proposal_ref = seed``. ``proposal`` is the current output of the
+    proposal; it must hold ``proposal_token_name(seed)``. Except for an
+    Amendment critique, ``proposer_record`` is the record of the proposer
+    (``check_distinct_parties``). The client checks the rules of
+    MintCritiqueToken first."""
     agent_id = _agent_of(records)
     chain = _checked_chain(deployment, records, agent_id, window)
     credential = Credential.key(credential_key_hash)
     _declared_key(chain, credential)
-    target = _proposal_target(proposal, deployment)
+    target = _proposal_target(proposal, deployment, seed)
     datum = CritiqueDatum(
         critic_did=agent_id,
         critic_credential=credential,
-        proposal_ref=proposal.input,
+        proposal_ref=seed,
         critique_hash=bytes(terms.critique_hash),
         storage_uri=_utf8(terms.storage_uri),
         critique_type=_plain(terms.critique_type),
@@ -1590,6 +1808,8 @@ def prepare_critique_lock(
     )
     _check_references(deployment, refs)
     check_critique_rules(datum, target, refs.params.params)
+    if not datum.is_amendment:
+        check_distinct_parties(deployment, chain[0], credential, target, proposer_record)
     output = TransactionOutput(
         deployment.critique_spend.address,
         Value(datum.stake_amount + POSITION_DEPOSIT),
@@ -1608,15 +1828,19 @@ def prepare_submit_critique(
     proposal: UTxO,
     window: TxWindow,
     wallet_address: Address,
+    proposer_record: Optional[vid.IdentityRecord] = None,
 ) -> PreparedTx:
     """Step 2 of a critique (MintCritiqueToken).
 
     - Spends the locked critique with MintCritiqueToken.
     - Mints the critique token (name from the locked output) through
       critique_mint.
-    - Reference inputs: the record chain, the params record, CrossRefs and
-      the proposal.
-    - Output 0: the critique with the token and ``submitted_at = lo``.
+    - Reference inputs: the record chain, the params record, CrossRefs, the
+      proposal (it holds the token of the seed ``proposal_ref``) and, except
+      for an Amendment critique, the record of the proposer
+      (``check_distinct_parties``).
+    - Output 0: the critique with the token and ``submitted_at = lo``, at the
+      address of the lock.
     """
     datum = _position_datum(locked, deployment.critique_spend, CritiqueDatum.from_data, "critique")
     if not _lovelace_only(locked):
@@ -1627,12 +1851,15 @@ def prepare_submit_critique(
     datum = dataclasses.replace(datum, submitted_at=window.lo)
     _check_references(deployment, refs)
     check_critique_rules(datum, target, refs.params.params)
+    references = [proposal]
+    if not datum.is_amendment:
+        references.append(check_distinct_parties(deployment, chain[0], datum.critic_credential, target, proposer_record).utxo)
 
-    builder = _identity_builder(context, deployment, chain, refs, window, signer, wallet_address, [proposal])
+    builder = _identity_builder(context, deployment, chain, refs, window, signer, wallet_address, references)
     token = critique_token_name(locked.input)
     builder.add_script_input(locked, script=deployment.critique_spend.witness, redeemer=_redeemer(MINT_CRITIQUE_TOKEN))
     builder.add_output(TransactionOutput(
-        deployment.critique_spend.address,
+        locked.output.address,
         Value(_coin(locked), _assets(deployment.critique_mint.hash, {token: 1})),
         datum=inline_datum(datum.to_data()),
     ))
@@ -1648,22 +1875,28 @@ def prepare_endorsement_lock(
     records: Sequence[vid.IdentityRecord],
     refs: GovernanceReferences,
     proposal: UTxO,
+    seed: TransactionInput,
     stake_amount: int,
     credential_key_hash: bytes,
     window: TxWindow,
     wallet_address: Address,
+    proposer_record: Optional[vid.IdentityRecord] = None,
 ) -> PreparedTx:
     """Step 1 of an endorsement: lock the endorsement datum at the
     endorsement validator, with ``created_at = window.lo`` (the range of
-    step 2). The client checks the rules of MintEndorsementToken first."""
+    step 2) and ``proposal_ref = seed``. ``proposal`` must hold
+    ``proposal_token_name(seed)``, and ``proposer_record`` is the record of
+    the proposer (``check_distinct_parties``). The client checks the rules
+    of MintEndorsementToken first."""
     agent_id = _agent_of(records)
     chain = _checked_chain(deployment, records, agent_id, window)
     credential = Credential.key(credential_key_hash)
     _declared_key(chain, credential)
-    target = _proposal_target(proposal, deployment)
-    datum = EndorsementDatum(agent_id, credential, proposal.input, int(stake_amount), window.lo)
+    target = _proposal_target(proposal, deployment, seed)
+    datum = EndorsementDatum(agent_id, credential, seed, int(stake_amount), window.lo)
     _check_references(deployment, refs)
     check_endorsement_rules(datum, target, refs.params.params)
+    check_distinct_parties(deployment, chain[0], credential, target, proposer_record)
     output = TransactionOutput(
         deployment.endorsement_spend.address,
         Value(datum.stake_amount + POSITION_DEPOSIT),
@@ -1682,15 +1915,19 @@ def prepare_submit_endorsement(
     proposal: UTxO,
     window: TxWindow,
     wallet_address: Address,
+    proposer_record: Optional[vid.IdentityRecord] = None,
 ) -> PreparedTx:
     """Step 2 of an endorsement (MintEndorsementToken).
 
     - Spends the locked endorsement with MintEndorsementToken.
-    - No mint: critique_mint needs a spent critique output, so an
-      endorsement has no token.
-    - Reference inputs: the record chain, the params record, CrossRefs and
-      the proposal.
-    - Output 0: the endorsement (same value) with ``created_at = lo``.
+    - Mints the endorsement token ``endorsement_token_name(endorser_did,
+      proposal_ref)`` through critique_mint (it finds the endorsement input
+      with ``endorsement_validator_hash`` of CrossRefs).
+    - Reference inputs: the record chain, the params record, CrossRefs, the
+      proposal (it holds the token of the seed ``proposal_ref``) and the
+      record of the proposer (``check_distinct_parties``).
+    - Output 0: the endorsement with the token, the value of the lock and
+      ``created_at = lo``, at the address of the lock.
     """
     datum = _position_datum(locked, deployment.endorsement_spend, EndorsementDatum.from_data, "endorsement")
     if not _lovelace_only(locked):
@@ -1701,15 +1938,23 @@ def prepare_submit_endorsement(
     datum = dataclasses.replace(datum, created_at=window.lo)
     _check_references(deployment, refs)
     check_endorsement_rules(datum, target, refs.params.params)
+    proposer = check_distinct_parties(deployment, chain[0], datum.endorser_credential, target, proposer_record)
 
-    builder = _identity_builder(context, deployment, chain, refs, window, signer, wallet_address, [proposal])
+    builder = _identity_builder(
+        context, deployment, chain, refs, window, signer, wallet_address, [proposal, proposer.utxo]
+    )
+    token = endorsement_token_name(datum.endorser_did, datum.proposal_ref)
     builder.add_script_input(
         locked, script=deployment.endorsement_spend.witness, redeemer=_redeemer(MINT_ENDORSEMENT_TOKEN)
     )
     builder.add_output(TransactionOutput(
-        deployment.endorsement_spend.address, locked.output.amount, datum=inline_datum(datum.to_data())
+        locked.output.address,
+        Value(_coin(locked), _assets(deployment.critique_mint.hash, {token: 1})),
+        datum=inline_datum(datum.to_data()),
     ))
-    return PreparedTx(builder, (signer,), datum)
+    builder.mint = _assets(deployment.critique_mint.hash, {token: 1})
+    builder.add_minting_script(deployment.critique_mint.witness, redeemer=_redeemer(MINT_ENDORSEMENT_TOKEN))
+    return PreparedTx(builder, (signer,), datum, minted=(token,))
 
 
 def _missing_keys(needed: Iterable[bytes], by_hash: Mapping[bytes, SigningKeyPair]) -> None:
@@ -1754,13 +1999,16 @@ def sign_prepared(prepared: PreparedTx, *, keys: Sequence[SigningKeyPair], chang
 
 @dataclass(frozen=True)
 class Submission:
-    """The result of an identity-checked action."""
+    """The result of an identity-checked action. ``seed`` is the output
+    reference of the lock that the creation spent: for a proposal, the seed
+    that critiques and endorsements name (``proposal_ref``)."""
 
     tx: str
     position: TransactionInput
     lock_tx: Optional[str] = None
     activity: Optional[TransactionInput] = None
     minted: tuple[bytes, ...] = ()
+    seed: Optional[TransactionInput] = None
 
 
 async def load_references(context: Any, deployment: GovernanceDeployment) -> GovernanceReferences:
@@ -1777,8 +2025,13 @@ async def load_identity(context: Any, deployment: GovernanceDeployment, agent_id
 
 
 async def load_activity(context: Any, deployment: GovernanceDeployment, agent_id: Union[bytes, str]) -> Optional[ActivityRecord]:
-    """The activity record of the agent, or None before its first proposal."""
+    """The activity record (node) of the agent, or None before its first proposal."""
     return find_activity(await context.async_utxos(str(deployment.proposal_spend.address)), deployment, agent_id)
+
+
+async def load_activity_list(context: Any, deployment: GovernanceDeployment) -> ActivityList:
+    """The activity list at the proposal validator (``find_activity_list``)."""
+    return find_activity_list(await context.async_utxos(str(deployment.proposal_spend.address)), deployment)
 
 
 async def load_proposal(context: Any, deployment: GovernanceDeployment, ref: TransactionInput) -> UTxO:
@@ -1787,6 +2040,26 @@ async def load_proposal(context: Any, deployment: GovernanceDeployment, ref: Tra
     if utxo is None:
         raise MissingReferenceError(f"the proposal {ref} is not at the proposal validator")
     return utxo
+
+
+async def load_named_proposal(context: Any, deployment: GovernanceDeployment, seed: TransactionInput) -> UTxO:
+    """The current output of the proposal with the seed ``seed``
+    (``find_proposal``)."""
+    utxo = find_proposal(await context.async_utxos(str(deployment.proposal_spend.address)), deployment, seed)
+    if utxo is None:
+        raise MissingReferenceError(f"no proposal at the proposal validator holds the token of the seed {seed}")
+    return utxo
+
+
+async def load_proposer_record(context: Any, deployment: GovernanceDeployment, proposal: UTxO) -> vid.IdentityRecord:
+    """The record of the proposer of ``proposal`` (any status), for the rule
+    of different parties."""
+    datum = ProposalDatum.from_data(proposal.output.datum)
+    utxos = await context.async_utxos(str(deployment.identity_address))
+    record = vid.find_record(utxos, deployment.identity_hash, datum.proposer_did)
+    if record is None:
+        raise MissingReferenceError(f"no record of the proposer {vid.did_from_id(datum.proposer_did)} at the identity address")
+    return record
 
 
 async def plan_window(context: Any, length_ms: int = DEFAULT_RANGE_MS) -> TxWindow:
@@ -1867,15 +2140,15 @@ async def submit_proposal(
     window = await plan_window(context)
     records = await load_identity(context, deployment, agent_id)
     refs = await load_references(context, deployment)
-    activity = await load_activity(context, deployment, agent_id)
+    activity_list = await load_activity_list(context, deployment)
     lock = prepare_proposal_lock(
-        context, deployment, records=records, refs=refs, activity=activity, terms=terms,
+        context, deployment, records=records, refs=refs, activity_list=activity_list, terms=terms,
         credential_key_hash=(credential or wallet).key_hash, window=window, wallet_address=wallet_address,
     )
     lock_id, tx, step = await _lock_then_create(
         context, lock, deployment.proposal_spend.address,
         lambda locked: prepare_submit_proposal(
-            context, deployment, locked=locked, records=records, refs=refs, activity=activity,
+            context, deployment, locked=locked, records=records, refs=refs, activity_list=activity_list,
             window=window, wallet_address=wallet_address,
         ),
         wallet, credential, wallet_address, window, attempts, delay,
@@ -1883,6 +2156,7 @@ async def submit_proposal(
     return Submission(
         str(tx.id), TransactionInput(tx.id, step.position_index), lock_id,
         TransactionInput(tx.id, step.activity_index), step.minted,
+        TransactionInput(TransactionId(bytes.fromhex(lock_id)), lock.position_index),
     )
 
 
@@ -1933,24 +2207,30 @@ async def submit_critique(
     attempts: int = 24,
     delay: float = 5.0,
 ) -> Submission:
-    """Lock and submit a critique of ``agent_id`` about a proposal."""
+    """Lock and submit a critique of ``agent_id`` about the proposal with the
+    seed ``proposal_ref`` (``Submission.seed`` of the proposal)."""
     window = await plan_window(context)
     records = await load_identity(context, deployment, agent_id)
     refs = await load_references(context, deployment)
-    proposal = await load_proposal(context, deployment, proposal_ref)
+    proposal = await load_named_proposal(context, deployment, proposal_ref)
+    proposer = await load_proposer_record(context, deployment, proposal)
     lock = prepare_critique_lock(
-        context, deployment, records=records, refs=refs, proposal=proposal, terms=terms,
+        context, deployment, records=records, refs=refs, proposal=proposal, seed=proposal_ref, terms=terms,
         credential_key_hash=(credential or wallet).key_hash, window=window, wallet_address=wallet_address,
+        proposer_record=proposer,
     )
     lock_id, tx, step = await _lock_then_create(
         context, lock, deployment.critique_spend.address,
         lambda locked: prepare_submit_critique(
             context, deployment, locked=locked, records=records, refs=refs, proposal=proposal,
-            window=window, wallet_address=wallet_address,
+            window=window, wallet_address=wallet_address, proposer_record=proposer,
         ),
         wallet, credential, wallet_address, window, attempts, delay,
     )
-    return Submission(str(tx.id), TransactionInput(tx.id, step.position_index), lock_id, minted=step.minted)
+    return Submission(
+        str(tx.id), TransactionInput(tx.id, step.position_index), lock_id, minted=step.minted,
+        seed=TransactionInput(TransactionId(bytes.fromhex(lock_id)), lock.position_index),
+    )
 
 
 async def submit_endorsement(
@@ -1966,24 +2246,30 @@ async def submit_endorsement(
     attempts: int = 24,
     delay: float = 5.0,
 ) -> Submission:
-    """Lock and submit an endorsement of ``agent_id`` for a proposal."""
+    """Lock and submit an endorsement of ``agent_id`` for the proposal with
+    the seed ``proposal_ref`` (``Submission.seed`` of the proposal)."""
     window = await plan_window(context)
     records = await load_identity(context, deployment, agent_id)
     refs = await load_references(context, deployment)
-    proposal = await load_proposal(context, deployment, proposal_ref)
+    proposal = await load_named_proposal(context, deployment, proposal_ref)
+    proposer = await load_proposer_record(context, deployment, proposal)
     lock = prepare_endorsement_lock(
-        context, deployment, records=records, refs=refs, proposal=proposal, stake_amount=stake_amount,
-        credential_key_hash=(credential or wallet).key_hash, window=window, wallet_address=wallet_address,
+        context, deployment, records=records, refs=refs, proposal=proposal, seed=proposal_ref,
+        stake_amount=stake_amount, credential_key_hash=(credential or wallet).key_hash, window=window,
+        wallet_address=wallet_address, proposer_record=proposer,
     )
     lock_id, tx, step = await _lock_then_create(
         context, lock, deployment.endorsement_spend.address,
         lambda locked: prepare_submit_endorsement(
             context, deployment, locked=locked, records=records, refs=refs, proposal=proposal,
-            window=window, wallet_address=wallet_address,
+            window=window, wallet_address=wallet_address, proposer_record=proposer,
         ),
         wallet, credential, wallet_address, window, attempts, delay,
     )
-    return Submission(str(tx.id), TransactionInput(tx.id, step.position_index), lock_id)
+    return Submission(
+        str(tx.id), TransactionInput(tx.id, step.position_index), lock_id, minted=step.minted,
+        seed=TransactionInput(TransactionId(bytes.fromhex(lock_id)), lock.position_index),
+    )
 
 
 def sdk_reference_inputs(*utxos: UTxO) -> list[dict]:

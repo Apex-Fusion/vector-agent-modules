@@ -8,11 +8,13 @@ Identity registry (Part 2 §3.8, §7): claim submission, challenge opening and
 juror registration read the agent's identity record and its ancestors as
 reference inputs. Identity records are created with ``build_register_identity``.
 ``build_consent_update`` makes Module-1 a party of a record.
-``build_apply_verdict`` applies a verdict that an oracle resolution
-(OracleResolve) minted, and ``build_reclaim_verdict`` returns the AP3X of a
-verdict output after its ``expires_at``. A jury resolution (ResolveJury)
-mints no verdict. The verdict datum and the ``identity_party`` redeemers are
-in ``simulation.identity_party``; the record format is in
+``build_oracle_resolve`` resolves a challenge with the Foundation oracle
+(OracleResolve) and mints the verdict when the verdict policy gives a rule
+for the outcome. ``build_apply_verdict`` applies that verdict, and
+``build_reclaim_verdict`` returns the AP3X of a verdict output after its
+``expires_at``. A jury resolution (ResolveJury) mints no verdict. The verdict
+datum and the ``identity_party`` redeemers are in
+``simulation.identity_party``; the record format is in
 ``simulation.vector_identity``.
 """
 import cbor2
@@ -3011,6 +3013,322 @@ def build_resolve_jury(
         "claimer_payout": result_claimer_payout,
         "auditor_payout": result_auditor_payout,
         "refund_to": str(wallet_addr),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# ACTION: ORACLE RESOLVE (Phase 1.0 — Foundation oracle, verdict mint)
+# ═══════════════════════════════════════════════════════════════════════
+
+#: ClaimDatum (types.ak) has 9 fields; field 8 is the ClaimState.
+CLAIM_DATUM_FIELDS = 9
+
+
+def _oracle_payouts(outcome: str, claim_stake: int, auditor_stake: int) -> tuple:
+    """The payouts of an oracle resolution (``verify_oracle_distribution`` of
+    challenge.ak) as ``(claimer amount, auditor amount)``; None means no
+    payout output. Oracle mode has no jury fee. The winner gets both stakes,
+    and Inconclusive returns each stake to its owner. The contract compares
+    the AP3X of a payout output with ``==``, so each amount is exact."""
+    total = claim_stake + auditor_stake
+    if outcome == identity_party.CLAIMER_WINS:
+        return total, None
+    if outcome == identity_party.AUDITOR_WINS:
+        return None, total
+    return claim_stake, auditor_stake
+
+
+def build_oracle_resolve(
+    context: OgmiosContext, deployment: DeploymentState,
+    skey, vkey, wallet_addr,
+    challenge_utxo_ref: str,
+    claim_utxo_ref: str,
+    *,
+    verdict: str,
+    reasoning_hash: bytes,
+    oracle_skey=None,
+    window_slots: int = IDENTITY_WINDOW_SLOTS,
+) -> dict:
+    """Build and submit an oracle resolution (OracleResolve, Phase 1.0;
+    ``validate_oracle_resolve`` of challenge.ak and the MintVerdict rule of
+    identity_party.ak, Part 2 §3.8). The Foundation oracle resolves a
+    challenge in the state PendingOracle with ``verdict`` ("ClaimerWins",
+    "AuditorWins" or "Inconclusive") and ``reasoning_hash``, the 32-byte
+    blake2b_256 hash of its public reasoning.
+
+    ``skey``, ``vkey`` and ``wallet_addr`` are the funding wallet. The wallet
+    pays the fees and the AP3X of the verdict output, and it gets the change.
+    ``oracle_skey`` is the signing key of the Foundation oracle
+    (``oracle_vkh`` of the AuditingConfig). Without ``oracle_skey``, the
+    wallet key must be the oracle key.
+
+    The transaction:
+      - spends the challenge input with the redeemer ``OracleResolve
+        { verdict, reasoning_hash }`` and the claim input that holds the
+        challenge's ``claim_token`` with the redeemer ``ForfeitClaim``;
+      - burns the challenge token (redeemer OracleResolve) and exactly that
+        claim token (redeemer ForfeitClaim);
+      - pays the stakes without a jury fee. The claim stake is the AP3X of
+        the claim input (``bound_claim``), and the auditor stake is the
+        ``stake_amount`` of the challenge. The winner gets both stakes;
+        Inconclusive returns each stake. Each payout is one output with the
+        exact amount, at the key credential of the datum;
+      - reads the CrossValidatorRefs and ProtocolParams reference inputs;
+      - has the oracle key hash as a required signer, and the oracle signs;
+      - when the verdict policy gives a rule for the outcome
+        (``identity_party.resolution_verdict``): reads the identity
+        configuration record at ``config_holder`` (it names M1), mints
+        exactly one verdict token under M1 (redeemer ``MintVerdict``) and
+        creates the verdict output (output 0) at the exact identity_party
+        address. The output holds AP3X and the verdict token only, and its
+        inline datum is ``{ agent, action, duration, challenge, deposit_to,
+        expires_at }`` with ``deposit_to`` = ``wallet_addr`` (the wallet
+        funds the AP3X of the output) and ``expires_at`` = the upper bound of
+        the validity range + 30 days. Inconclusive and an outcome without a
+        rule mint nothing;
+      - has no withdrawal.
+    The validity range has finite bounds and lasts at most one hour.
+
+    Refusals before any side effect (``ValueError``, ``IdentityError``): an
+    unknown verdict; a reasoning hash that does not have 32 bytes; an oracle
+    key that is not ``oracle_vkh`` of the deployment; a challenge that is
+    not an 11-field datum in the state PendingOracle or that does not hold
+    exactly one challenge token; a claim that is not in the state
+    Challenged or that does not hold the challenge's ``claim_token``; a
+    script credential in a payout; a missing configuration record (or one
+    that names another hash) when the outcome gives a verdict.
+
+    Returns: {tx_hash, verdict, claimer_payout, auditor_payout, verdict_ref,
+              verdict_token_hex, identity_verdict, validity_start_slot,
+              ttl_slot}. ``verdict_ref``, ``verdict_token_hex`` and
+    ``identity_verdict`` (``IdentityVerdict.to_json``) are None when the
+    resolution gives no verdict.
+    """
+    if verdict not in identity_party.OUTCOMES:
+        raise ValueError(
+            f"verdict must be one of {identity_party.OUTCOMES}; got {verdict!r}"
+        )
+    resolve_data = identity_party.oracle_resolve_redeemer(verdict, reasoning_hash)
+    # ClaimAction.ForfeitClaim (Constr 3): the claim spend and the claim burn.
+    forfeit_data = vector_identity.constr(3, [])
+
+    # ── The oracle key (challenge.ak oracle_signed) ──────────────────────
+    oracle_vkh = deployment.identity.oracle_vkh
+    signer_vkh = (
+        bytes(vkey.hash()) if oracle_skey is None
+        else bytes(oracle_skey.to_verification_key().hash())
+    )
+    if signer_vkh != oracle_vkh:
+        raise ValueError(
+            f"the oracle key hash {signer_vkh.hex()} is not the oracle_vkh "
+            f"{oracle_vkh.hex()} of the deployment; pass the oracle signing "
+            f"key as oracle_skey (OracleResolve needs the oracle signature)"
+        )
+
+    # ── The challenge (state PendingOracle) and its claim ────────────────
+    chal_txid_hex, chal_idx_str = challenge_utxo_ref.split("#")
+    challenge_utxo = resolve_utxo(chal_txid_hex, int(chal_idx_str))
+    claim_txid_hex, claim_idx_str = claim_utxo_ref.split("#")
+    claim_utxo = resolve_utxo(claim_txid_hex, int(claim_idx_str))
+
+    chal_fields = challenge_datum_fields(challenge_utxo)
+    state_tag = getattr(chal_fields[9], "tag", None)
+    if state_tag != 121:
+        raise ValueError(
+            f"challenge UTxO {challenge_utxo_ref} is not in the state "
+            f"PendingOracle: field[9] CBORTag={state_tag!r} (expected 121). "
+            f"OracleResolve resolves only a challenge in the state "
+            f"PendingOracle (challenge.ak validate_oracle_resolve)."
+        )
+    challenge_token = _single_token(challenge_utxo, bytes.fromhex(deployment.challenge_hash))
+
+    clm_datum_raw = claim_utxo.output.datum
+    if clm_datum_raw is None:
+        raise ValueError(f"claim UTxO {claim_utxo_ref} has no inline datum")
+    clm_datum = cbor2.loads(
+        clm_datum_raw.cbor if hasattr(clm_datum_raw, "cbor") else bytes(clm_datum_raw)
+    )
+    clm_fields = list(getattr(clm_datum, "value", None) or [])
+    if getattr(clm_datum, "tag", None) != 121 or len(clm_fields) != CLAIM_DATUM_FIELDS:
+        raise ValueError(
+            f"claim UTxO {claim_utxo_ref} does not hold a ClaimDatum "
+            f"(Constr 0 with {CLAIM_DATUM_FIELDS} fields)"
+        )
+    clm_state_tag = getattr(clm_fields[8], "tag", None)
+    if clm_state_tag != 122:
+        raise ValueError(
+            f"claim UTxO is not in Challenged state — field[8] "
+            f"CBORTag={clm_state_tag!r} (expected 122 = Challenged). "
+            f"ForfeitClaim requires a claim in state Challenged."
+        )
+    # The claim input must hold the claim token that the challenge names
+    # (ChallengeDatum.claim_token): the challenge validator (bound_claim),
+    # ForfeitClaim and the verdict mint accept only that claim.
+    claim_token = bytes(chal_fields[CHALLENGE_CLAIM_TOKEN])
+    held_token = _single_token(claim_utxo, bytes.fromhex(deployment.claim_hash))
+    if held_token != claim_token:
+        raise ValueError(
+            f"Claim UTxO {claim_utxo_ref} holds the claim token "
+            f"{held_token.hex()}, but the challenge names the claim_token "
+            f"{claim_token.hex()}. Pass the claim of this challenge."
+        )
+
+    def key_address(field, what: str) -> Address:
+        if getattr(field, "tag", None) != 121:
+            raise ValueError(
+                f"{what} is not a verification-key credential: {field!r}. "
+                f"The payout goes to the key credential of the datum."
+            )
+        return Address(payment_part=VerificationKeyHash(bytes(field.value[0])), network=NETWORK)
+
+    claimer_addr = key_address(clm_fields[1], "claim datum field[1] (claimer_credential)")
+    auditor_addr = key_address(chal_fields[2], "challenge datum field[2] (auditor_credential)")
+    claim_stake = _coin_of(claim_utxo)
+    auditor_stake = int(chal_fields[3])
+    claimer_payout, auditor_payout = _oracle_payouts(verdict, claim_stake, auditor_stake)
+
+    # ── Validity range and verdict ───────────────────────────────────────
+    # The verdict mint needs finite bounds and at most one hour; the same
+    # range is used without a verdict.
+    current_slot = context.last_block_slot
+    validity_start, ttl, lo, hi = identity_window(current_slot, window_slots)
+    identity_verdict = identity_party.resolution_verdict(
+        deployment.verdict_policy, verdict,
+        resolution=identity_party.ORACLE_RESOLVE,
+        claimer_did=bytes(clm_fields[0]),
+        auditor_did=bytes(chal_fields[1]),
+        challenge_tx_id=bytes(challenge_utxo.input.transaction_id),
+        challenge_index=challenge_utxo.input.index,
+        deposit_to=plutus_address(wallet_addr),
+        hi=hi,
+    )
+    m1 = deployment.identity.identity_party_hash
+    config_utxo = None
+    if identity_verdict is not None:
+        # The challenge validator reads M1 from the configuration record
+        # (resolution_verdict_ok).
+        config_utxo = find_config_record(context, deployment)
+
+    # ── Mint: both burns, and the verdict token when there is a verdict ──
+    challenge_policy = ScriptHash(bytes.fromhex(deployment.challenge_hash))
+    claim_policy = ScriptHash(bytes.fromhex(deployment.claim_hash))
+    mint_ma = MultiAsset()
+    chal_burn = Asset()
+    chal_burn[AssetName(challenge_token)] = -1
+    mint_ma[challenge_policy] = chal_burn
+    clm_burn = Asset()
+    clm_burn[AssetName(claim_token)] = -1
+    mint_ma[claim_policy] = clm_burn
+    policies = [bytes(challenge_policy), bytes(claim_policy)]
+    token_name = None
+    if identity_verdict is not None:
+        token_name = identity_verdict.token_name()
+        verdict_mint = Asset()
+        verdict_mint[AssetName(token_name)] = 1
+        mint_ma[ScriptHash(m1)] = verdict_mint
+        policies.append(m1)
+    policies.sort()
+
+    def verdict_output() -> TransactionOutput:
+        """The verdict output: the exact enterprise address of
+        identity_party, AP3X (the ledger minimum, from the wallet) and the
+        verdict token only, the verdict as inline datum, no reference
+        script."""
+        ma = MultiAsset()
+        asset = Asset()
+        asset[AssetName(token_name)] = 1
+        ma[ScriptHash(m1)] = asset
+        return _output_with_min_ada(
+            context, deployment.identity_party_addr, ma,
+            RawCBOR(identity_verdict.datum_cbor()), 0,
+        )
+
+    signers = [vkey.hash()]
+    if oracle_vkh != bytes(vkey.hash()):
+        signers.append(VerificationKeyHash(oracle_vkh))
+    signing_keys = _unique_signing_keys(
+        [skey] if oracle_skey is None else [skey, oracle_skey]
+    )
+
+    ensure_collateral(context, skey, vkey, wallet_addr)
+    wallet_utxos = get_wallet_utxos_no_collateral(context, wallet_addr)
+
+    def build_tx(units):
+        b = TransactionBuilder(context)
+        b.fee_buffer = 500_000
+        _add_script_input_with_fallback(
+            b, challenge_utxo, deployment.challenge_ref_utxo,
+            _identity_redeemer(resolve_data, units.get("resolve")),
+        )
+        _add_claim_script_input_with_fallback(
+            b, claim_utxo, deployment.claim_ref_utxo,
+            _identity_redeemer(forfeit_data, units.get("forfeit")),
+        )
+        for u in wallet_utxos:
+            b.add_input(u)
+        b.reference_inputs.add(deployment.cross_refs_utxo)
+        b.reference_inputs.add(deployment.params_utxo)
+        if config_utxo is not None:
+            b.reference_inputs.add(config_utxo)
+        b.mint = mint_ma
+        b.add_minting_script(
+            deployment.challenge_ref_utxo,
+            _identity_redeemer(resolve_data, units.get("challenge_burn")),
+        )
+        b.add_minting_script(
+            deployment.claim_ref_utxo,
+            _identity_redeemer(forfeit_data, units.get("claim_burn")),
+        )
+        if identity_verdict is not None:
+            b.add_minting_script(
+                deployment.identity_party_ref_utxo,
+                _identity_redeemer(identity_party.mint_verdict_redeemer(), units.get("verdict")),
+            )
+            b.add_output(verdict_output())
+        if claimer_payout is not None:
+            b.add_output(TransactionOutput(claimer_addr, Value(coin=claimer_payout)))
+        if auditor_payout is not None:
+            b.add_output(TransactionOutput(auditor_addr, Value(coin=auditor_payout)))
+        # No withdrawal. The ledger accepts a withdrawal from a reward
+        # account only for its whole balance, so the Consent and
+        # ApplyVerdict builders withdraw the whole balance of Script(M1)
+        # (module1_withdrawal). That rule applies only to a transaction
+        # with the identity_party withdrawal. MintVerdict
+        # (identity_party.mint_handler) does not read the withdrawals, and
+        # the challenge and claim validators do not read them, so this
+        # transaction withdraws nothing.
+        b.required_signers = list(signers)
+        b.validity_start = validity_start
+        b.ttl = ttl
+        return b
+
+    builder = build_tx({})
+    _, budgets = evaluate_and_rebuild(builder, skey, vkey, wallet_addr, context)
+    # Spend indices follow the sorted inputs; mint indices follow the
+    # sorted policy IDs.
+    all_inputs = [challenge_utxo, claim_utxo] + list(wallet_utxos)
+    units = {
+        "resolve": _units(budgets, "spend", _input_index(all_inputs, challenge_utxo)),
+        "forfeit": _units(budgets, "spend", _input_index(all_inputs, claim_utxo)),
+        "challenge_burn": _units(budgets, "mint", policies.index(bytes(challenge_policy))),
+        "claim_burn": _units(budgets, "mint", policies.index(bytes(claim_policy))),
+    }
+    if identity_verdict is not None:
+        units["verdict"] = _units(budgets, "mint", policies.index(m1))
+    builder2 = build_tx(units)
+    tx = builder2.build_and_sign(signing_keys, change_address=wallet_addr)
+    tx_hash = submit_tx(tx_to_bytes(tx))
+
+    return {
+        "tx_hash": tx_hash,
+        "verdict": verdict,
+        "claimer_payout": claimer_payout,
+        "auditor_payout": auditor_payout,
+        "verdict_ref": None if identity_verdict is None else f"{tx_hash}#0",
+        "verdict_token_hex": None if token_name is None else token_name.hex(),
+        "identity_verdict": None if identity_verdict is None else identity_verdict.to_json(),
+        "validity_start_slot": validity_start,
+        "ttl_slot": ttl,
     }
 
 

@@ -34,13 +34,18 @@ from pycardano.backend.base import GenesisParameters, ProtocolParameters
 from pycardano.serialization import IndefiniteList, RawCBOR
 
 from reputation_staking import vector_identity as vi
-from reputation_staking.client import ReputationStakingClient
+from reputation_staking.client import SEED_STAKE_ID, ReputationStakingClient
 from reputation_staking.constants import SLOT_LENGTH_S
 from reputation_staking.models import ProtocolParamsInfo
 from reputation_staking.plutus_data import (
+    AuditChallengeDatum,
+    AuditResolved,
     EndorsementDatum,
     EndorsementValidatorDatumChallenge,
     EndorsementValidatorDatumEndorsement,
+    NoStakeCredential,
+    OutputReference,
+    PlutusAddress,
     ProtocolParams,
     RepChallengeStateOpen,
     ReputationChallengeDatum,
@@ -79,6 +84,15 @@ REP_REF = "11" * 32 + "#0"
 END_REF = "12" * 32 + "#0"
 CROSS_REFS = "13" * 32 + "#0"
 
+# The Module-1 deployment that Module-3 names: the claim validator (its
+# reference script UTxO is the `claim_ref` of Module-1) and the challenge
+# validator (only its address and policy are read).
+CLAIM_SCRIPT = PlutusV3Script(b"\x03module-1 claim test script")
+CLAIM_HASH = plutus_script_hash(CLAIM_SCRIPT).payload.hex()
+CLAIM_REF = "15" * 32 + "#0"
+M1_CHALLENGE_HASH = "b2" * 28
+M1_DEPLOYER = bytes.fromhex("e1" * 28)
+
 
 def address(hash_hex: str) -> Address:
     return Address.from_primitive(script_hash_to_address(hash_hex))
@@ -115,8 +129,8 @@ def deploy_state(oracle_key_hash: bytes, **overrides) -> dict:
         "record_token_seed": "ee" * 32 + "#1",
         "params_token_policy": PARAMS_POLICY,
         "genesis_minting_window": LO + 2_419_200_000,
-        "module1_claim_validator_hash": "b1" * 28,
-        "module1_challenge_validator_hash": "b2" * 28,
+        "module1_claim_validator_hash": CLAIM_HASH,
+        "module1_challenge_validator_hash": M1_CHALLENGE_HASH,
         "module1_jury_pool_hash": "b3" * 28,
         "module1_refs_token_policy": "b4" * 28,
         "identity_hash": IDENTITY_HASH,
@@ -304,9 +318,20 @@ def cross_refs_utxo(wallet: Address) -> UTxO:
     )
 
 
+def new_stake_id() -> OutputReference:
+    """A fresh stake_id (the output reference of a seed that nobody spent
+    before)."""
+    tx_input = _next_input()
+    return OutputReference(transaction_id=bytes(tx_input.transaction_id), output_index=0)
+
+
+def stake_datum_of(utxo: UTxO) -> StakeDatum:
+    return StakeDatum.from_cbor(bytes(utxo.output.datum.cbor))
+
+
 def stake_utxo(agent_id: bytes, owner_key_hash: bytes, amount: int = 100 * AP3X,
                capabilities=("code_review", "testing"), last_updated: int = LO - vi.DAYS_7_MS,
-               challenge_locks=()) -> UTxO:
+               challenge_locks=(), stake_id: Optional[OutputReference] = None) -> UTxO:
     datum = StakeDatum(
         agent_did=agent_id,
         owner_credential=VerificationKeyCredential(owner_key_hash),
@@ -315,14 +340,20 @@ def stake_utxo(agent_id: bytes, owner_key_hash: bytes, amount: int = 100 * AP3X,
         last_updated=last_updated,
         history_points=0,
         challenge_locks=IndefiniteList(list(challenge_locks)),
+        stake_id=stake_id if stake_id is not None else new_stake_id(),
     )
     token = bytes.fromhex(derive_stake_token_name(agent_id.hex()))
-    return utxo_at(address(REP_HASH), Value(amount, tokens(REP_HASH, token)), datum=RawCBOR(datum.to_cbor()))
+    # A stake output holds at least the minimum lovelace of the ledger.
+    coin = max(amount, 2 * AP3X)
+    return utxo_at(address(REP_HASH), Value(coin, tokens(REP_HASH, token)), datum=RawCBOR(datum.to_cbor()))
 
 
 def endorsement_utxo(endorser_id: bytes, target_id: bytes, endorser_key_hash: bytes,
                      amount: int = 20 * AP3X, capabilities=("code_review",),
-                     created_at: int = LO - vi.DAY_MS, slashed_by=()) -> UTxO:
+                     created_at: int = LO - vi.DAY_MS, slashed_by=(),
+                     target_stake: Optional[OutputReference] = None) -> UTxO:
+    """An endorsement of `target_id`, bound to the stake whose stake_id is
+    `target_stake` (a stake that nobody holds when None)."""
     datum = EndorsementValidatorDatumEndorsement(
         datum=EndorsementDatum(
             endorser_did=endorser_id,
@@ -332,6 +363,7 @@ def endorsement_utxo(endorser_id: bytes, target_id: bytes, endorser_key_hash: by
             endorsed_capabilities=IndefiniteList([c.encode() for c in capabilities]),
             created_at=created_at,
             slashed_by=IndefiniteList(list(slashed_by)),
+            target_stake=target_stake if target_stake is not None else new_stake_id(),
         )
     )
     token = bytes.fromhex(derive_endorsement_token_name(endorser_id.hex(), target_id.hex()))
@@ -345,7 +377,8 @@ def challenge_token(challenger_id: bytes, target_id: bytes, capability: str = "c
 
 def challenge_utxo(challenger_id: bytes, target_id: bytes, challenger_key_hash: bytes,
                    target_key_hash: bytes, state=None, amount: int = 25 * AP3X,
-                   capability: str = "code_review") -> UTxO:
+                   capability: str = "code_review", created_at: int = LO - vi.DAY_MS,
+                   counter_evidence_hash: bytes = b"", response_submitted_at: int = 0) -> UTxO:
     datum = EndorsementValidatorDatumChallenge(
         datum=ReputationChallengeDatum(
             challenger_did=challenger_id,
@@ -356,10 +389,10 @@ def challenge_utxo(challenger_id: bytes, target_id: bytes, challenger_key_hash: 
             stake_amount=amount,
             evidence_hash=b"\x0e" * 32,
             evidence_uri=b"ipfs://evidence",
-            created_at=LO - vi.DAY_MS,
-            counter_evidence_hash=b"",
-            counter_evidence_uri=b"",
-            response_submitted_at=0,
+            created_at=created_at,
+            counter_evidence_hash=counter_evidence_hash,
+            counter_evidence_uri=b"ipfs://counter-evidence" if response_submitted_at else b"",
+            response_submitted_at=response_submitted_at,
             state=state or RepChallengeStateOpen(),
         )
     )
@@ -369,15 +402,53 @@ def challenge_utxo(challenger_id: bytes, target_id: bytes, challenger_key_hash: 
     return utxo_at(address(END_HASH), Value(amount, tokens(END_HASH, token)), datum=RawCBOR(datum.to_cbor()))
 
 
+def audit_resolved(verdict) -> AuditResolved:
+    """The Module-1 state AuditResolved { verdict, refund_to }."""
+    return AuditResolved(
+        verdict=verdict,
+        refund_to=PlutusAddress(VerificationKeyCredential(b"\x24" * 28), NoStakeCredential()),
+    )
+
+
+def audit_challenge_utxo(claim_token: bytes, auditor_id: bytes, state,
+                         token_name: bytes = b"chl_" + b"\x01" * 28,
+                         address_hash: Optional[str] = None) -> UTxO:
+    """A Module-1 challenge of the claim with the token `claim_token` at the
+    Module-1 challenge address, with one Module-1 challenge token."""
+    policy = M1_CHALLENGE_HASH
+    datum = AuditChallengeDatum(
+        claim_ref=OutputReference(transaction_id=b"\x21" * 32, output_index=0),
+        auditor_did=auditor_id,
+        auditor_credential=VerificationKeyCredential(b"\x22" * 28),
+        stake_amount=25 * AP3X,
+        evidence_hash=b"\x23" * 32,
+        evidence_uri=b"ipfs://audit-evidence",
+        challenged_at=LO - vi.DAY_MS,
+        resolution_deadline=5_400_000,
+        eligible_jurors=IndefiniteList([]),
+        state=state,
+        claim_token=claim_token,
+    )
+    return utxo_at(
+        address(address_hash or policy), Value(25 * AP3X, tokens(policy, token_name)),
+        datum=RawCBOR(datum.to_cbor()),
+    )
+
+
 def deployment_chain(wallet_skey: PaymentSigningKey, oracle_key_hash: Optional[bytes] = None):
-    """A fake chain with the deployment UTxOs and two wallet UTxOs. Returns
-    (context, deploy state)."""
+    """A fake chain with the deployment UTxOs, the reference script of the
+    Module-1 claim validator (at the Module-1 deployer address) and two
+    wallet UTxOs. Returns (context, deploy state)."""
     context = FakeContext()
     wallet = key_address(key_hash(wallet_skey))
     context.add(utxo_at(wallet, Value(20 * AP3X), script=REP_SCRIPT, tx_hex=REP_REF.split("#")[0]))
     context.add(utxo_at(wallet, Value(20 * AP3X), script=END_SCRIPT, tx_hex=END_REF.split("#")[0]))
     context.add(cross_refs_utxo(wallet))
     context.add(params_record())
+    context.add(utxo_at(
+        key_address(M1_DEPLOYER), Value(30 * AP3X), script=CLAIM_SCRIPT,
+        tx_hex=CLAIM_REF.split("#")[0],
+    ))
     context.add(utxo_at(wallet, Value(5_000 * AP3X)))
     context.add(utxo_at(wallet, Value(10 * AP3X)))
     return context, deploy_state(oracle_key_hash or key_hash(wallet_skey))
@@ -443,8 +514,8 @@ class World:
     A (staker, target), B (endorser, challenger) and P (parent of a
     subagent). Each agent has its own controller key."""
 
-    def __init__(self):
-        self.wallet = PaymentSigningKey.generate()
+    def __init__(self, wallet: Optional[PaymentSigningKey] = None):
+        self.wallet = wallet or PaymentSigningKey.generate()
         self.context, self.state = deployment_chain(self.wallet)
         self.ctrl = {name: PaymentSigningKey.generate() for name in ("A", "B", "P")}
         self.ids = {
@@ -453,7 +524,9 @@ class World:
             "P": vi.identifier_from_seed(bytes.fromhex("0c" * 32), 0),
         }
         self.records = {}
-        self.owner_a = key_hash(PaymentSigningKey.generate())
+        # owner_credential of A's stakes: a key that A's record lists.
+        self.owner_a_key = PaymentSigningKey.generate()
+        self.owner_a = key_hash(self.owner_a_key)
 
     def did(self, name: str) -> str:
         return vi.did_from_id(self.ids[name])
@@ -461,12 +534,15 @@ class World:
     def record(self, name: str, **changes):
         """Put the record of an agent at the identity address. The record
         lists the wallet key with the transaction purpose (unless `keys` is
-        given), so the wallet key is a declared credential of the record."""
+        given), so the wallet key is a declared credential of the record.
+        A's record also lists the key of owner_a (the owner_credential of
+        A's stakes)."""
         if name in self.records:
             self.context.remove(self.records[name])
-        changes.setdefault("keys", (
-            vi.Key(vi.KeyType.ED25519, public_key(self.wallet), vi.PURPOSE_TRANSACTION),
-        ))
+        keys = [vi.Key(vi.KeyType.ED25519, public_key(self.wallet), vi.PURPOSE_TRANSACTION)]
+        if name == "A":
+            keys.append(vi.Key(vi.KeyType.ED25519, public_key(self.owner_a_key), vi.PURPOSE_TRANSACTION))
+        changes.setdefault("keys", tuple(keys))
         datum = identity_record(public_key(self.ctrl[name]), **changes)
         self.records[name] = self.context.add(record_utxo(self.ids[name], datum))
         return self.records[name]
@@ -495,6 +571,7 @@ class World:
             last_updated=0,
             history_points=0,
             challenge_locks=IndefiniteList([]),
+            stake_id=SEED_STAKE_ID,
         )
         return self.context.add(
             utxo_at(address(REP_HASH), Value(2 * AP3X), datum=RawCBOR(datum.to_cbor()))

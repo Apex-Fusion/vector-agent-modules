@@ -53,10 +53,13 @@ def build_stake_datum_json(
     stake_amount: int,
     capabilities: List[str],
     last_updated_ms: int,
+    seed_tx_hash: str,
+    seed_tx_ix: int,
 ) -> dict:
-    """Build a new StakeDatum (7 fields). last_updated is POSIX ms (the
+    """Build a new StakeDatum (8 fields). last_updated is POSIX ms (the
     upper bound of the validity range). history_points is 0 and
-    challenge_locks is empty at creation."""
+    challenge_locks is empty at creation. stake_id (the last field) is the
+    output reference of the seed input that CreateStake spends."""
     return {
         "constructor": 0,
         "fields": [
@@ -67,6 +70,7 @@ def build_stake_datum_json(
             {"int": last_updated_ms},
             {"int": 0},  # history_points
             {"list": []},  # challenge_locks
+            output_reference_json(seed_tx_hash, seed_tx_ix),  # stake_id
         ],
     }
 
@@ -78,11 +82,15 @@ def build_endorsement_datum_json(
     stake_amount: int,
     capabilities: List[str],
     created_at_ms: int,
+    target_stake_tx_hash: str,
+    target_stake_tx_ix: int,
 ) -> dict:
     """Build EndorsementDatum wrapped in EndorsementValidatorDatum.Endorsement.
 
-    Aiken uses NESTED Constr encoding: Constr(0, [Constr(0, [7 fields])]).
-    slashed_by is empty at creation.
+    Aiken uses NESTED Constr encoding: Constr(0, [Constr(0, [8 fields])]).
+    slashed_by is empty at creation. target_stake (the last field) is the
+    stake_id of the target stake that the endorsement backs (the bound
+    stake, a reference input of the creation).
     """
     return {
         "constructor": 0,  # Endorsement variant
@@ -97,6 +105,7 @@ def build_endorsement_datum_json(
                     {"list": [{"bytes": cap.encode().hex()} for cap in capabilities]},
                     {"int": created_at_ms},
                     {"list": []},  # slashed_by
+                    output_reference_json(target_stake_tx_hash, target_stake_tx_ix),
                 ],
             },
         ],
@@ -197,11 +206,10 @@ def redeemer_json(constructor: int, fields: Any = None) -> dict:
     return {"constructor": constructor, "fields": fields or []}
 
 
-# Reputation mint redeemers
+# Reputation mint redeemers (no redeemer burns a stake token)
 MINT_STAKE_TOKEN = redeemer_json(0)
-BURN_STAKE_TOKEN = redeemer_json(1)
-MINT_HISTORY_BONUS = redeemer_json(2)
-BURN_GENESIS_BONUS = redeemer_json(3)
+MINT_HISTORY_BONUS = redeemer_json(1)
+BURN_GENESIS_BONUS = redeemer_json(2)
 
 # Reputation spend redeemers
 CREATE_STAKE = redeemer_json(0)

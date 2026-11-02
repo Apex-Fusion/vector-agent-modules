@@ -8,10 +8,17 @@ Schema versions (PRAGMA user_version):
   2  agent_scores.identity_status (the effective status of the agent's
      identity record at index time: active, suspended, revoked, retired or
      missing) and agent_scores.indexed_at_ms (the index time, POSIX ms).
+  3  stakes.stake_id (the seed output reference of CreateStake, "tx#ix"),
+     endorsements.target_stake (the stake_id of the stake that the
+     endorsement backs) and agent_scores.stake_status (missing,
+     below_minimum or staked). No action burns a stake token: a fully
+     decayed stake stays with stake_amount 0 and has the stake status
+     below_minimum.
 
 `IndexerStorage` migrates an existing database file when it opens it: it
 adds the new columns and keeps the rows. A row from an older schema gets
-identity_status 'missing' and tier 'Unverified' until the next poll.
+identity_status 'missing' and tier 'Unverified', an empty stake_id and
+target_stake, and stake_status 'missing' until the next poll.
 
 Agent identifiers are stored as 64 lowercase hex characters.
 """
@@ -25,12 +32,15 @@ from typing import Optional
 
 DEFAULT_DB_PATH = "reputation_index.db"
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Columns of later schema versions: (table, column, definition).
 _ADDED_COLUMNS = (
     ("agent_scores", "identity_status", "TEXT NOT NULL DEFAULT 'missing'"),
     ("agent_scores", "indexed_at_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("agent_scores", "stake_status", "TEXT NOT NULL DEFAULT 'missing'"),
+    ("stakes", "stake_id", "TEXT NOT NULL DEFAULT ''"),
+    ("endorsements", "target_stake", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -161,16 +171,19 @@ class IndexerStorage:
         *,
         identity_status: str,
         indexed_at_ms: int,
+        stake_status: str = "missing",
     ):
         """Store the score of an agent. `slot` is the chain tip slot of the
-        poll, `indexed_at_ms` its POSIX time, and `identity_status` the
-        effective status of the agent's identity record at that time."""
+        poll, `indexed_at_ms` its POSIX time, `identity_status` the
+        effective status of the agent's identity record at that time and
+        `stake_status` the status of its self-stake (missing, below_minimum
+        or staked; scoring.stake_status)."""
         self.conn.execute(
             """INSERT INTO agent_scores
                (agent_did, self_stake, endorsement_total, challenge_total,
                 history_bonus, decay, net_score, tier, last_updated_slot,
-                identity_status, indexed_at_ms)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                identity_status, indexed_at_ms, stake_status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(agent_did) DO UPDATE SET
                  self_stake=excluded.self_stake,
                  endorsement_total=excluded.endorsement_total,
@@ -181,11 +194,12 @@ class IndexerStorage:
                  tier=excluded.tier,
                  last_updated_slot=excluded.last_updated_slot,
                  identity_status=excluded.identity_status,
-                 indexed_at_ms=excluded.indexed_at_ms
+                 indexed_at_ms=excluded.indexed_at_ms,
+                 stake_status=excluded.stake_status
             """,
             (agent_did, self_stake, endorsement_total, challenge_total,
              history_bonus, decay, net_score, tier, slot,
-             identity_status, indexed_at_ms),
+             identity_status, indexed_at_ms, stake_status),
         )
         self.conn.commit()
 
@@ -220,21 +234,25 @@ class IndexerStorage:
     def upsert_stake(
         self, utxo_ref: str, agent_did: str, owner_credential: str,
         stake_amount: int, capabilities: list, last_updated: int,
-        history_points: int,
+        history_points: int, *, stake_id: str = "",
     ):
+        """Store a stake UTxO. A stake with stake_amount 0 (fully decayed)
+        is a stake like any other. `stake_id` is "tx#ix" of the seed of
+        CreateStake."""
         self.conn.execute(
             """INSERT INTO stakes
                (utxo_ref, agent_did, owner_credential, stake_amount,
-                capabilities, last_updated, history_points)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+                capabilities, last_updated, history_points, stake_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(utxo_ref) DO UPDATE SET
                  stake_amount=excluded.stake_amount,
                  capabilities=excluded.capabilities,
                  last_updated=excluded.last_updated,
-                 history_points=excluded.history_points
+                 history_points=excluded.history_points,
+                 stake_id=excluded.stake_id
             """,
             (utxo_ref, agent_did, owner_credential, stake_amount,
-             json.dumps(capabilities), last_updated, history_points),
+             json.dumps(capabilities), last_updated, history_points, stake_id),
         )
         self.conn.commit()
 
@@ -253,17 +271,20 @@ class IndexerStorage:
     def upsert_endorsement(
         self, utxo_ref: str, endorser_did: str, target_did: str,
         stake_amount: int, capabilities: list, created_at: int,
+        *, target_stake: str = "",
     ):
+        """Store an endorsement UTxO. `target_stake` is the stake_id
+        ("tx#ix") of the stake that the endorsement backs."""
         self.conn.execute(
             """INSERT INTO endorsements
                (utxo_ref, endorser_did, target_did, stake_amount,
-                capabilities, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)
+                capabilities, created_at, target_stake)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(utxo_ref) DO UPDATE SET
                  stake_amount=excluded.stake_amount
             """,
             (utxo_ref, endorser_did, target_did, stake_amount,
-             json.dumps(capabilities), created_at),
+             json.dumps(capabilities), created_at, target_stake),
         )
         self.conn.commit()
 
@@ -395,13 +416,15 @@ class IndexerStorage:
         ClaimDecayRefund needs at least one inactive epoch after the
         activity window: (now - last_updated) // epoch_length >
         activity_window, so last_updated <= now - (activity_window + 1) *
-        epoch_length.
+        epoch_length. It also needs a positive decay amount, so a fully
+        decayed stake (stake_amount 0, which stays as a stake) is not
+        eligible. Each stake of an agent is a row (`stake_id`).
         """
         cutoff_ms = now_ms - (activity_window + 1) * epoch_length
 
         rows = self.conn.execute(
-            "SELECT s.agent_did, s.stake_amount, s.last_updated, a.tier, a.net_score, "
-            "a.identity_status "
+            "SELECT s.agent_did, s.stake_id, s.stake_amount, s.last_updated, a.tier, "
+            "a.net_score, a.identity_status "
             "FROM stakes s "
             "LEFT JOIN agent_scores a ON s.agent_did = a.agent_did "
             "WHERE s.last_updated <= ? AND s.stake_amount > 0",
@@ -446,6 +469,13 @@ class IndexerStorage:
         ).fetchall():
             identity_counts[row["identity_status"]] = row["cnt"]
 
+        stake_counts = {}
+        for row in self.conn.execute(
+            "SELECT stake_status, COUNT(*) as cnt FROM agent_scores "
+            "GROUP BY stake_status"
+        ).fetchall():
+            stake_counts[row["stake_status"]] = row["cnt"]
+
         return {
             "total_agents": total_agents,
             "total_staked_dfm": total_staked,
@@ -457,6 +487,7 @@ class IndexerStorage:
             "sybil_flagged_agents": sybil_flagged,
             "tier_distribution": tier_counts,
             "identity_status_distribution": identity_counts,
+            "stake_status_distribution": stake_counts,
         }
 
     def get_all_endorsements(self) -> list:

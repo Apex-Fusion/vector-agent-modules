@@ -16,9 +16,10 @@ Handles the complete deployment flow:
   4. Apply GovernanceConfig (11 fields, identity_hash last) to all validators
      via `aiken blueprint apply`
   5. Deploy to the chain:
-     a. One transaction spends the seed, mints the `params` and `oracle` record
-        tokens, and creates the GovernanceParams record (output 0) and the
-        oracle record (output 1)
+     a. One transaction spends the seed, mints the `params`, `oracle` and
+        `activity` record tokens, and creates the GovernanceParams record
+        (output 0), the oracle record (output 1) and the head of the activity
+        list (output 2) at the proposal_spend address of step 4
      b. Deploy holder reference scripts (params/oracle/treasury)
      c. Deploy Module-6 validator reference scripts (CIP-33)
      d. Create Treasury batch UTxOs
@@ -58,6 +59,7 @@ import cbor2
 from dotenv import load_dotenv
 
 from deploy_common import (
+    ACTIVITY_TOKEN_NAME,
     HOLDER_BLUEPRINT_PATH,
     HOLDER_TAGS,
     IDENTITY_HASH_ENV,
@@ -67,6 +69,7 @@ from deploy_common import (
     DeployInputError,
     apply_holder,
     apply_record_token_policy,
+    build_activity_head_data,
     build_cross_refs_data,
     build_governance_config_cbor,
     find_record_utxo,
@@ -555,14 +558,18 @@ async def deploy():
 
         params_addr = script_hash_to_address(holders["params"]["hash"])
         oracle_addr = script_hash_to_address(holders["oracle"]["hash"])
+        # The head of the activity list sits at the proposal_spend address of
+        # step 4 (the applied hash is known before the first on-chain step).
+        activity_addr = script_hash_to_address(proposal_hash)
 
         # 5a: First on-chain step. One transaction spends the seed, mints the
-        # `params` and `oracle` record tokens, and creates the GovernanceParams
-        # record (output 0) and the oracle record (output 1).
-        if "params_utxo" in tx_hashes and "oracle_utxo" in tx_hashes:
-            print(f"\n  5a. GovernanceParams and Oracle records already created (skipping)")
+        # `params`, `oracle` and `activity` record tokens, and creates the
+        # GovernanceParams record (output 0), the oracle record (output 1) and
+        # the head of the activity list (output 2).
+        if all(key in tx_hashes for key in ("params_utxo", "oracle_utxo", "activity_head")):
+            print(f"\n  5a. GovernanceParams, Oracle and activity head records already created (skipping)")
         else:
-            print("\n  5a. Minting record tokens + creating GovernanceParams and Oracle records...")
+            print("\n  5a. Minting record tokens + creating GovernanceParams, Oracle and activity head records...")
             wallet_utxos = await agent.context.async_utxos(str(agent._wallet.payment_address))
             seed_utxo = next(
                 (u for u in wallet_utxos if utxo_ref(u) == record_token["seed"]), None
@@ -577,7 +584,11 @@ async def deploy():
                     await agent.context.async_utxos(oracle_addr),
                     record_token["policy_id"], ORACLE_TOKEN_NAME,
                 )
-                if params_record is None or oracle_record is None:
+                activity_head = find_record_utxo(
+                    await agent.context.async_utxos(activity_addr),
+                    record_token["policy_id"], ACTIVITY_TOKEN_NAME,
+                )
+                if params_record is None or oracle_record is None or activity_head is None:
                     print(f"  ERROR: Seed UTxO {record_token['seed']} is spent and the records are not on chain.")
                     print("         If the record transaction is pending, wait and run again.")
                     print(f"         Otherwise move {DEPLOY_STATE_FILE} to a different path")
@@ -585,8 +596,9 @@ async def deploy():
                     return
                 tx_hashes["params_utxo"] = str(params_record.input.transaction_id)
                 tx_hashes["oracle_utxo"] = str(oracle_record.input.transaction_id)
+                tx_hashes["activity_head"] = str(activity_head.input.transaction_id)
                 print(f"  Records found: params {utxo_ref(params_record)}, "
-                      f"oracle {utxo_ref(oracle_record)}")
+                      f"oracle {utxo_ref(oracle_record)}, activity head {utxo_ref(activity_head)}")
             else:
                 from vector_agent.governance.datums import build_governance_params, build_oracle_datum
                 params_datum = build_governance_params()
@@ -605,11 +617,14 @@ async def deploy():
                     [
                         (params_addr, params_datum.data, PARAMS_TOKEN_NAME),  # output 0
                         (oracle_addr, oracle_datum.data, ORACLE_TOKEN_NAME),  # output 1
+                        # output 2: the head of the empty activity list
+                        (activity_addr, build_activity_head_data(wallet["vkey_hash"]), ACTIVITY_TOKEN_NAME),
                     ],
                     "records",
                 )
                 tx_hashes["params_utxo"] = tx
                 tx_hashes["oracle_utxo"] = tx
+                tx_hashes["activity_head"] = tx
                 await asyncio.sleep(TX_WAIT)
             save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
                               proposal_hash, critique_hash, tx_hashes, identity_hash)
@@ -712,7 +727,10 @@ def save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_val
     record_token: {"policy_id", "seed", ...} of the one-shot record token
     policy. The holders are owned by the wallet key (holder_owner_vkey_hash).
     identity_hash: the last GovernanceConfig field, from the identity
-    deployment.
+    deployment. activity_head: the head of the activity list, at the
+    proposal_spend address with the `activity` record token. tx_hashes
+    ["activity_head"] is the transaction of the record step (5a); the head
+    moves with each insertion after it, so clients find it by its token.
     """
     state = {
         "network": NETWORK,
@@ -736,6 +754,12 @@ def save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_val
         "critique_validator_hash": critique_hash,
         "identity_hash": identity_hash,
         "cross_refs_address": script_hash_to_address(holders["oracle"]["hash"]),
+        "activity_head": {
+            "address": script_hash_to_address(proposal_hash),
+            "record_token_policy": record_token["policy_id"],
+            "token_name": ACTIVITY_TOKEN_NAME.decode(),
+            "tx": tx_hashes.get("activity_head"),
+        },
         "tx_hashes": tx_hashes,
         "explorer_url": EXPLORER_URL,
         "ogmios_url": OGMIOS_URL,

@@ -4,12 +4,14 @@ import json
 
 from reputation_staking.datums import (
     BURN_CHALLENGE_TOKEN,
+    BURN_GENESIS_BONUS,
     CREATE_STAKE,
     DISTRIBUTE_OUTCOME,
     EXPIRE_CHALLENGE,
     LOCK_FOR_CHALLENGE,
     MINT_CHALLENGE_TOKEN,
     MINT_ENDORSEMENT_TOKEN,
+    MINT_HISTORY_BONUS,
     MINT_STAKE_TOKEN,
     build_challenge_datum_json,
     build_endorsement_datum_json,
@@ -28,6 +30,8 @@ from tests.conftest import AGENT_A_DID, AGENT_B_DID
 VKEY_HASH = "2ef77ec4340057363c3824919a61db70ee9683ee9b7d15283aa91931"
 # A POSIX ms time: the lower bound of a validity range
 LO_MS = 1_775_799_692_000
+# The seed output reference of a stake (its stake_id)
+SEED_TX = "5e" * 32
 
 
 def _challenge(target_credential=None, created_at_ms=LO_MS):
@@ -48,34 +52,54 @@ class TestVkCredentialJson:
 
 
 class TestStakeDatumJson:
+    def _stake(self):
+        return build_stake_datum_json(
+            AGENT_A_DID, VKEY_HASH, 10_000_000, ["code_review"], LO_MS, SEED_TX, 3,
+        )
+
     def test_field_count(self):
-        """7 fields; challenge_locks (last) is empty at creation."""
-        datum = build_stake_datum_json(AGENT_A_DID, VKEY_HASH, 10_000_000, ["code_review"], LO_MS)
-        assert len(datum["fields"]) == 7
+        """8 fields; challenge_locks is empty at creation and stake_id (last)
+        is the seed output reference."""
+        datum = self._stake()
+        assert len(datum["fields"]) == 8
         assert datum["fields"][6] == {"list": []}
+        assert datum["fields"][7] == {
+            "constructor": 0, "fields": [{"bytes": SEED_TX}, {"int": 3}],
+        }
 
     def test_constructor_zero(self):
-        datum = build_stake_datum_json(AGENT_A_DID, VKEY_HASH, 10_000_000, ["code_review"], LO_MS)
-        assert datum["constructor"] == 0
+        assert self._stake()["constructor"] == 0
 
     def test_posix_ms_timestamp(self):
         """last_updated is the POSIX ms value as given (the upper bound)."""
-        datum = build_stake_datum_json(AGENT_A_DID, VKEY_HASH, 10_000_000, ["code_review"], LO_MS)
-        assert datum["fields"][4]["int"] == LO_MS
+        assert self._stake()["fields"][4]["int"] == LO_MS
 
 
 class TestEndorsementDatumJson:
     def test_nested_constr(self):
-        """Endorsement uses nested Constr: Constr(0, [Constr(0, [7 fields])])."""
+        """Endorsement uses nested Constr: Constr(0, [Constr(0, [8 fields])])."""
         datum = build_endorsement_datum_json(
-            AGENT_B_DID, VKEY_HASH, AGENT_A_DID, 5_000_000, ["code_review"], LO_MS
+            AGENT_B_DID, VKEY_HASH, AGENT_A_DID, 5_000_000, ["code_review"], LO_MS, SEED_TX, 3,
         )
         assert datum["constructor"] == 0  # Endorsement variant
         inner = datum["fields"][0]
         assert inner["constructor"] == 0  # Inner EndorsementDatum
-        assert len(inner["fields"]) == 7
+        assert len(inner["fields"]) == 8
         assert inner["fields"][5] == {"int": LO_MS}
         assert inner["fields"][6] == {"list": []}  # slashed_by
+        # target_stake: the stake_id of the bound stake
+        assert inner["fields"][7] == {
+            "constructor": 0, "fields": [{"bytes": SEED_TX}, {"int": 3}],
+        }
+
+
+class TestReputationMintRedeemers:
+    def test_no_stake_burn(self):
+        """StakeMintAction has no BurnStakeToken: MintStakeToken 0,
+        MintHistoryBonus 1, BurnGenesisBonus 2."""
+        assert MINT_STAKE_TOKEN == {"constructor": 0, "fields": []}
+        assert MINT_HISTORY_BONUS == {"constructor": 1, "fields": []}
+        assert BURN_GENESIS_BONUS == {"constructor": 2, "fields": []}
 
 
 class TestChallengeDatumJson:

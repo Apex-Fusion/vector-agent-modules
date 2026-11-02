@@ -73,10 +73,12 @@ from tests.chain_fixtures import (
     key_hash,
     mint_of,
     outputs_to,
+    public_key,
     redeemers_of,
     ref,
     refs_of,
     signers_of,
+    stake_datum_of,
     utxo_at,
     witness_keys,
 )
@@ -138,6 +140,9 @@ class TestCreateStake:
         [out] = outputs_to(tx, address(REP_HASH))
         assert out.datum.last_updated == HI
         assert list(out.datum.challenge_locks) == []
+        # stake_id: the output reference of the spent seed
+        assert out.datum.stake_id.transaction_id == bytes(seed.input.transaction_id)
+        assert out.datum.stake_id.output_index == seed.input.index
         assert bytes(out.datum.agent_did) == world.ids["A"]
         assert out.datum.owner_credential == VerificationKeyCredential(key_hash(world.wallet))
         assert out.amount.coin == 10 * AP3X
@@ -226,7 +231,30 @@ class TestMintEndorsement:
         assert inner.endorser_credential == VerificationKeyCredential(key_hash(world.wallet))
         assert bytes(inner.endorser_did) == world.ids["B"]
         assert bytes(inner.target_did) == world.ids["A"]
+        # The bound stake: the stake that the creation reads
+        assert inner.target_stake == stake_datum_of(stake).stake_id
         assert [type(d) for _, d in redeemers_of(tx)] == [MintEndorsementTokenRedeemer]
+
+    def test_binds_the_largest_stake_or_the_named_stake(self, world):
+        """An agent can have more than one stake: by default the endorsement
+        reads the largest one; `target_stake` names another one."""
+        small = world.stake_a(amount=20 * AP3X)
+        large = world.stake_a(amount=200 * AP3X)
+        tx = self.build(world)
+        [out] = outputs_to(tx, address(END_HASH))
+        assert out.datum.datum.target_stake == stake_datum_of(large).stake_id
+        assert ref(large) in refs_of(tx) and ref(small) not in refs_of(tx)
+        stake_id = stake_datum_of(small).stake_id
+        named = f"{bytes(stake_id.transaction_id).hex()}#{stake_id.output_index}"
+        tx = self.build(world, target_stake=named)
+        [out] = outputs_to(tx, address(END_HASH))
+        assert out.datum.datum.target_stake == stake_id
+        assert ref(small) in refs_of(tx) and ref(large) not in refs_of(tx)
+
+    def test_refuses_a_stake_id_the_target_does_not_hold(self, world):
+        world.stake_a()
+        with pytest.raises(RuntimeError, match="no stake with stake_id"):
+            self.build(world, target_stake="ab" * 32 + "#0")
 
     def test_target_subagent_has_parent_reference_input(self, world):
         world.stake_a()
@@ -418,8 +446,10 @@ class TestDistributeOutcome:
         stake = world.client().find_stake_utxo(world.did("A"))
         tx = world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
         assert {ref(challenge), ref(stake)} <= inputs_of(tx)
-        # No identity record: a bonus is not a condition (W2-M36 decision 4)
-        assert refs_of(tx) == {END_REF, REP_REF} | world.deployment_refs()
+        # A bonus is not a condition (W2-M36 decision 4). The record of the
+        # payee's agent (the target) is a reference input (payee rule).
+        assert refs_of(tx) == {ref(world.records["A"]), END_REF, REP_REF} | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet)}
         fee = 25 * AP3X * 500 // 10_000
         [target_out] = outputs_to(tx, key_address(world.owner_a))
         assert target_out.amount.coin == 25 * AP3X - fee
@@ -438,6 +468,22 @@ class TestDistributeOutcome:
         kinds = {type(d) for _, d in redeemers_of(tx)}
         assert kinds == {ChallengeSpendRedeemer, BurnChallengeTokenRedeemer, ReleaseChallengeRedeemer}
         assert tx.transaction_body.validity_start == TIP_SLOT
+
+    def test_verified_pays_the_controller_when_the_record_drops_the_key(self, world):
+        """Payee rule: A's record no longer lists owner_a, so the payout goes
+        to the controller key of A's record."""
+        self.add_challenge(world, RepChallengeOutcomeVerified())
+        world.record("A", keys=())
+        tx = world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
+        assert outputs_to(tx, key_address(world.owner_a)) == []
+        [payout] = outputs_to(tx, key_address(key_hash(world.ctrl["A"])))
+        assert payout.amount.coin == 25 * AP3X - 25 * AP3X * 500 // 10_000
+
+    def test_inconclusive_needs_the_challenger_record(self, world):
+        self.add_challenge(world, RepChallengeOutcomeInconclusive())
+        world.context.remove(world.records.pop("B"))
+        with pytest.raises(vi.RecordNotFoundError):
+            world.client().build_distribute_outcome(world.did("B"), world.did("A"), "code_review")
 
     def test_verified_with_bonus(self, world):
         challenge = self.add_challenge(world, RepChallengeOutcomeVerified())
@@ -501,31 +547,48 @@ class TestDistributeOutcome:
 
 class TestFalsifiedPath:
     def setup_falsified(self, world, endorsement_amount=20 * AP3X):
-        world.stake_a(challenge_locks=(world.lock_b(),))
+        """A's stake with the lock of B's resolved (Falsified) challenge, and
+        B's endorsement of A bound to that stake. The endorser credential is
+        a second key that B's record lists."""
+        endorser_skey = PaymentSigningKey.generate()
+        endorser_key = key_hash(endorser_skey)
+        world.record("B", keys=(
+            vi.Key(vi.KeyType.ED25519, public_key(world.wallet), vi.PURPOSE_TRANSACTION),
+            vi.Key(vi.KeyType.ED25519, public_key(endorser_skey), vi.PURPOSE_TRANSACTION),
+        ))
+        stake = world.stake_a(challenge_locks=(world.lock_b(),))
         challenge = world.context.add(challenge_utxo(
             world.ids["B"], world.ids["A"], key_hash(world.wallet), world.owner_a,
             state=resolved(RepChallengeOutcomeFalsified()),
         ))
-        endorser_key = key_hash(PaymentSigningKey.generate())
         endorsement = world.context.add(endorsement_utxo(
             world.ids["B"], world.ids["A"], endorser_key, amount=endorsement_amount,
+            target_stake=stake_datum_of(stake).stake_id,
         ))
         return challenge, endorsement, endorser_key
 
     def test_slash_continues_endorsement(self, world):
         challenge, endorsement, endorser_key = self.setup_falsified(world)
+        stake = world.client().find_stake_utxo(world.did("A"))
         tx = world.client().build_slash_endorsement(
             world.did("B"), world.did("A"), ref(challenge),
         )
         assert ref(endorsement) in inputs_of(tx)
-        assert ref(challenge) in refs_of(tx)
         assert ref(challenge) not in inputs_of(tx)
+        # The challenge, the bound stake and the challenger's record (payee
+        # rule) are reference inputs; the endorser's record is not needed
+        # while the endorsement continues.
+        assert refs_of(tx) == {
+            ref(challenge), ref(stake), ref(world.records["B"]), END_REF,
+        } | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet)}
         slash = 20 * AP3X * 5000 // 10_000
         fee = slash * 500 // 10_000
         [out] = outputs_to(tx, address(END_HASH))
         before = decode_datum(EndorsementValidatorDatumEndorsement, endorsement.output.datum).datum
         assert out.datum.datum == dataclasses.replace(
             before, stake_amount=20 * AP3X - slash, slashed_by=[world.lock_b()])
+        assert out.datum.datum.target_stake == before.target_stake
         assert out.amount.coin >= 20 * AP3X - slash
         challenger_paid = sum(
             o.amount.coin for o in outputs_to(tx, key_address(key_hash(world.wallet)))
@@ -539,6 +602,19 @@ class TestFalsifiedPath:
         assert isinstance(data.action, SlashEndorsementRedeemer)
         assert tx.transaction_body.validity_start == TIP_SLOT
 
+    def test_slash_refuses_an_endorsement_of_another_stake(self, world):
+        """The challenge locks one stake of A; an endorsement bound to
+        another stake of A (without the lock) is not slashed."""
+        challenge, _, endorser_key = self.setup_falsified(world)
+        other = world.stake_a(amount=50 * AP3X)
+        world.context.remove(world.client().find_endorsement_utxo(world.did("B"), world.did("A")))
+        world.context.add(endorsement_utxo(
+            world.ids["B"], world.ids["A"], endorser_key,
+            target_stake=stake_datum_of(other).stake_id,
+        ))
+        with pytest.raises(ValueError, match="does not lock the bound stake"):
+            world.client().build_slash_endorsement(world.did("B"), world.did("A"), ref(challenge))
+
     def test_slash_refuses_a_second_slash_by_the_same_challenge(self, world):
         _, _, endorser_key = self.setup_falsified(world)
         challenge = world.client().find_challenge_utxo(world.did("B"), world.did("A"), "code_review")
@@ -550,7 +626,8 @@ class TestFalsifiedPath:
             world.client().build_slash_endorsement(world.did("B"), world.did("A"), ref(challenge))
 
     def test_slash_closes_small_endorsement(self, world):
-        """remaining < min_endorsement: burn the token, pay the endorser."""
+        """remaining < min_endorsement: burn the token, pay the endorser's
+        payee (here the declared endorser key) and add its record."""
         challenge, endorsement, endorser_key = self.setup_falsified(world, 8 * AP3X)
         tx = world.client().build_slash_endorsement(
             world.did("B"), world.did("A"), ref(challenge),
@@ -563,6 +640,17 @@ class TestFalsifiedPath:
         [endorser_out] = outputs_to(tx, key_address(endorser_key))
         assert endorser_out.amount.coin >= 8 * AP3X - 8 * AP3X * 5000 // 10_000
         assert BurnEndorsementTokenRedeemer in {type(d) for _, d in redeemers_of(tx)}
+        assert ref(world.records["B"]) in refs_of(tx)
+
+    def test_slash_pays_the_controller_for_an_undeclared_endorser_key(self, world):
+        """Payee rule: B's record no longer lists the endorser key, so the
+        remainder of a closed endorsement goes to B's controller key."""
+        challenge, _, endorser_key = self.setup_falsified(world, 8 * AP3X)
+        world.record("B")
+        tx = world.client().build_slash_endorsement(world.did("B"), world.did("A"), ref(challenge))
+        assert outputs_to(tx, key_address(endorser_key)) == []
+        [controller_out] = outputs_to(tx, key_address(key_hash(world.ctrl["B"])))
+        assert controller_out.amount.coin == 8 * AP3X - 8 * AP3X * 5000 // 10_000
 
     def test_distribute_falsified_slashes_stake(self, world):
         challenge, _, _ = self.setup_falsified(world)
@@ -571,7 +659,7 @@ class TestFalsifiedPath:
             world.did("B"), world.did("A"), "code_review",
         )
         assert {ref(challenge), ref(stake)} <= inputs_of(tx)
-        assert refs_of(tx) == {END_REF, REP_REF} | world.deployment_refs()
+        assert refs_of(tx) == {ref(world.records["B"]), END_REF, REP_REF} | world.deployment_refs()
         target_slash = 100 * AP3X // 2
         fee = target_slash * 500 // 10_000
         [stake_out] = [

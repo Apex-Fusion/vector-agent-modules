@@ -18,11 +18,17 @@ Identity rule (decision, Module-3 indexer): an agent whose identity record
 does not have effective status Active at the index time gets the tier
 Unverified. Its amounts stay as they are. The indexer leaves such an agent
 out of the leaderboard unless the caller asks for all agents.
+
+Stake rule: no action burns a stake token. A stake that decays below
+min_self_stake continues with stake_amount 0, so its UTxO stays. Such a stake
+is a stake below the minimum (StakeStatus.BELOW_MINIMUM), not a missing stake:
+it keeps its owner, capabilities and stake_id, and its amount counts as it is
+(0). The endorsement cap (self_stake × max_endorsement_multiplier) is then 0.
 """
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from reputation_staking.constants import (
     DFM_PER_AP3X,
@@ -41,6 +47,7 @@ from reputation_staking.models import (
     ReputationScore,
     ReputationTier,
     StakeInfo,
+    StakeStatus,
 )
 
 
@@ -88,6 +95,17 @@ def compute_collector_fee(decay_amount: int, collector_fee_rate: int) -> int:
     return decay_amount * collector_fee_rate // 10_000
 
 
+def stake_status(stake: Optional[StakeInfo], params: ProtocolParamsInfo) -> StakeStatus:
+    """MISSING without a stake UTxO, BELOW_MINIMUM for a stake with
+    stake_amount < min_self_stake (also a fully decayed stake with 0), else
+    STAKED."""
+    if stake is None:
+        return StakeStatus.MISSING
+    if stake.stake_amount < params.min_self_stake:
+        return StakeStatus.BELOW_MINIMUM
+    return StakeStatus.STAKED
+
+
 def get_tier(score_dfm: int) -> ReputationTier:
     """Compute the reputation tier from a score in DFM.
 
@@ -114,7 +132,7 @@ def get_tier(score_dfm: int) -> ReputationTier:
 
 
 def compute_reputation_score(
-    stake: StakeInfo,
+    stake: Optional[StakeInfo],
     endorsements: List[EndorsementInfo],
     challenges: List[ChallengeInfo],
     history_bonuses: List[HistoryBonusInfo],
@@ -122,6 +140,7 @@ def compute_reputation_score(
     now_ms: int,
     *,
     identity_status: IdentityStatus,
+    agent_did: Optional[str] = None,
 ) -> ReputationScore:
     """Compute the full reputation score for an agent.
 
@@ -133,7 +152,9 @@ def compute_reputation_score(
           - decay
 
     Args:
-        stake: The agent's StakeInfo.
+        stake: The agent's StakeInfo, or None when the agent has no stake
+            UTxO. A stake with stake_amount below min_self_stake (also 0
+            after a full decay) is a stake (stake_status BELOW_MINIMUM).
         endorsements: All endorsements targeting this agent.
         challenges: All challenges against this agent.
         history_bonuses: All history bonus UTXOs for this agent.
@@ -142,11 +163,14 @@ def compute_reputation_score(
         identity_status: The effective status of the agent's identity record
             at now_ms. When it is not ACTIVE, the tier is Unverified; the
             amounts do not change.
+        agent_did: The agent identifier; needed when `stake` is None.
 
     Returns:
         Computed ReputationScore.
     """
-    self_stake = stake.stake_amount
+    if stake is None and agent_did is None:
+        raise ValueError("compute_reputation_score needs agent_did when the agent has no stake")
+    self_stake = stake.stake_amount if stake is not None else 0
 
     # Sum endorsements, capped at max_endorsement_multiplier * self_stake
     raw_endorsement_total = sum(e.stake_amount for e in endorsements)
@@ -162,11 +186,13 @@ def compute_reputation_score(
     history_bonus = sum(b.bonus_points for b in history_bonuses)
 
     # Decay after the activity window, counted from the stake's last update
-    decay = compute_decay(
-        self_stake,
-        inactive_epochs(stake.last_updated, now_ms, params),
-        params.decay_rate,
-    )
+    decay = 0
+    if stake is not None:
+        decay = compute_decay(
+            self_stake,
+            inactive_epochs(stake.last_updated, now_ms, params),
+            params.decay_rate,
+        )
 
     net_score = self_stake + endorsement_total - challenge_total + history_bonus - decay
     net_score = max(net_score, 0)
@@ -176,7 +202,7 @@ def compute_reputation_score(
         tier = ReputationTier.Unverified
 
     return ReputationScore(
-        agent_did=stake.agent_did,
+        agent_did=agent_did if agent_did is not None else stake.agent_did,
         self_stake=self_stake,
         endorsement_total=endorsement_total,
         challenge_total=challenge_total,
@@ -185,4 +211,5 @@ def compute_reputation_score(
         net_score=net_score,
         tier=tier,
         identity_status=identity_status,
+        stake_status=stake_status(stake, params),
     )

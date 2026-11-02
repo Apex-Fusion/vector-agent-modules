@@ -388,7 +388,7 @@ AP3X flows:
 - **WithdrawClaim (unchallenged):** claim UTxO → agent (full return)
 - **OracleResolve (ClaimerWins):** both stakes → claimer (winner takes all)
 - **OracleResolve (AuditorWins):** both stakes → auditor (via ForfeitClaim)
-- **OracleResolve (Inconclusive):** both stakes returned minus jury fee
+- **OracleResolve (Inconclusive):** each stake returned to its owner (oracle mode has no jury fee)
 - **TimeoutResolve:** both stakes returned
 
 Conservation law: sum of all AP3X (in wallets + locked in UTxOs) = constant at all times.

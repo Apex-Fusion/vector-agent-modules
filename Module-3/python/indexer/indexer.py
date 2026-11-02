@@ -18,6 +18,13 @@ Identity rule (decision, see scoring.py): an agent that is not Active gets
 the tier Unverified; its amounts stay. The leaderboard leaves it out unless
 the caller asks for all agents.
 
+Stake rule (see scoring.py): no action burns a stake token, so a fully
+decayed stake stays with stake_amount 0. The indexer keeps it as a stake
+(stake_status below_minimum), not as a missing stake. An agent can have more
+than one stake; stake_id (the seed output reference of CreateStake) tells
+them apart, and each endorsement names the stake that it backs
+(target_stake).
+
 The indexer reads the chain through Ogmios.
 """
 
@@ -61,11 +68,12 @@ from indexer.sybil import analyze_sybil
 logger = logging.getLogger(__name__)
 
 # State field indices within inline datums (cardano-cli JSON format)
-# StakeDatum: fields[0]=agent_did, [1]=owner_credential, [2]=stake_amount,
-#             [3]=capabilities, [4]=last_updated, [5]=history_points,
-#             [6]=challenge_locks (not indexed)
-# EndorsementDatum (wrapped): fields[0]=inner, inner.fields[0..6]
-#             ([6]=slashed_by, not indexed)
+# StakeDatum (8 fields): fields[0]=agent_did, [1]=owner_credential,
+#             [2]=stake_amount, [3]=capabilities, [4]=last_updated,
+#             [5]=history_points, [6]=challenge_locks (not indexed),
+#             [7]=stake_id (OutputReference)
+# EndorsementDatum (wrapped): fields[0]=inner, inner.fields[0..7]
+#             ([6]=slashed_by, not indexed; [7]=target_stake)
 # ChallengeDatum (wrapped): fields[0]=inner, inner.fields[0..12]
 
 
@@ -77,6 +85,12 @@ def _hex_field(datum: dict, idx: int) -> str:
 def _int_field(datum: dict, idx: int) -> int:
     """Extract an int field from a datum."""
     return datum["fields"][idx].get("int", 0)
+
+
+def _out_ref_field(datum: dict, idx: int) -> str:
+    """An OutputReference field as "tx_hash#index"."""
+    ref = datum["fields"][idx]
+    return f"{_hex_field(ref, 0)}#{_int_field(ref, 1)}"
 
 
 def _parse_capabilities(datum: dict, idx: int) -> list:
@@ -380,10 +394,11 @@ class ReputationIndexer:
                         self._parse_challenge(utxo_ref, datum)
 
     def _parse_stake(self, utxo_ref: str, datum: dict):
-        """Parse a StakeDatum from inline datum."""
+        """Parse a StakeDatum (8 fields) from inline datum. A stake with
+        stake_amount 0 (fully decayed) is a stake like any other."""
         try:
             fields = datum.get("fields", [])
-            if len(fields) < 6:
+            if len(fields) < 8:
                 return
             agent_did = _hex_field(datum, 0)
             owner = _hex_field(datum["fields"][1], 0)  # inside Constr
@@ -391,10 +406,11 @@ class ReputationIndexer:
             capabilities = _parse_capabilities(datum, 3)
             last_updated = _int_field(datum, 4)
             history_points = _int_field(datum, 5)
+            stake_id = _out_ref_field(datum, 7)
 
             self.storage.upsert_stake(
                 utxo_ref, agent_did, owner, stake_amount,
-                capabilities, last_updated, history_points,
+                capabilities, last_updated, history_points, stake_id=stake_id,
             )
         except (KeyError, IndexError, TypeError):
             logger.debug("Failed to parse stake datum at %s", utxo_ref)
@@ -402,19 +418,22 @@ class ReputationIndexer:
     def _parse_endorsement(self, utxo_ref: str, datum: dict):
         """Parse an EndorsementValidatorDatum.Endorsement (nested Constr)."""
         try:
-            # Outer: Constr(0, [inner]) where inner has 7 fields
+            # Outer: Constr(0, [inner]) where inner has 8 fields
             if datum.get("constructor") != 0:
                 return
             inner = datum["fields"][0]
+            if len(inner.get("fields", [])) < 8:
+                return
             endorser_did = _hex_field(inner, 0)
             target_did = _hex_field(inner, 2)
             stake_amount = _int_field(inner, 3)
             capabilities = _parse_capabilities(inner, 4)
             created_at = _int_field(inner, 5)
+            target_stake = _out_ref_field(inner, 7)
 
             self.storage.upsert_endorsement(
                 utxo_ref, endorser_did, target_did, stake_amount,
-                capabilities, created_at,
+                capabilities, created_at, target_stake=target_stake,
             )
         except (KeyError, IndexError, TypeError):
             logger.debug("Failed to parse endorsement datum at %s", utxo_ref)
@@ -483,30 +502,28 @@ class ReputationIndexer:
         identity_status: IdentityStatus,
     ):
         """Compute and store reputation score for an agent."""
-        # Build StakeInfo from DB rows (aggregate if multiple, though normally 1)
+        # Build StakeInfo from the agent's stake rows. An agent can have more
+        # than one stake (each with its own stake_id): the amounts add up. A
+        # stake with stake_amount 0 (fully decayed) is a stake below the
+        # minimum, not a missing stake.
         stakes_rows = self.storage.get_stakes_for_agent(agent_did)
+        stake = None
         if stakes_rows:
-            total_stake = sum(s["stake_amount"] for s in stakes_rows)
-            last_updated = max(s["last_updated"] for s in stakes_rows)
-            history_pts = sum(s["history_points"] for s in stakes_rows)
-            caps = json.loads(stakes_rows[0]["capabilities"]) if stakes_rows[0]["capabilities"] else []
+            caps: List[str] = []
+            for row in stakes_rows:
+                for cap in json.loads(row["capabilities"]) if row["capabilities"] else []:
+                    if cap not in caps:
+                        caps.append(cap)
+            single = stakes_rows[0] if len(stakes_rows) == 1 else None
             stake = StakeInfo(
                 agent_did=agent_did,
                 owner=stakes_rows[0]["owner_credential"],
-                stake_amount=total_stake,
+                stake_amount=sum(s["stake_amount"] for s in stakes_rows),
                 staked_capabilities=caps,
-                last_updated=last_updated,
-                history_points=history_pts,
-            )
-        else:
-            # Agent has no stake — build a zero-stake placeholder
-            stake = StakeInfo(
-                agent_did=agent_did,
-                owner="",
-                stake_amount=0,
-                staked_capabilities=[],
-                last_updated=0,
-                history_points=0,
+                last_updated=max(s["last_updated"] for s in stakes_rows),
+                history_points=sum(s["history_points"] for s in stakes_rows),
+                utxo_ref=single["utxo_ref"] if single else None,
+                stake_id=single["stake_id"] if single else None,
             )
 
         # Build EndorsementInfo list
@@ -519,6 +536,7 @@ class ReputationIndexer:
                 endorsed_capabilities=json.loads(e["capabilities"]) if e["capabilities"] else [],
                 created_at=e["created_at"],
                 utxo_ref=e["utxo_ref"],
+                target_stake=e["target_stake"] or None,
             )
             for e in endorsements_rows
         ]
@@ -562,6 +580,7 @@ class ReputationIndexer:
             params=self.params,
             now_ms=now_ms,
             identity_status=identity_status,
+            agent_did=agent_did,
         )
 
         self.storage.upsert_score(
@@ -576,4 +595,5 @@ class ReputationIndexer:
             slot=current_slot,
             identity_status=score.identity_status.value,
             indexed_at_ms=now_ms,
+            stake_status=score.stake_status.value,
         )

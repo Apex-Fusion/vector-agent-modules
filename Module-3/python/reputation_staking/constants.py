@@ -41,6 +41,10 @@ CHALLENGE_PREFIX = b"rchl_"
 HISTORY_BONUS_PREFIX = b"hbonus_"
 GENESIS_BONUS_PREFIX = b"genesis_"
 
+# Prefix of a Module-1 claim token (the claim of an escalation;
+# Module-1/contracts/lib/adversarial_auditing/utils.ak claim_token_name)
+AUDIT_CLAIM_PREFIX = b"clm_"
+
 # Asset name of the record token that the ProtocolParams record holds
 # (shared/lib/shared/record_auth.ak)
 PARAMS_TOKEN_NAME = b"params"
@@ -53,6 +57,7 @@ ENDORSEMENT_SLICE_LEN = 27   # 5 + 27 = 32
 CHALLENGE_SLICE_LEN = 24     # 5 + 24 = 29
 HISTORY_BONUS_SLICE_LEN = 24 # 7 + 24 = 31 (hbonus_ is 7 bytes)
 GENESIS_BONUS_SLICE_LEN = 24 # 8 + 24 = 32 (genesis_ is 8 bytes)
+AUDIT_CLAIM_SLICE_LEN = 28   # 4 + 28 = 32 (clm_, Module-1)
 
 # ── Docker Defaults ──────────────────────────────────────────────────────────
 

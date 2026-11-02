@@ -32,7 +32,14 @@ class IdentityStatus(Enum):
     MISSING = "missing"
 
 
-# ── Enums ────────────────────────────────────────────────────────────────────
+class StakeStatus(Enum):
+    """The self-stake of an agent at index time. No action burns a stake
+    token: a stake that decays below min_self_stake continues with
+    stake_amount 0, so its UTxO stays. Such a stake is BELOW_MINIMUM, not
+    MISSING."""
+    MISSING = "missing"  # the agent has no stake UTxO
+    BELOW_MINIMUM = "below_minimum"  # stake_amount < min_self_stake (also 0)
+    STAKED = "staked"  # stake_amount >= min_self_stake
 
 
 class ReputationTier(Enum):
@@ -76,7 +83,9 @@ class HistoryBonusSource(Enum):
 
 @dataclass
 class StakeInfo:
-    """Off-chain representation of a StakeDatum UTXO."""
+    """Off-chain representation of a StakeDatum UTXO. stake_id is the
+    output reference ("tx_hash#ix") of the seed input that CreateStake
+    spent."""
     agent_did: str
     owner: str
     stake_amount: int
@@ -85,11 +94,14 @@ class StakeInfo:
     history_points: int
     utxo_ref: Optional[str] = None
     token_name: Optional[str] = None
+    stake_id: Optional[str] = None
 
 
 @dataclass
 class EndorsementInfo:
-    """Off-chain representation of an EndorsementDatum UTXO."""
+    """Off-chain representation of an EndorsementDatum UTXO. target_stake
+    is the stake_id ("tx_hash#ix") of the target stake that the
+    endorsement backs (the bound stake)."""
     endorser_did: str
     target_did: str
     stake_amount: int
@@ -97,6 +109,7 @@ class EndorsementInfo:
     created_at: int  # POSIX ms
     utxo_ref: Optional[str] = None
     token_name: Optional[str] = None
+    target_stake: Optional[str] = None
 
 
 @dataclass
@@ -135,6 +148,8 @@ class ReputationScore:
 
     The amounts do not depend on identity_status. The tier is Unverified
     when identity_status is not ACTIVE (scoring.compute_reputation_score).
+    stake_status tells a stake below min_self_stake (for example a fully
+    decayed stake with stake_amount 0) from a missing stake.
     """
     agent_did: str
     self_stake: int       # DFM
@@ -145,6 +160,7 @@ class ReputationScore:
     net_score: int          # DFM = stake + endorse - challenge + bonus - decay
     tier: ReputationTier = ReputationTier.Unverified
     identity_status: IdentityStatus = IdentityStatus.MISSING
+    stake_status: StakeStatus = StakeStatus.MISSING
 
 
 @dataclass

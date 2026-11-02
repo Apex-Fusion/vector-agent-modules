@@ -277,6 +277,7 @@ def reputation_browse(
         results.append(add_did_fields({
             "agent_did": s["agent_did"],
             "identity_status": s["identity_status"],
+            "stake_status": s["stake_status"],
             "score_ap3x": s["net_score"] // DFM_PER_AP3X,
             "score_dfm": s["net_score"],
             "tier": s["tier"],
@@ -332,6 +333,7 @@ def reputation_my_status(storage, agent_did: str) -> ToolResult:
         data=add_did_fields({
             "agent_did": agent_hex,
             "identity_status": score["identity_status"],
+            "stake_status": score["stake_status"],
             "tier": score["tier"],
             "score_ap3x": score["net_score"] // DFM_PER_AP3X,
             "score_dfm": score["net_score"],

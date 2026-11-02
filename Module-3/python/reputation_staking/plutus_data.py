@@ -108,13 +108,19 @@ class OutputReference(PlutusData):
 
 @dataclass
 class StakeDatum(PlutusData):
-    """StakeDatum — one per agent at the reputation validator address.
+    """StakeDatum — a self-stake at the reputation validator address (8
+    fields).
 
     last_updated is the upper bound of the validity range of the last owner
     action (CreateStake, IncreaseStake, DecreaseStake, UpdateCapabilities).
     challenge_locks holds the challenge token names of the open challenges
     against the stake (LockForChallenge adds one, ReleaseChallenge and
-    SlashStake remove one); it is empty at creation."""
+    SlashStake remove one); it is empty at creation. stake_id is the output
+    reference of the seed input that CreateStake spent: it is unique and
+    every continuing stake keeps it. The stake token name comes from
+    agent_did, so stake_id tells two stakes of one agent apart. No action
+    burns a stake token: a stake that decays below min_self_stake continues
+    with stake_amount 0."""
     CONSTR_ID = 0
     agent_did: bytes
     owner_credential: Credential
@@ -123,6 +129,7 @@ class StakeDatum(PlutusData):
     last_updated: int  # POSIX ms
     history_points: int
     challenge_locks: IndefiniteList  # List<ByteArray>
+    stake_id: OutputReference
 
 
 # StakeAction redeemers (reputation spend)
@@ -183,7 +190,8 @@ class ReleaseChallengeRedeemer(PlutusData):
     challenge_ref: OutputReference
 
 
-# StakeMintAction redeemers (reputation mint)
+# StakeMintAction redeemers (reputation mint). No redeemer burns a stake
+# token.
 
 @dataclass
 class MintStakeTokenRedeemer(PlutusData):
@@ -192,21 +200,15 @@ class MintStakeTokenRedeemer(PlutusData):
 
 
 @dataclass
-class BurnStakeTokenRedeemer(PlutusData):
-    """Constructor 1: BurnStakeToken"""
+class MintHistoryBonusRedeemer(PlutusData):
+    """Constructor 1: MintHistoryBonus"""
     CONSTR_ID = 1
 
 
 @dataclass
-class MintHistoryBonusRedeemer(PlutusData):
-    """Constructor 2: MintHistoryBonus"""
-    CONSTR_ID = 2
-
-
-@dataclass
 class BurnGenesisBonusRedeemer(PlutusData):
-    """Constructor 3: BurnGenesisBonus"""
-    CONSTR_ID = 3
+    """Constructor 2: BurnGenesisBonus"""
+    CONSTR_ID = 2
 
 
 # ── Endorsement Types (Section 4.2) ─────────────────────────────────────────
@@ -214,9 +216,14 @@ class BurnGenesisBonusRedeemer(PlutusData):
 
 @dataclass
 class EndorsementDatum(PlutusData):
-    """EndorsementDatum — one per endorser-target pair. slashed_by holds
-    the challenge token names of the resolved challenges that slashed the
-    endorsement (each one at most once); it is empty at creation."""
+    """EndorsementDatum — one per endorser-target pair (8 fields).
+    slashed_by holds the challenge token names of the resolved challenges
+    that slashed the endorsement (each one at most once); it is empty at
+    creation. target_stake is the stake_id of the target stake that the
+    endorsement backs (the bound stake): the stake that the creation read.
+    It never changes. A withdrawal needs the bound stake without challenge
+    locks, and a slash needs the bound stake with the lock of the
+    challenge."""
     CONSTR_ID = 0
     endorser_did: bytes
     endorser_credential: Credential
@@ -225,6 +232,7 @@ class EndorsementDatum(PlutusData):
     endorsed_capabilities: IndefiniteList  # List<ByteArray>
     created_at: int  # POSIX ms
     slashed_by: IndefiniteList  # List<ByteArray>
+    target_stake: OutputReference
 
 
 # EndorsementAction redeemers
@@ -479,9 +487,63 @@ class HistoryBonusDatum(PlutusData):
 
 
 # ── Module 1 mirror types (lib/reputation_staking/types.ak) ──────────────────
-# ResolveEscalation reads the Module 1 challenge as a reference input. These
-# mirror the Module 1 ChallengeDatum (11 fields) and ChallengeState; the
-# field order of AuditResolved follows Module 1 Resolved { verdict, refund_to }.
+# EscalateToAudit creates a Module 1 claim: the claim validator of Module 1
+# mints its claim token with ClaimAction.SubmitClaim, and the claim output
+# holds a Module 1 ClaimDatum (9 fields). ResolveEscalation reads the Module 1
+# challenge as a reference input. These types mirror the Module 1
+# ClaimDatum, ClaimState, ClaimAction.SubmitClaim, ChallengeDatum (11 fields)
+# and ChallengeState (Module-1/contracts/lib/adversarial_auditing/types.ak);
+# the field order of AuditResolved follows Module 1
+# Resolved { verdict, refund_to }.
+
+
+@dataclass
+class AuditOpen(PlutusData):
+    """Constructor 0 of AuditClaimState: Open"""
+    CONSTR_ID = 0
+
+
+@dataclass
+class AuditChallenged(PlutusData):
+    """Constructor 1 of AuditClaimState: Challenged"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class AuditValidated(PlutusData):
+    """Constructor 2 of AuditClaimState: Validated"""
+    CONSTR_ID = 2
+
+
+@dataclass
+class AuditInvalidated(PlutusData):
+    """Constructor 3 of AuditClaimState: Invalidated"""
+    CONSTR_ID = 3
+
+
+AuditClaimStateData = Union[AuditOpen, AuditChallenged, AuditValidated, AuditInvalidated]
+
+
+@dataclass
+class AuditClaimDatum(PlutusData):
+    """AuditClaimDatum — the Module 1 ClaimDatum (9 fields)."""
+    CONSTR_ID = 0
+    claimer_did: bytes
+    claimer_credential: Credential
+    claim_hash: bytes
+    claim_type: bytes
+    storage_uri: bytes
+    stake_amount: int
+    submitted_at: int  # POSIX ms
+    challenge_window: int  # ms
+    state: AuditClaimStateData
+
+
+@dataclass
+class AuditSubmitClaimRedeemer(PlutusData):
+    """Constructor 0 of the Module 1 ClaimAction: SubmitClaim (the mint
+    redeemer of the Module 1 claim validator)."""
+    CONSTR_ID = 0
 
 
 @dataclass
@@ -555,7 +617,7 @@ class AuditChallengeDatum(PlutusData):
 
 # ── Endorsement Validator Wrapper Types ──────────────────────────────────────
 # These use NESTED Constr encoding:
-#   Endorsement(datum) = Constr(0, [Constr(0, [7 fields])])
+#   Endorsement(datum) = Constr(0, [Constr(0, [8 fields])])
 #   Challenge(datum) = Constr(1, [Constr(0, [13 fields])])
 
 

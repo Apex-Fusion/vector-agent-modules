@@ -12,6 +12,8 @@ They do not need pycardano or a chain connection.
   - build_governance_config_cbor: GovernanceConfig (11 fields)
   - build_cross_refs_data: GovernanceCrossRefs (5 fields, with the
     endorsement validator hash last)
+  - build_activity_head_data: the head of the activity list
+    (ProposerActivityDatum, 5 fields)
   - select_seed_utxo / select_collateral_utxo / find_record_utxo: read
     pycardano UTxO objects
 
@@ -62,9 +64,13 @@ ZEROED_28 = "00" * 28
 # also sits at the oracle holder.
 HOLDER_TAGS = [(1, "params"), (2, "oracle"), (3, "treasury")]
 
-# Asset names of the record tokens (shared/lib/shared/record_auth.ak)
+# Asset names of the record tokens (shared/lib/shared/record_auth.ak). The
+# head of the activity list holds the `activity` token
+# (contracts/governance-suggestion/lib/governance_suggestion/utils.ak,
+# activity_head_token).
 PARAMS_TOKEN_NAME = b"params"
 ORACLE_TOKEN_NAME = b"oracle"
+ACTIVITY_TOKEN_NAME = b"activity"
 
 # Redeemer data of the record token policy: unit (constructor 0, no fields).
 # The policy ignores the redeemer.
@@ -295,6 +301,30 @@ def build_cross_refs_data(
     return cbor2.CBORTag(121, fields)
 
 
+# ── Activity list head ───────────────────────────────────────────────────────
+
+def build_activity_head_data(owner_vkh_hex: str) -> cbor2.CBORTag:
+    """Build the datum of the head of the activity list as Plutus Data
+    (cbor2.CBORTag).
+
+    ProposerActivityDatum (contracts/governance-suggestion/lib/
+    governance_suggestion/types.ak): constructor 0 with 5 fields agent_did,
+    agent_credential, active_proposal_count, last_proposal_slot, next_did.
+    The head has agent_did = b"", count 0, last_proposal_slot 0 and
+    next_did = b"" (an empty list). The validators do not read its
+    agent_credential; it is VerificationKey(owner), the deployer key
+    (constructor 0 with the 28-byte key hash).
+
+    The deploy record transaction puts the head at the proposal_spend
+    address with the `activity` record token (ACTIVITY_TOKEN_NAME). The first
+    submission of each agent inserts the node of the agent into the list.
+    """
+    owner = _hex_bytes("owner_vkh_hex", owner_vkh_hex, 28)
+    credential = cbor2.CBORTag(121, [owner])
+    # Plutus Data constructor: Tag 121 + 0 = constr(0, fields)
+    return cbor2.CBORTag(121, [b"", credential, 0, 0, b""])
+
+
 # ── Deploy state ─────────────────────────────────────────────────────────────
 
 def resume_state_error(state: dict, owner_vkh_hex: str, identity_hash: str) -> Optional[str]:
@@ -303,11 +333,16 @@ def resume_state_error(state: dict, owner_vkh_hex: str, identity_hash: str) -> O
     Returns an error message, or None when the run can continue. A state with
     tx hashes but without record_token_policy is from a deployment before
     record tokens. A state with tx hashes but without identity_hash is from a
-    deployment with the legacy agent registry fields. A new deployment must
-    not reuse their tx hashes. A state with another identity_hash belongs to
-    another configuration: its validators differ.
+    deployment with the legacy agent registry fields. A state whose record
+    transaction created no head of the activity list (no
+    tx_hashes["activity_head"]) is from a deployment before the activity
+    list: the one-shot record token policy cannot mint the `activity` token
+    any more. A new deployment must not reuse their tx hashes. A state with
+    another identity_hash belongs to another configuration: its validators
+    differ.
     """
     policy = state.get("record_token_policy")
+    tx_hashes = state.get("tx_hashes") or {}
     if state.get("tx_hashes") and not policy:
         return ("the deploy state belongs to a deployment without record tokens. "
                 "Move it to a different path to start a new deployment.")
@@ -326,6 +361,11 @@ def resume_state_error(state: dict, owner_vkh_hex: str, identity_hash: str) -> O
         return (f"the deploy state has identity_hash {saved}, but {IDENTITY_HASH_ENV} "
                 f"is {identity_hash}. Use the value of that deployment, or move the "
                 f"state to a different path to start a new deployment.")
+    if tx_hashes.get("params_utxo") and not tx_hashes.get("activity_head"):
+        return ("the deploy state has records but no head of the activity list "
+                "(a deployment before the activity list). The one-shot record token "
+                "policy cannot mint the `activity` token any more. Move the state to "
+                "a different path to start a new deployment.")
     return None
 
 

@@ -23,6 +23,12 @@ Identity rule: the leaderboard leaves out agents whose identity record was
 not Active at the index time, unless `include_all=true`. Such agents have
 the tier Unverified; their amounts stay.
 
+Stakes: a score has `stake_status` (missing, below_minimum or staked). No
+action burns a stake token, so a fully decayed stake stays with
+stake_amount 0 and is below_minimum, not missing. Each stake row has its
+`stake_id` (the seed output reference of CreateStake), and each endorsement
+row has `target_stake` (the stake_id of the stake that it backs).
+
 Usage:
     uvicorn indexer.api:app --host 0.0.0.0 --port 8080
 

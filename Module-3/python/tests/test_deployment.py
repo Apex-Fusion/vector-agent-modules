@@ -16,6 +16,7 @@ from reputation_staking.deployment import (
 )
 from reputation_staking.utils import script_hash_to_address
 from tests.chain_fixtures import (
+    CLAIM_HASH,
     CROSS_REFS,
     END_REF,
     IDENTITY_HASH,
@@ -44,7 +45,7 @@ def test_new_state_loads():
     assert (d.reputation_spend_ref, d.endorsement_spend_ref, d.cross_refs_nft) == (
         REP_REF, END_REF, CROSS_REFS,
     )
-    assert d.module1_claim_validator_hash == "b1" * 28
+    assert d.module1_claim_validator_hash == CLAIM_HASH
 
 
 def test_state_file_loads(tmp_path):

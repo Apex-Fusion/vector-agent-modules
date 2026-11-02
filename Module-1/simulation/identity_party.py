@@ -1,10 +1,13 @@
 """Module-1 as a party of identity records (Part 2 §3.8): the verdict datum,
 the verdict policy, the AuditingConfig, the parameters of ``identity_party``,
-the Module-1 party and the redeemers of the ``identity_party`` validator.
+the Module-1 party, the redeemers of the ``identity_party`` validator and the
+OracleResolve redeemer of the challenge validator (the verdict mint reads the
+outcome from it).
 
 The on-chain source of truth is ``contracts/lib/adversarial_auditing/types.ak``
 (``VerdictAction``, ``VerdictRule``, ``VerdictPolicy``, ``IdentityVerdict``,
-``VerdictMint``, ``PartyApproval``, ``AuditingConfig``),
+``VerdictMint``, ``PartyApproval``, ``AuditingConfig``, ``Verdict``,
+``ChallengeAction``),
 ``contracts/lib/adversarial_auditing/identity_party.ak`` (handler rules) and
 ``contracts/validators/identity_party.ak``.
 
@@ -18,7 +21,9 @@ themselves.
 Only an oracle resolution (OracleResolve) gives a verdict. A jury resolution
 (ResolveJury) and a timeout (TimeoutResolve) give no verdict: the auditor
 names the eligible jurors of a challenge, so a jury outcome is not safe for
-an identity verdict.
+an identity verdict. The verdict mint (MintVerdict) has no withdrawal of
+``Script(M1)``: only Consent and ApplyVerdict use the withdraw handler of
+``identity_party``.
 
 The module has no network access. It needs only ``cbor2`` and the shared
 identity module ``simulation.vector_identity``.
@@ -486,7 +491,9 @@ def verdict_from_output(datum: Any, token_name: bytes) -> IdentityVerdict:
 
 
 def mint_verdict_redeemer() -> cbor2.CBORTag:
-    """``VerdictMint.MintVerdict`` (Constr 0)."""
+    """``VerdictMint.MintVerdict`` (Constr 0): in an oracle resolution whose
+    outcome has a rule in the verdict policy. The mint handler reads no
+    withdrawal, so that transaction has no withdrawal of ``Script(M1)``."""
     return vi.constr(0, [])
 
 
@@ -511,6 +518,33 @@ def verdict_spend_redeemer() -> cbor2.CBORTag:
     """The spend redeemer of a verdict output. The spend handler ignores
     it; Constr 0 is used."""
     return vi.constr(0, [])
+
+
+#: The constructor index of ``OracleResolve`` in ``ChallengeAction``
+#: (types.ak): OpenChallenge 0, SubmitEvidence 1, OracleResolve 2.
+ORACLE_RESOLVE_INDEX = 2
+
+
+def outcome_data(outcome: str) -> cbor2.CBORTag:
+    """The Plutus Data of a challenge outcome (``Verdict`` of types.ak):
+    ClaimerWins (Constr 0), AuditorWins (Constr 1) or Inconclusive
+    (Constr 2). Raises ValueError for another name."""
+    if outcome not in OUTCOMES:
+        raise ValueError(f"unknown challenge outcome {outcome!r}; use one of {OUTCOMES}")
+    return vi.constr(OUTCOMES.index(outcome), [])
+
+
+def oracle_resolve_redeemer(outcome: str, reasoning_hash: bytes) -> cbor2.CBORTag:
+    """``ChallengeAction.OracleResolve { verdict, reasoning_hash }``
+    (Constr 2). The oracle resolution uses it as the spend redeemer of the
+    challenge input and as the mint redeemer of the challenge-token burn.
+    The verdict mint of identity_party reads the outcome from the spend
+    redeemer. ``reasoning_hash`` is the blake2b_256 hash (32 bytes) of the
+    public reasoning of the oracle (``is_valid_hash`` of challenge.ak).
+    Raises ValueError for another outcome name or another hash length."""
+    if not isinstance(reasoning_hash, (bytes, bytearray)) or len(reasoning_hash) != 32:
+        raise ValueError("reasoning_hash must be a 32-byte blake2b_256 hash")
+    return vi.constr(ORACLE_RESOLVE_INDEX, [outcome_data(outcome), bytes(reasoning_hash)])
 
 
 # ── Module-1 party ──────────────────────────────────────────────────────────
@@ -664,6 +698,7 @@ __all__ = [
     "IdentityVerdict",
     "MODULE1_RIGHTS",
     "ORACLE_RESOLVE",
+    "ORACLE_RESOLVE_INDEX",
     "OUTCOMES",
     "PlutusAddress",
     "PlutusCredential",
@@ -687,6 +722,8 @@ __all__ = [
     "identity_party_parameters",
     "mint_verdict_redeemer",
     "module1_party",
+    "oracle_resolve_redeemer",
+    "outcome_data",
     "resolution_verdict",
     "verdict_application",
     "verdict_from_output",

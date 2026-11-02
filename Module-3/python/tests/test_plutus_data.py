@@ -11,15 +11,21 @@ from reputation_staking.models import ProtocolParamsInfo
 from reputation_staking.plutus_data import (
     AuditAuditorWins,
     AuditChallengeDatum,
+    AuditClaimDatum,
+    AuditOpen,
     AuditResolved,
+    AuditSubmitClaimRedeemer,
     BurnChallengeTokenRedeemer,
+    BurnGenesisBonusRedeemer,
     ChallengeSpendRedeemer,
     CreateStakeRedeemer,
+    DecreaseStakeRedeemer,
     DistributeOutcomeRedeemer,
     EndorsementDatum,
     EndorsementSpendRedeemer,
     EndorsementValidatorDatumChallenge,
     EndorsementValidatorDatumEndorsement,
+    EscalateToAuditRedeemer,
     ExpireChallengeRedeemer,
     HistoryBonusDatum,
     HistoryBonusSourceChallengeWon,
@@ -40,9 +46,11 @@ from reputation_staking.plutus_data import (
     ReputationChallengeDatum,
     ReputationConfig,
     ResolveChallengeRedeemer,
+    ResolveEscalationRedeemer,
     SomeStakeCredential,
     StakeDatum,
     VerificationKeyCredential,
+    WithdrawChallengeRedeemer,
     WithdrawEndorsementRedeemer,
     datum_cbor,
 )
@@ -126,6 +134,9 @@ class TestOutputReference:
         assert fields[0] == b"\xaa" * 32
 
 
+SEED_REF = OutputReference(transaction_id=b"\x5e" * 32, output_index=3)
+
+
 class TestStakeDatum:
     def test_round_trip(self):
         datum = StakeDatum(
@@ -136,6 +147,7 @@ class TestStakeDatum:
             last_updated=1775799692000,
             history_points=0,
             challenge_locks=IndefiniteList([b"\x0c" * 32]),
+            stake_id=SEED_REF,
         )
         cbor_bytes = datum.to_cbor()
         restored = StakeDatum.from_cbor(cbor_bytes)
@@ -143,28 +155,32 @@ class TestStakeDatum:
         assert restored.stake_amount == 10_000_000
         assert restored.history_points == 0
         assert list(restored.challenge_locks) == [b"\x0c" * 32]
+        assert restored.stake_id == SEED_REF
 
     def test_field_count(self):
+        """8 fields: challenge_locks, then stake_id (an OutputReference)
+        last. A fully decayed stake has stake_amount 0."""
         datum = StakeDatum(
             agent_did=AGENT_A_DID,
             owner_credential=VerificationKeyCredential(VKEY_HASH),
-            stake_amount=10_000_000,
+            stake_amount=0,
             staked_capabilities=IndefiniteList([]),
             last_updated=0,
             history_points=0,
             challenge_locks=IndefiniteList([]),
+            stake_id=SEED_REF,
         )
         decoded = cbor2.loads(datum.to_cbor())
-        # challenge_locks is the last of 7 fields
-        assert len(decoded.value) == 7
+        assert len(decoded.value) == 8
         assert list(decoded.value[6]) == []
+        assert decoded.value[7] == cbor2.CBORTag(121, [b"\x5e" * 32, 3])
 
 
 class TestEndorsementValidatorDatumNesting:
     """Critical test: Aiken sum types use NESTED Constr encoding."""
 
     def test_endorsement_variant_nested(self):
-        """Endorsement(datum) = Constr(0, [Constr(0, [7 fields])])."""
+        """Endorsement(datum) = Constr(0, [Constr(0, [8 fields])])."""
         inner = EndorsementDatum(
             endorser_did=AGENT_B_DID,
             endorser_credential=VerificationKeyCredential(VKEY_HASH),
@@ -173,6 +189,7 @@ class TestEndorsementValidatorDatumNesting:
             endorsed_capabilities=IndefiniteList([b"code_review"]),
             created_at=1000,
             slashed_by=IndefiniteList([b"\x0c" * 32]),
+            target_stake=SEED_REF,
         )
         wrapper = EndorsementValidatorDatumEndorsement(datum=inner)
         decoded = cbor2.loads(wrapper.to_cbor())
@@ -180,11 +197,13 @@ class TestEndorsementValidatorDatumNesting:
         assert decoded.tag == 121
         outer_fields = decoded.value
         assert len(outer_fields) == 1
-        # Inner: tag 121 (constructor 0) with 7 fields, slashed_by last
+        # Inner: tag 121 (constructor 0) with 8 fields: slashed_by, then
+        # target_stake (the stake_id of the bound stake) last
         inner_decoded = outer_fields[0]
         assert inner_decoded.tag == 121
-        assert len(inner_decoded.value) == 7
+        assert len(inner_decoded.value) == 8
         assert list(inner_decoded.value[6]) == [b"\x0c" * 32]
+        assert inner_decoded.value[7] == cbor2.CBORTag(121, [b"\x5e" * 32, 3])
         assert EndorsementValidatorDatumEndorsement.from_cbor(wrapper.to_cbor()) == wrapper
 
     def test_challenge_variant_nested(self):
@@ -281,8 +300,45 @@ class TestRedeemers:
         assert r.CONSTR_ID == 3
 
     def test_mint_history_bonus(self):
-        r = MintHistoryBonusRedeemer()
-        assert r.CONSTR_ID == 2
+        """StakeMintAction has no BurnStakeToken: MintHistoryBonus is 1 and
+        BurnGenesisBonus is 2."""
+        assert MintHistoryBonusRedeemer().CONSTR_ID == 1
+        assert BurnGenesisBonusRedeemer().CONSTR_ID == 2
+        assert cbor2.loads(MintHistoryBonusRedeemer().to_cbor()) == cbor2.CBORTag(122, [])
+
+    def test_module1_claim_datum_and_submit_redeemer(self):
+        """The Module-1 claim of an escalation: ClaimDatum (9 fields, state
+        Open) and ClaimAction.SubmitClaim (constructor 0)."""
+        datum = AuditClaimDatum(
+            claimer_did=AGENT_A_DID,
+            claimer_credential=VerificationKeyCredential(VKEY_HASH),
+            claim_hash=b"\x01" * 32,
+            claim_type=b"reputation_challenge",
+            storage_uri=b"",
+            stake_amount=50_000_000,
+            submitted_at=1000,
+            challenge_window=1_800_000,
+            state=AuditOpen(),
+        )
+        decoded = cbor2.loads(datum.to_cbor())
+        assert decoded.tag == 121 and len(decoded.value) == 9
+        assert decoded.value[3] == b"reputation_challenge"
+        assert decoded.value[8] == cbor2.CBORTag(121, [])
+        assert AuditClaimDatum.from_cbor(datum.to_cbor()) == datum
+        assert cbor2.loads(AuditSubmitClaimRedeemer().to_cbor()) == cbor2.CBORTag(121, [])
+
+    def test_escalation_redeemers(self):
+        """ChallengeSpend(EscalateToAudit) is constructor 2, ChallengeSpend(
+        ResolveEscalation) constructor 3, ChallengeSpend(WithdrawChallenge) 0,
+        and DecreaseStake { amount } constructor 2 of StakeAction."""
+        for action, tag in (
+            (WithdrawChallengeRedeemer(), 121),
+            (EscalateToAuditRedeemer(), 123),
+            (ResolveEscalationRedeemer(), 124),
+        ):
+            decoded = cbor2.loads(ChallengeSpendRedeemer(action=action).to_cbor())
+            assert decoded.tag == 122 and decoded.value[0].tag == tag
+        assert cbor2.loads(DecreaseStakeRedeemer(5).to_cbor()) == cbor2.CBORTag(123, [5])
 
     def test_resolve_challenge_redeemer_nested(self):
         """ChallengeSpend(ResolveChallenge { CapabilityVerified })."""
@@ -368,6 +424,7 @@ class TestProtocolParamsRecord:
             last_updated=2,
             history_points=0,
             challenge_locks=IndefiniteList([]),
+            stake_id=SEED_REF,
         )
         assert datum_cbor(datum) == datum.to_cbor()
         assert datum_cbor(RawCBOR(datum.to_cbor())) == datum.to_cbor()

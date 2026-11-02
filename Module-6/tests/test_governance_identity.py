@@ -3,9 +3,10 @@
 
 Each builder test builds and signs a transaction against the fake chain and
 checks the reference inputs (record, ancestors, params record, CrossRefs,
-proposal), the required signers, the validity range, the datum credential,
-the times, the redeemers and the mint. The refusal tests check that the
-client stops before it builds.
+proposal, proposer record), the required signers, the validity range, the
+datum credential, the times, the redeemers and the mint. The refusal tests
+check that the client stops before it builds. tests/test_simulate.py runs
+the same builders against the applied validators of the blueprint.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from conftest import (
     ENDORSER,
     IDENTITY_HASH,
     PARENT,
+    PROPOSAL_SEED,
     PROPOSER,
     deploy_state,
     key_pair,
@@ -111,23 +113,30 @@ def proposal_terms(**changes) -> gi.ProposalTerms:
     return dataclasses.replace(terms, **changes)
 
 
-def lock_proposal(world, records, window, activity=None, terms=None, key_hash=None):
+def lock_proposal(world, records, window, terms=None, key_hash=None):
     prepared = gi.prepare_proposal_lock(
-        world.chain, world.deployment, records=records, refs=world.refs, activity=activity,
+        world.chain, world.deployment, records=records, refs=world.refs, activity_list=world.activity_list(),
         terms=terms or proposal_terms(), credential_key_hash=key_hash or world.key_hash,
         window=window, wallet_address=world.wallet_address,
     )
     return prepared
 
 
-def submit_proposal(world, records, window, activity=None, terms=None, key_hash=None):
-    lock = lock_proposal(world, records, window, activity, terms, key_hash)
+def submit_proposal(world, records, window, terms=None, key_hash=None):
+    lock = lock_proposal(world, records, window, terms, key_hash)
     locked = world.locked(world.deployment.proposal_spend, lock.datum, lock.datum.stake_amount + gi.POSITION_DEPOSIT)
     prepared = gi.prepare_submit_proposal(
         world.chain, world.deployment, locked=locked, records=records, refs=world.refs,
-        activity=activity, window=window, wallet_address=world.wallet_address,
+        activity_list=world.activity_list(), window=window, wallet_address=world.wallet_address,
     )
     return locked, prepared
+
+
+def own_agent(world, agent_id, byte):
+    """An agent with its own controller key (not the wallet key): its record
+    on the fake chain and the key."""
+    key = key_pair()
+    return world.agent(agent_id, record_datum(public_key(key)), byte=byte), key
 
 
 # ── Deployment state and inputs ─────────────────────────────────────────────
@@ -267,11 +276,50 @@ def test_activity_record_of_the_agent(world):
         gi.find_activity(world.chain.utxos(address), world.deployment, PROPOSER)
 
 
+def test_activity_list_in_order_from_the_head(world):
+    world.head(PROPOSER)
+    first = world.activity_utxo(PROPOSER, 1, 0, next_did=ENDORSER)
+    last = world.activity_utxo(ENDORSER, 1, 0, byte=0x81)
+    found = world.activity_list()
+    assert found.head.datum == gi.ActivityDatum(b"", gi.Credential.key(world.key_hash), 0, 0, PROPOSER)
+    assert found.nodes == (first, last)
+    assert found.node(ENDORSER) == last and found.node(CRITIC) is None
+    # CRITIC (a2..) goes between PROPOSER (a1..) and ENDORSER (a3..)
+    assert found.predecessor(CRITIC) == first
+    assert found.submission_input(CRITIC) == first and found.submission_input(PROPOSER) == first
+    assert found.predecessor(h("a0" * 32)) == found.head
+    assert found.predecessor(h("b0" * 32)) == last
+    with pytest.raises(gi.GovernanceClientError, match="already has a node"):
+        found.predecessor(ENDORSER)
+
+
+def test_activity_list_refuses_an_inconsistent_list(world):
+    world.head(PROPOSER)
+    with pytest.raises(gi.GovernanceClientError, match="has no node"):
+        world.activity_list()
+    world.activity_utxo(PROPOSER, 1, 0)
+    world.activity_utxo(ENDORSER, 1, 0, byte=0x81)
+    with pytest.raises(gi.GovernanceClientError, match="not in the list"):
+        world.activity_list()
+    descending = make_world()
+    descending.head(ENDORSER)
+    descending.activity_utxo(ENDORSER, 1, 0, byte=0x81, next_did=PROPOSER)
+    descending.activity_utxo(PROPOSER, 1, 0)
+    with pytest.raises(gi.GovernanceClientError, match="ascending order"):
+        descending.activity_list()
+    address = str(world.deployment.proposal_spend.address)
+    world.chain.store[address] = [u for u in world.chain.store[address] if not gi.policy_tokens(
+        u, world.deployment.record_token_policy)]
+    with pytest.raises(gi.MissingReferenceError, match="no head of the activity list"):
+        world.activity_list()
+
+
 def test_token_names_follow_the_contract():
     ref = tx_in(0x11, 3)
     serialised = vid.serialise_data(vid.output_reference_data(bytes(ref.transaction_id), 3))
     assert gi.proposal_token_name(ref) == b"prop_" + vid.blake2b_256(serialised)[:27]
     assert gi.critique_token_name(ref) == b"crit_" + vid.blake2b_256(serialised)[:27]
+    assert gi.endorsement_token_name(ENDORSER, ref) == b"gend_" + vid.blake2b_256(ENDORSER + serialised)[:27]
     assert gi.activity_token_name(PROPOSER) == b"pact_" + vid.blake2b_256(PROPOSER)[:27]
     assert len(gi.proposal_token_name(ref)) == 32
 
@@ -291,8 +339,13 @@ def test_datums_round_trip(world):
     assert gi.CritiqueDatum.from_data(vid.serialise_data(critique.to_data())) == critique
     endorsement = gi.EndorsementDatum(ENDORSER, gi.Credential.key(world.key_hash), tx_in(5), 5_000_000, 9)
     assert gi.EndorsementDatum.from_data(vid.serialise_data(endorsement.to_data())) == endorsement
+    activity = gi.ActivityDatum(PROPOSER, gi.Credential.key(world.key_hash), 2, 9, ENDORSER)
+    assert tree(vid.serialise_data(activity.to_data())).value[4] == ENDORSER
+    assert gi.ActivityDatum.from_data(vid.serialise_data(activity.to_data())) == activity
     with pytest.raises(gi.GovernanceDatumError):
         gi.ProposalDatum.from_data(vid.serialise_data(critique.to_data()))
+    with pytest.raises(gi.GovernanceDatumError):
+        gi.ActivityDatum.from_data(vid.serialise_data(vid.constr(0, tree(activity.to_data()).value[:4])))
 
 
 # ── SubmitProposal ──────────────────────────────────────────────────────────
@@ -315,8 +368,9 @@ def test_proposal_lock_writes_the_planned_lower_bound(world):
     assert not tx.transaction_body.reference_inputs and not tx.transaction_body.required_signers
 
 
-def test_submit_proposal_first_proposal(world):
+def test_submit_proposal_first_proposal_inserts_after_the_head(world):
     rec = world.agent(PROPOSER)
+    head = world.activity_list().head
     window = world.window()
     locked, prepared = submit_proposal(world, [rec], window)
     tx = sign(world, prepared)
@@ -331,11 +385,11 @@ def test_submit_proposal_first_proposal(world):
     token = gi.proposal_token_name(locked.input)
     activity_token = gi.activity_token_name(PROPOSER)
     assert minted(tx) == {(deployment.proposal_mint.hash, token): 1, (deployment.proposal_mint.hash, activity_token): 1}
-    assert spend_redeemers(tx) == {locked.input: gi.SUBMIT_PROPOSAL}
+    assert spend_redeemers(tx) == {locked.input: gi.SUBMIT_PROPOSAL, head.utxo.input: gi.SPEND_ACTIVITY}
     assert mint_redeemers(tx) == {deployment.proposal_mint.hash: gi.SUBMIT_PROPOSAL}
 
-    proposal_out, activity_out = body.outputs[0], body.outputs[1]
-    assert proposal_out.address == deployment.proposal_spend.address
+    proposal_out, node_out, head_out = body.outputs[0], body.outputs[1], body.outputs[2]
+    assert proposal_out.address == locked.output.address
     assert gi.policy_tokens(proposal_out, deployment.proposal_mint.hash) == {token: 1}
     assert proposal_out.amount.coin == locked.output.amount.coin
     datum = gi.ProposalDatum.from_data(proposal_out.datum)
@@ -343,17 +397,39 @@ def test_submit_proposal_first_proposal(world):
     assert datum.submitted_at == window.lo
     assert datum.proposer_credential == gi.Credential.key(world.key_hash)
 
-    activity = gi.ActivityDatum.from_data(activity_out.datum)
-    assert activity == gi.ActivityDatum(PROPOSER, gi.Credential.key(world.key_hash), 1, window.lo)
-    assert gi.policy_tokens(activity_out, deployment.proposal_mint.hash) == {activity_token: 1}
+    assert gi.ActivityDatum.from_data(node_out.datum) == gi.ActivityDatum(
+        PROPOSER, gi.Credential.key(world.key_hash), 1, window.lo, b"")
+    assert gi.policy_tokens(node_out, deployment.proposal_mint.hash) == {activity_token: 1}
+    assert node_out.address == locked.output.address
+    assert (head_out.address, head_out.amount) == (head.utxo.output.address, head.utxo.output.amount)
+    assert gi.ActivityDatum.from_data(head_out.datum) == dataclasses.replace(head.datum, next_did=PROPOSER)
     assert world.chain.evaluated, "the builder asks the chain context for execution units"
+
+
+def test_submit_proposal_inserts_between_two_nodes(world):
+    rec = world.agent(CRITIC)
+    world.head(PROPOSER)
+    before = world.activity_utxo(PROPOSER, 1, 0, next_did=ENDORSER)
+    world.activity_utxo(ENDORSER, 1, 0, byte=0x81)
+    window = world.window()
+    locked, prepared = submit_proposal(world, [rec], window)
+    tx = sign(world, prepared)
+    body = tx.transaction_body
+    assert spend_redeemers(tx) == {locked.input: gi.SUBMIT_PROPOSAL, before.utxo.input: gi.SPEND_ACTIVITY}
+    assert gi.ActivityDatum.from_data(body.outputs[1].datum) == gi.ActivityDatum(
+        CRITIC, gi.Credential.key(world.key_hash), 1, window.lo, ENDORSER)
+    assert gi.ActivityDatum.from_data(body.outputs[2].datum) == dataclasses.replace(before.datum, next_did=CRITIC)
+    assert body.outputs[2].amount == before.utxo.output.amount
+    assert (world.deployment.proposal_mint.hash, gi.activity_token_name(CRITIC)) in minted(tx)
 
 
 def test_submit_proposal_spends_the_activity_record(world):
     rec = world.agent(PROPOSER)
     window = world.window()
-    activity = world.activity_utxo(PROPOSER, 1, window.lo - 90_000_000)
-    locked, prepared = submit_proposal(world, [rec], window, activity=activity)
+    world.head(PROPOSER)
+    activity = world.activity_utxo(PROPOSER, 1, window.lo - 90_000_000, next_did=ENDORSER)
+    world.activity_utxo(ENDORSER, 1, 0, byte=0x81)
+    locked, prepared = submit_proposal(world, [rec], window)
     tx = sign(world, prepared)
 
     assert spend_redeemers(tx) == {locked.input: gi.SUBMIT_PROPOSAL, activity.utxo.input: gi.SPEND_ACTIVITY}
@@ -362,7 +438,9 @@ def test_submit_proposal_spends_the_activity_record(world):
     out = tx.transaction_body.outputs[1]
     assert gi.ActivityDatum.from_data(out.datum) == dataclasses.replace(
         activity.datum, active_proposal_count=2, last_proposal_slot=window.lo)
+    assert gi.ActivityDatum.from_data(out.datum).next_did == ENDORSER
     assert out.amount == activity.utxo.output.amount and out.address == activity.utxo.output.address
+    assert len(tx.transaction_body.outputs) == 3  # the proposal, the node and the change
 
 
 def test_submit_proposal_of_a_subagent_adds_the_parent_record(world):
@@ -394,6 +472,7 @@ def test_submit_proposal_with_a_credential_key_besides_the_wallet(world):
     assert required_signers(tx) == [agent_key.key_hash]
     assert {agent_key.key_hash, world.key_hash} <= signed_by(tx)
     assert gi.ProposalDatum.from_data(tx.transaction_body.outputs[0].datum).proposer_credential.hash == agent_key.key_hash
+    assert gi.ActivityDatum.from_data(tx.transaction_body.outputs[1].datum).agent_credential.hash == agent_key.key_hash
 
 
 @pytest.mark.parametrize("change", [suspended, revoked])
@@ -404,7 +483,8 @@ def test_submit_proposal_refuses_an_agent_that_is_not_active(world, change):
     locked = world.locked(world.deployment.proposal_spend, world.proposal_datum(), 27_000_000)
     with pytest.raises(vid.IdentityStatusError):
         gi.prepare_submit_proposal(world.chain, world.deployment, locked=locked, records=[rec], refs=world.refs,
-                                   activity=None, window=world.window(), wallet_address=world.wallet_address)
+                                   activity_list=world.activity_list(), window=world.window(),
+                                   wallet_address=world.wallet_address)
 
 
 def test_submit_proposal_refuses_an_undeclared_key(world):
@@ -414,7 +494,8 @@ def test_submit_proposal_refuses_an_undeclared_key(world):
     locked = world.locked(world.deployment.proposal_spend, world.proposal_datum(), 27_000_000)
     with pytest.raises(vid.IdentityError, match="neither the controller"):
         gi.prepare_submit_proposal(world.chain, world.deployment, locked=locked, records=[rec], refs=world.refs,
-                                   activity=None, window=world.window(), wallet_address=world.wallet_address)
+                                   activity_list=world.activity_list(), window=world.window(),
+                                   wallet_address=world.wallet_address)
 
 
 def test_submit_proposal_refuses_a_missing_ancestor(world):
@@ -435,12 +516,17 @@ def test_submit_proposal_refuses_a_record_from_another_registry(world):
 def test_submit_proposal_refuses_the_rate_limit(world):
     rec = world.agent(PROPOSER)
     window = world.window()
-    recent = world.activity_utxo(PROPOSER, 1, window.lo - 1000)
+    world.head(PROPOSER)
+    world.activity_utxo(PROPOSER, 1, window.lo - 1000)
     with pytest.raises(gi.GovernanceClientError, match="cooldown"):
-        lock_proposal(world, [rec], window, activity=recent)
-    full = gi.ActivityRecord(recent.utxo, dataclasses.replace(recent.datum, active_proposal_count=3, last_proposal_slot=0))
+        lock_proposal(world, [rec], window)
+    world.activity_utxo(PROPOSER, 3, 0, byte=0x81)  # a second node of the agent
+    with pytest.raises(gi.GovernanceClientError, match="several nodes"):
+        lock_proposal(world, [rec], window)
+    address = str(world.deployment.proposal_spend.address)
+    world.chain.store[address] = [u for u in world.chain.store[address] if u.input != tx_in(0x80)]
     with pytest.raises(gi.GovernanceClientError, match="active proposals"):
-        lock_proposal(world, [rec], window, activity=full)
+        lock_proposal(world, [rec], window)
 
 
 @pytest.mark.parametrize("terms, message", [
@@ -472,7 +558,8 @@ def test_submit_proposal_refuses_a_lock_with_tokens(world):
     proposal = world.proposal_utxo(world.proposal_datum())
     with pytest.raises(gi.GovernanceClientError, match="not a proposal lock"):
         gi.prepare_submit_proposal(world.chain, world.deployment, locked=proposal, records=[rec], refs=world.refs,
-                                   activity=None, window=world.window(), wallet_address=world.wallet_address)
+                                   activity_list=world.activity_list(), window=world.window(),
+                                   wallet_address=world.wallet_address)
 
 
 def test_submit_proposal_refuses_references_of_another_deployment(world):
@@ -481,9 +568,10 @@ def test_submit_proposal_refuses_references_of_another_deployment(world):
     stale = gi.GovernanceReferences(refs.params, gi.CrossRefsRecord(
         refs.cross_refs.utxo, dataclasses.replace(refs.cross_refs.refs, proposal_mint_hash=h("00" * 28))))
     with pytest.raises(gi.MissingReferenceError, match="CrossRefs"):
-        gi.prepare_proposal_lock(world.chain, world.deployment, records=[rec], refs=stale, activity=None,
-                                 terms=proposal_terms(), credential_key_hash=world.key_hash,
-                                 window=world.window(), wallet_address=world.wallet_address)
+        gi.prepare_proposal_lock(world.chain, world.deployment, records=[rec], refs=stale,
+                                 activity_list=world.activity_list(), terms=proposal_terms(),
+                                 credential_key_hash=world.key_hash, window=world.window(),
+                                 wallet_address=world.wallet_address)
 
 
 def test_reference_scripts_replace_the_inline_scripts():
@@ -501,11 +589,11 @@ def test_reference_scripts_replace_the_inline_scripts():
 # ── AmendProposal ───────────────────────────────────────────────────────────
 
 
-def critique_of(world, proposal, critic=CRITIC, **changes):
+def critique_of(world, critic=CRITIC, seed=PROPOSAL_SEED, **changes):
     datum = gi.CritiqueDatum(
         critic_did=critic,
         critic_credential=gi.Credential.key(world.key_hash),
-        proposal_ref=proposal.input,
+        proposal_ref=seed,
         critique_hash=vid.blake2b_256(b"critique " + critic),
         storage_uri=b"ipfs://QmCritique",
         critique_type=gi.supportive(),
@@ -527,8 +615,8 @@ def test_amend_proposal_with_incorporated_critiques(world):
     rec = world.agent(PROPOSER)
     datum = world.proposal_datum()
     proposal = world.proposal_utxo(datum)
-    first = world.critique_utxo(critique_of(world, proposal))
-    second = world.critique_utxo(critique_of(world, proposal, critic=ENDORSER), byte=0xA1)
+    first = world.critique_utxo(critique_of(world))
+    second = world.critique_utxo(critique_of(world, critic=ENDORSER), byte=0xA1)
     window = world.window()
     tx = sign(world, amend(world, proposal, [rec], window, [first, second]))
     body = tx.transaction_body
@@ -563,10 +651,13 @@ def test_amend_proposal_refusals(world):
     window = world.window()
     with pytest.raises(gi.GovernanceClientError, match="differ from the current hash"):
         amend(world, proposal, [rec], window, new_hash=datum.proposal_hash)
-    other = world.proposal_utxo(world.proposal_datum(), byte=0x72)
+    # A critique of the proposal with another seed
     with pytest.raises(gi.GovernanceClientError, match="another proposal"):
-        amend(world, proposal, [rec], window, [world.critique_utxo(critique_of(world, other))])
-    done = world.critique_utxo(critique_of(world, proposal, incorporated=True), byte=0xA2)
+        amend(world, proposal, [rec], window, [world.critique_utxo(critique_of(world, seed=tx_in(0x72)))])
+    # The output reference of the proposal is not its seed
+    with pytest.raises(gi.GovernanceClientError, match="another proposal"):
+        amend(world, proposal, [rec], window, [world.critique_utxo(critique_of(world, seed=proposal.input), byte=0xA3)])
+    done = world.critique_utxo(critique_of(world, incorporated=True), byte=0xA2)
     with pytest.raises(gi.GovernanceClientError, match="already incorporated"):
         amend(world, proposal, [rec], window, [done])
     full = world.proposal_utxo(world.proposal_datum(amendment_count=5), byte=0x73)
@@ -592,125 +683,194 @@ def critique_terms(**changes) -> gi.CritiqueTerms:
     return dataclasses.replace(terms, **changes)
 
 
-def lock_critique(world, records, proposal, window, terms=None):
+def lock_critique(world, records, proposal, window, terms=None, key_hash=None, seed=PROPOSAL_SEED,
+                  proposer_record=None):
     return gi.prepare_critique_lock(
-        world.chain, world.deployment, records=records, refs=world.refs, proposal=proposal,
-        terms=terms or critique_terms(), credential_key_hash=world.key_hash, window=window,
-        wallet_address=world.wallet_address,
+        world.chain, world.deployment, records=records, refs=world.refs, proposal=proposal, seed=seed,
+        terms=terms or critique_terms(), credential_key_hash=key_hash or world.key_hash, window=window,
+        wallet_address=world.wallet_address, proposer_record=proposer_record,
     )
 
 
-def test_submit_critique_mints_through_critique_mint(world):
-    rec = world.agent(CRITIC)
+def test_submit_critique_names_the_seed_and_reads_the_proposer_record(world):
+    proposer = world.agent(PROPOSER)
+    rec, critic_key = own_agent(world, CRITIC, 0x63)
     proposal = world.proposal_utxo(world.proposal_datum())
     window = world.window()
-    lock = lock_critique(world, [rec], proposal, window)
+    lock = lock_critique(world, [rec], proposal, window, key_hash=critic_key.key_hash, proposer_record=proposer)
     lock_tx = sign(world, lock)
-    assert gi.CritiqueDatum.from_data(lock_tx.transaction_body.outputs[0].datum).submitted_at == window.lo
+    locked_datum = gi.CritiqueDatum.from_data(lock_tx.transaction_body.outputs[0].datum)
+    assert locked_datum.submitted_at == window.lo and locked_datum.proposal_ref == PROPOSAL_SEED
     locked = world.locked(world.deployment.critique_spend, lock.datum, 7_000_000)
 
     tx = sign(world, gi.prepare_submit_critique(
         world.chain, world.deployment, locked=locked, records=[rec], refs=world.refs, proposal=proposal,
-        window=window, wallet_address=world.wallet_address,
-    ))
+        window=window, wallet_address=world.wallet_address, proposer_record=proposer,
+    ), critic_key)
     deployment = world.deployment
-    assert reference_inputs(tx) == {rec.utxo.input, world.params.input, world.cross_refs.input, proposal.input}
-    assert required_signers(tx) == [world.key_hash]
+    assert reference_inputs(tx) == {
+        rec.utxo.input, world.params.input, world.cross_refs.input, proposal.input, proposer.utxo.input}
+    assert required_signers(tx) == [critic_key.key_hash]
     check_range(tx, window)
     token = gi.critique_token_name(locked.input)
     assert minted(tx) == {(deployment.critique_mint.hash, token): 1}
     assert spend_redeemers(tx) == {locked.input: gi.MINT_CRITIQUE_TOKEN}
     assert mint_redeemers(tx) == {deployment.critique_mint.hash: gi.MINT_CRITIQUE_TOKEN}
     out = tx.transaction_body.outputs[0]
-    assert out.address == deployment.critique_spend.address
+    assert out.address == locked.output.address
     assert gi.policy_tokens(out, deployment.critique_mint.hash) == {token: 1}
     datum = gi.CritiqueDatum.from_data(out.datum)
     assert datum == lock.datum and datum.submitted_at == window.lo
-    assert datum.critic_credential == gi.Credential.key(world.key_hash)
+    assert datum.critic_credential == gi.Credential.key(critic_key.key_hash)
+
+
+def test_amendment_critique_of_the_proposer_needs_no_proposer_record(world):
+    proposer = world.agent(PROPOSER)
+    proposal = world.proposal_utxo(world.proposal_datum())
+    window = world.window()
+    terms = critique_terms(critique_type=gi.amendment_critique(vid.blake2b_256(b"change")))
+    lock = lock_critique(world, [proposer], proposal, window, terms)
+    assert lock.datum.is_amendment
+    locked = world.locked(world.deployment.critique_spend, lock.datum, 7_000_000)
+    tx = sign(world, gi.prepare_submit_critique(
+        world.chain, world.deployment, locked=locked, records=[proposer], refs=world.refs, proposal=proposal,
+        window=window, wallet_address=world.wallet_address,
+    ))
+    assert reference_inputs(tx) == {proposer.utxo.input, world.params.input, world.cross_refs.input, proposal.input}
 
 
 def test_critique_refusals(world):
     proposer = world.agent(PROPOSER)
-    critic = world.agent(CRITIC, byte=0x63)
+    critic, critic_key = own_agent(world, CRITIC, 0x63)
     proposal = world.proposal_utxo(world.proposal_datum())
     window = world.window()
+
+    def lock(records, terms=None, key_hash=critic_key.key_hash, **changes):
+        return lock_critique(world, records, proposal, window, terms, key_hash,
+                             **{"proposer_record": proposer, **changes})
+
     with pytest.raises(gi.GovernanceClientError, match="Amendment critique"):
-        lock_critique(world, [proposer], proposal, window)
-    own = lock_critique(world, [proposer], proposal, window, critique_terms(
-        critique_type=gi.amendment_critique(vid.blake2b_256(b"change"))))
-    assert own.datum.is_amendment
+        lock([proposer], key_hash=world.key_hash)
     with pytest.raises(gi.GovernanceClientError, match="stake is below"):
-        lock_critique(world, [critic], proposal, window, critique_terms(stake_amount=1))
-    lock = world.locked(world.deployment.proposal_spend, world.proposal_datum(), 27_000_000)
+        lock([critic], critique_terms(stake_amount=1))
+    with pytest.raises(gi.MissingReferenceError, match="record of the proposer"):
+        lock([critic], proposer_record=None)
+    with pytest.raises(vid.IdentityError, match="not the authentic record"):
+        lock([critic], proposer_record=critic)
+    with pytest.raises(gi.GovernanceClientError, match="does not hold the token of the seed"):
+        lock([critic], seed=proposal.input)
+    lock_utxo = world.locked(world.deployment.proposal_spend, world.proposal_datum(), 27_000_000)
     with pytest.raises(gi.GovernanceClientError, match="no proposal token"):
-        lock_critique(world, [critic], lock, window)
+        lock_critique(world, [critic], lock_utxo, window, key_hash=critic_key.key_hash, proposer_record=proposer)
     closed = world.proposal_utxo(world.proposal_datum(state=gi.ProposalState.WITHDRAWN), byte=0x74)
     with pytest.raises(gi.GovernanceClientError, match="WITHDRAWN"):
-        lock_critique(world, [critic], closed, window)
+        lock_critique(world, [critic], closed, window, key_hash=critic_key.key_hash, proposer_record=proposer)
     retired = world.agent(ENDORSER, revoked(record_datum(public_key(world.wallet))), byte=0x64)
     with pytest.raises(vid.IdentityStatusError):
-        lock_critique(world, [retired], proposal, window)
+        lock([retired], key_hash=world.key_hash)
+
+
+def test_critique_refuses_parties_that_are_not_different(world):
+    """The rule of different parties (critique_validation.distinct_parties)."""
+    proposer = world.agent(PROPOSER)
+    proposal = world.proposal_utxo(world.proposal_datum())
+    window = world.window()
+    same_controller = world.agent(CRITIC, byte=0x63)
+    with pytest.raises(gi.GovernanceClientError, match="same controller key"):
+        lock_critique(world, [same_controller], proposal, window, proposer_record=proposer)
+    other_key = key_pair()
+    listed = world.agent(ENDORSER, with_transaction_key(record_datum(public_key(other_key)), public_key(world.wallet)),
+                         byte=0x64)
+    with pytest.raises(gi.GovernanceClientError, match="proposer credential"):
+        lock_critique(world, [listed], proposal, window, proposer_record=proposer)
+    child_key = key_pair()
+    child = world.agent(PARENT, subagent_of(record_datum(public_key(child_key)), PROPOSER), byte=0x65)
+    with pytest.raises(gi.GovernanceClientError, match="subagent of the proposer"):
+        lock_critique(world, [child, proposer], proposal, window, key_hash=child_key.key_hash,
+                      proposer_record=proposer)
 
 
 def test_submit_critique_needs_the_named_proposal(world):
-    rec = world.agent(CRITIC)
-    proposal = world.proposal_utxo(world.proposal_datum())
-    other = world.proposal_utxo(world.proposal_datum(), byte=0x75)
-    locked = world.locked(world.deployment.critique_spend, critique_of(world, proposal), 7_000_000)
-    with pytest.raises(gi.GovernanceClientError, match="is not"):
+    proposer = world.agent(PROPOSER)
+    rec, critic_key = own_agent(world, CRITIC, 0x63)
+    world.proposal_utxo(world.proposal_datum())
+    other = world.proposal_utxo(world.proposal_datum(), byte=0x75, seed=tx_in(0x76))
+    locked = world.locked(world.deployment.critique_spend,
+                          critique_of(world, critic_credential=gi.Credential.key(critic_key.key_hash)), 7_000_000)
+    with pytest.raises(gi.GovernanceClientError, match="does not hold the token of the seed"):
         gi.prepare_submit_critique(world.chain, world.deployment, locked=locked, records=[rec], refs=world.refs,
-                                   proposal=other, window=world.window(), wallet_address=world.wallet_address)
+                                   proposal=other, window=world.window(), wallet_address=world.wallet_address,
+                                   proposer_record=proposer)
+    assert gi.find_proposal(world.chain.utxos(world.deployment.proposal_spend.address), world.deployment,
+                            tx_in(0x76)) == other
 
 
 # ── Endorsements ────────────────────────────────────────────────────────────
 
 
-def test_submit_endorsement_through_the_validator(world):
-    rec = world.agent(ENDORSER)
+def lock_endorsement(world, records, proposal, window, key_hash, proposer_record, stake=5_000_000, seed=PROPOSAL_SEED):
+    return gi.prepare_endorsement_lock(
+        world.chain, world.deployment, records=records, refs=world.refs, proposal=proposal, seed=seed,
+        stake_amount=stake, credential_key_hash=key_hash, window=window, wallet_address=world.wallet_address,
+        proposer_record=proposer_record,
+    )
+
+
+def test_submit_endorsement_mints_the_endorsement_token(world):
+    proposer = world.agent(PROPOSER)
+    rec, endorser_key = own_agent(world, ENDORSER, 0x63)
     proposal = world.proposal_utxo(world.proposal_datum())
     window = world.window()
-    lock = gi.prepare_endorsement_lock(
-        world.chain, world.deployment, records=[rec], refs=world.refs, proposal=proposal, stake_amount=5_000_000,
-        credential_key_hash=world.key_hash, window=window, wallet_address=world.wallet_address,
-    )
-    assert lock.datum.created_at == window.lo
+    lock = lock_endorsement(world, [rec], proposal, window, endorser_key.key_hash, proposer)
+    assert lock.datum.created_at == window.lo and lock.datum.proposal_ref == PROPOSAL_SEED
     locked = world.locked(world.deployment.endorsement_spend, lock.datum, 7_000_000)
     tx = sign(world, gi.prepare_submit_endorsement(
         world.chain, world.deployment, locked=locked, records=[rec], refs=world.refs, proposal=proposal,
-        window=window, wallet_address=world.wallet_address,
-    ))
-    assert reference_inputs(tx) == {rec.utxo.input, world.params.input, world.cross_refs.input, proposal.input}
-    assert required_signers(tx) == [world.key_hash]
+        window=window, wallet_address=world.wallet_address, proposer_record=proposer,
+    ), endorser_key)
+    deployment = world.deployment
+    assert reference_inputs(tx) == {
+        rec.utxo.input, world.params.input, world.cross_refs.input, proposal.input, proposer.utxo.input}
+    assert required_signers(tx) == [endorser_key.key_hash]
     check_range(tx, window)
-    assert not tx.transaction_body.mint
+    token = gi.endorsement_token_name(ENDORSER, PROPOSAL_SEED)
+    assert minted(tx) == {(deployment.critique_mint.hash, token): 1}
     assert spend_redeemers(tx) == {locked.input: gi.MINT_ENDORSEMENT_TOKEN}
+    assert mint_redeemers(tx) == {deployment.critique_mint.hash: gi.MINT_ENDORSEMENT_TOKEN}
     out = tx.transaction_body.outputs[0]
-    assert (out.address, out.amount) == (world.deployment.endorsement_spend.address, locked.output.amount)
+    assert out.address == locked.output.address and out.amount.coin == locked.output.amount.coin
+    assert gi.policy_tokens(out, deployment.critique_mint.hash) == {token: 1}
     datum = gi.EndorsementDatum.from_data(out.datum)
     assert datum == lock.datum
-    assert datum.endorser_credential == gi.Credential.key(world.key_hash)
+    assert datum.endorser_credential == gi.Credential.key(endorser_key.key_hash)
 
 
 def test_endorsement_refusals(world):
     proposer = world.agent(PROPOSER)
-    endorser = world.agent(ENDORSER, byte=0x63)
+    endorser, endorser_key = own_agent(world, ENDORSER, 0x63)
     proposal = world.proposal_utxo(world.proposal_datum())
     window = world.window()
 
-    def lock(records, stake=5_000_000):
-        return gi.prepare_endorsement_lock(
-            world.chain, world.deployment, records=records, refs=world.refs, proposal=proposal,
-            stake_amount=stake, credential_key_hash=world.key_hash, window=window,
-            wallet_address=world.wallet_address,
-        )
-
     with pytest.raises(gi.GovernanceClientError, match="own proposal"):
-        lock([proposer])
+        lock_endorsement(world, [proposer], proposal, window, world.key_hash, proposer)
     with pytest.raises(gi.GovernanceClientError, match="stake is below"):
-        lock([endorser], stake=1)
-    stranger = world.agent(CRITIC, record_datum(public_key(key_pair())), byte=0x64)
+        lock_endorsement(world, [endorser], proposal, window, endorser_key.key_hash, proposer, stake=1)
+    with pytest.raises(gi.MissingReferenceError, match="record of the proposer"):
+        lock_endorsement(world, [endorser], proposal, window, endorser_key.key_hash, None)
+    with pytest.raises(gi.GovernanceClientError, match="does not hold the token of the seed"):
+        lock_endorsement(world, [endorser], proposal, window, endorser_key.key_hash, proposer, seed=proposal.input)
+    same_controller = world.agent(CRITIC, byte=0x64)
+    with pytest.raises(gi.GovernanceClientError, match="same controller key"):
+        lock_endorsement(world, [same_controller], proposal, window, world.key_hash, proposer)
+    stranger = world.agent(PARENT, record_datum(public_key(key_pair())), byte=0x65)
     with pytest.raises(vid.IdentityError, match="neither the controller"):
-        lock([stranger])
+        lock_endorsement(world, [stranger], proposal, window, endorser_key.key_hash, proposer)
+    locked = world.locked(world.deployment.endorsement_spend, gi.EndorsementDatum(
+        ENDORSER, gi.Credential.key(endorser_key.key_hash), PROPOSAL_SEED, 5_000_000, window.lo), 7_000_000)
+    with pytest.raises(gi.MissingReferenceError, match="record of the proposer"):
+        gi.prepare_submit_endorsement(world.chain, world.deployment, locked=locked, records=[endorser],
+                                      refs=world.refs, proposal=proposal, window=window,
+                                      wallet_address=world.wallet_address)
 
 
 # ── Flows (async, against the fake chain) ───────────────────────────────────
@@ -718,7 +878,8 @@ def test_endorsement_refusals(world):
 
 def test_flows_lock_then_create(world):
     world.agent(PROPOSER)
-    world.agent(ENDORSER, byte=0x63)
+    endorser_key = key_pair()
+    world.agent(ENDORSER, record_datum(public_key(endorser_key)), byte=0x63)
 
     async def run():
         submitted = await gi.submit_proposal(
@@ -726,7 +887,7 @@ def test_flows_lock_then_create(world):
             wallet=world.wallet, wallet_address=world.wallet_address, delay=0,
         )
         critique = await gi.submit_critique(
-            world.chain, world.deployment, agent_id=PROPOSER, proposal_ref=submitted.position,
+            world.chain, world.deployment, agent_id=PROPOSER, proposal_ref=submitted.seed,
             terms=critique_terms(critique_type=gi.amendment_critique(vid.blake2b_256(b"x"))),
             wallet=world.wallet, wallet_address=world.wallet_address, delay=0,
         )
@@ -736,27 +897,36 @@ def test_flows_lock_then_create(world):
             incorporate=[critique.position],
         )
         endorsed = await gi.submit_endorsement(
-            world.chain, world.deployment, agent_id=ENDORSER, proposal_ref=amended.position,
-            stake_amount=5_000_000, wallet=world.wallet, wallet_address=world.wallet_address, delay=0,
+            world.chain, world.deployment, agent_id=ENDORSER, proposal_ref=submitted.seed,
+            stake_amount=5_000_000, wallet=world.wallet, wallet_address=world.wallet_address,
+            credential=endorser_key, delay=0,
         )
         return submitted, critique, amended, endorsed
 
     submitted, critique, amended, endorsed = asyncio.run(run())
     assert [str(tx.id) for tx in world.chain.submitted] == [
         submitted.lock_tx, submitted.tx, critique.lock_tx, critique.tx, amended.tx, endorsed.lock_tx, endorsed.tx]
+    assert submitted.seed == TransactionInput(world.chain.submitted[0].id, 0)
     assert submitted.activity == TransactionInput(submitted.position.transaction_id, 1)
-    assert submitted.minted == (gi.proposal_token_name(TransactionInput(world.chain.submitted[0].id, 0)),
-                                gi.activity_token_name(PROPOSER))
-    activity = gi.find_activity(world.chain.utxos(world.deployment.proposal_spend.address), world.deployment, PROPOSER)
-    assert activity.utxo.input == submitted.activity and activity.datum.active_proposal_count == 1
+    assert submitted.minted == (gi.proposal_token_name(submitted.seed), gi.activity_token_name(PROPOSER))
+    activity_list = world.activity_list()
+    assert activity_list.head.datum.next_did == PROPOSER
+    assert activity_list.node(PROPOSER).utxo.input == submitted.activity
+    assert activity_list.node(PROPOSER).datum.active_proposal_count == 1
     proposal = gi.find_utxo(world.chain.utxos(world.deployment.proposal_spend.address), amended.position)
+    assert proposal == gi.find_proposal(world.chain.utxos(world.deployment.proposal_spend.address),
+                                        world.deployment, submitted.seed)
     proposal_datum = gi.ProposalDatum.from_data(proposal.output.datum)
     assert proposal_datum.state == gi.ProposalState.AMENDED
     assert proposal_datum.incorporated_critiques == (critique.position,)
+    assert gi.CritiqueDatum.from_data(
+        world.chain.submitted[3].transaction_body.outputs[0].datum).proposal_ref == submitted.seed
     endorsement = gi.find_utxo(world.chain.utxos(world.deployment.endorsement_spend.address), endorsed.position)
-    assert gi.EndorsementDatum.from_data(endorsement.output.datum).proposal_ref == amended.position
-    for index in (1, 3, 4, 6):
+    assert gi.EndorsementDatum.from_data(endorsement.output.datum).proposal_ref == submitted.seed
+    assert endorsed.minted == (gi.endorsement_token_name(ENDORSER, submitted.seed),)
+    for index in (1, 3, 4):
         assert required_signers(world.chain.submitted[index]) == [world.key_hash]
+    assert required_signers(world.chain.submitted[6]) == [endorser_key.key_hash]
     assert not world.chain.submitted[0].transaction_body.required_signers
 
 

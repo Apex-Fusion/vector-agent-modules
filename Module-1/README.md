@@ -74,8 +74,8 @@ Python-based simulation engine for testing module economics and agent strategies
 | `config.py` | Simulation parameters, module configuration and the identity deployment values (`load_identity_deployment`) |
 | `chain.py` | Simulated blockchain state (UTxOs, slots, transactions, reward balances) |
 | `wallet_factory.py` | Agent wallet creation and identity registration |
-| `tx_builder.py` | Transaction construction for all module actions, identity Register, Consent Update, ApplyVerdict and the reclaim of an expired verdict |
-| `identity_party.py` | Module-1 as an identity party: verdict datum (with `deposit_to` and `expires_at`) and token name, verdict policy, AuditingConfig, the `identity_party` parameters, Plutus addresses, redeemers |
+| `tx_builder.py` | Transaction construction for all module actions, identity Register, Consent Update, OracleResolve (with the verdict mint), ApplyVerdict and the reclaim of an expired verdict |
+| `identity_party.py` | Module-1 as an identity party: verdict datum (with `deposit_to` and `expires_at`) and token name, verdict policy, AuditingConfig, the `identity_party` parameters, Plutus addresses, redeemers (also the OracleResolve redeemer) |
 | `vector_identity.py` | Shared identity record model (copy of `Module-3/python/reputation_staking/vector_identity.py`; do not edit) |
 | `agent_pool.py` | Agent behavior models and strategy implementations |
 | `world_state.py` | Aggregate module state tracking |
@@ -91,13 +91,20 @@ declared. Juror records list the master key with the transaction purpose,
 because the master key is the juror credential. The happy path registers
 the claimant with Module-1 as a party and adds Module-1 to the auditor with a
 Consent Update. A jury resolution (ResolveJury) gives no verdict; only an
-oracle resolution does. The Resolved state of ResolveJury names the funding
-wallet as `refund_to`, and CleanupResolved pays the kept AP3X to it. A
-verdict applies until its `expires_at` (30 days after the resolution);
-after that, `build_reclaim_verdict` pays the AP3X of the verdict output to
-its `deposit_to`. A withdrawal from `Script(M1)` takes the whole reward
-balance of that account (read from the chain), and a record output holds
-at least the larger of 10 AP3X and the ledger minimum.
+oracle resolution does. `build_oracle_resolve` builds the oracle resolution:
+the oracle key signs, the winner gets both stakes (no jury fee), and
+Inconclusive returns each stake. When the verdict policy gives a rule for the
+outcome, the transaction also reads the configuration record, mints one
+verdict token (`MintVerdict`) and creates the verdict output at the
+`identity_party` address; the funding wallet is `deposit_to`, and
+`expires_at` is the upper bound of the range (at most one hour) plus 30 days.
+The Resolved state of ResolveJury names the funding wallet as `refund_to`,
+and CleanupResolved pays the kept AP3X to it. A verdict applies until its
+`expires_at`; after that, `build_reclaim_verdict` pays the AP3X of the
+verdict output to its `deposit_to`. A withdrawal from `Script(M1)` takes the
+whole reward balance of that account (read from the chain). Only Consent and
+ApplyVerdict have this withdrawal; the verdict mint has no withdrawal. A
+record output holds at least the larger of 10 AP3X and the ledger minimum.
 
 The deployment manifest (`DEPLOYMENT_PATH`) must hold these values, with no
 defaults (deployment order: identity registry, Module-1, Module-3,

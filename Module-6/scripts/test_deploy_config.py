@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Module 6: offline checks of the identity_hash input, the GovernanceConfig
-layout and the GovernanceCrossRefs layout
+layout, the GovernanceCrossRefs layout and the head of the activity list
 
 No chain connection, no keys and no aiken CLI. Needs cbor2.
 
@@ -13,11 +13,16 @@ Checks:
     order of the Aiken type GovernanceConfig, with identity_hash last and
     reputation_validator_hash and jury_pool_hash zero. It refuses a config
     without a valid identity_hash.
-  - resume_state_error refuses a state of the legacy registry layout and a
-    state with another identity_hash.
+  - resume_state_error refuses a state of the legacy registry layout, a
+    state with another identity_hash and a state whose records have no head
+    of the activity list.
   - build_cross_refs_data gives constructor 0 with 5 fields in the order of
     the Aiken type GovernanceCrossRefs, with endorsement_validator_hash last.
     It refuses a missing, short or zero hash.
+  - build_activity_head_data gives the head of the empty activity list:
+    ProposerActivityDatum (constructor 0, 5 fields) with agent_did = b"",
+    the deployer credential, count 0, last_proposal_slot 0 and
+    next_did = b"". The record token name of the head is `activity`.
 
 Usage:
     python3 scripts/test_deploy_config.py
@@ -28,9 +33,13 @@ import sys
 import cbor2
 
 from deploy_common import (
+    ACTIVITY_TOKEN_NAME,
     IDENTITY_HASH_ENV,
     LEGACY_REGISTRY_HASH,
+    ORACLE_TOKEN_NAME,
+    PARAMS_TOKEN_NAME,
     DeployInputError,
+    build_activity_head_data,
     build_cross_refs_data,
     build_governance_config_cbor,
     identity_hash_from_env,
@@ -120,7 +129,7 @@ def main() -> int:
         "holder_owner_vkey_hash": OWNER,
         "record_token_policy": dummy(0x0A),
         "record_token_seed": "aa" * 32 + "#0",
-        "tx_hashes": {"params_utxo": "bb" * 32},
+        "tx_hashes": {"params_utxo": "bb" * 32, "oracle_utxo": "bb" * 32, "activity_head": "bb" * 32},
         "identity_hash": IDENTITY,
     }
     check("resume with the same identity_hash: continues",
@@ -131,6 +140,11 @@ def main() -> int:
           "legacy agent registry" in (resume_state_error(legacy, OWNER, IDENTITY) or ""))
     check("resume with another identity_hash: refused",
           "identity_hash" in (resume_state_error(saved, OWNER, dummy(0x2E)) or ""))
+    without_head = dict(saved, tx_hashes={"params_utxo": "bb" * 32, "oracle_utxo": "bb" * 32})
+    check("resume of records without the activity head: refused",
+          "activity list" in (resume_state_error(without_head, OWNER, IDENTITY) or ""))
+    check("resume before the record step: continues",
+          resume_state_error(dict(saved, tx_hashes={}), OWNER, IDENTITY) is None)
 
     print("\nModule-6 GovernanceCrossRefs datum")
     refs = build_cross_refs_data(
@@ -161,6 +175,28 @@ def main() -> int:
         except ValueError:
             refused = True
         check(f"cross refs: endorsement_validator_hash {label}: refused", refused)
+
+    print("\nModule-6 head of the activity list")
+    head = build_activity_head_data(OWNER)
+    check("activity head: constructor 0", head.tag == 121)
+    check("activity head: 5 fields (ProposerActivityDatum)", len(head.value) == 5)
+    agent_did, credential, count, last, next_did = head.value
+    check("activity head: agent_did is empty", agent_did == b"")
+    check("activity head: VerificationKey credential of the deployer",
+          credential.tag == 121 and [c.hex() for c in credential.value] == [OWNER])
+    check("activity head: count 0 and last_proposal_slot 0", (count, last) == (0, 0))
+    check("activity head: next_did is empty (empty list)", next_did == b"")
+    check("activity head: CBOR round trip",
+          cbor2.loads(cbor2.dumps(head)) == head)
+    check("activity head: record token name `activity`, distinct from the other records",
+          ACTIVITY_TOKEN_NAME == b"activity"
+          and len({ACTIVITY_TOKEN_NAME, PARAMS_TOKEN_NAME, ORACLE_TOKEN_NAME}) == 3)
+    try:
+        build_activity_head_data("ab" * 27)
+        refused = False
+    except ValueError:
+        refused = True
+    check("activity head: a 27-byte deployer key hash: refused", refused)
 
     print("\nAll checks passed." if not FAILED else f"\n{len(FAILED)} checks failed.")
     return 1 if FAILED else 0

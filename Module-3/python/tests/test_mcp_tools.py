@@ -30,7 +30,7 @@ class MockStorage:
         self, agent_did, net_score, tier, self_stake=0,
         endorsement_total=0, challenge_total=0, history_bonus=0, decay=0,
         capabilities=None, endorsements_received=0, endorsements_given=0,
-        identity_status="active",
+        identity_status="active", stake_status="staked",
     ):
         self._scores[agent_did] = {
             "agent_did": agent_did,
@@ -44,6 +44,7 @@ class MockStorage:
             "last_updated_slot": 1000,
             "identity_status": identity_status,
             "indexed_at_ms": 1_762_000_000_000,
+            "stake_status": stake_status,
         }
         caps = capabilities or []
         self._stakes[agent_did] = [
@@ -214,3 +215,19 @@ class TestReputationMyStatus:
         bd = result.data["breakdown"]
         assert bd["self_stake"] == 300
         assert bd["endorsements"] == 200
+
+    def test_fully_decayed_stake_is_below_minimum(self, storage):
+        """A fully decayed stake stays with stake_amount 0: the agent has a
+        stake below the minimum, not a missing stake."""
+        eee = "ee" * 32
+        storage.add_agent(
+            eee, net_score=0, tier="Unverified", self_stake=0,
+            capabilities=["code_review"], stake_status="below_minimum",
+        )
+        result = reputation_my_status(storage, eee)
+        assert result.success
+        assert result.data["stake_status"] == "below_minimum"
+        assert result.data["capabilities"] == ["code_review"]
+        browsed = {a["agent_did"]: a for a in reputation_browse(storage).data}
+        assert browsed[eee]["stake_status"] == "below_minimum"
+        assert browsed[AAA]["stake_status"] == "staked"

@@ -271,7 +271,7 @@ async def smoke_test(args):
             critique = None
             try:
                 critique = await gi.submit_critique(
-                    context, deployment, agent_id=agent_id, proposal_ref=proposal.position,
+                    context, deployment, agent_id=agent_id, proposal_ref=proposal.seed,
                     terms=gi.CritiqueTerms(
                         critique_hash=blake2b_256("Smoke test critique: good proposal, needs more data"),
                         storage_uri="ipfs://QmSmokeTestCritique",
@@ -329,7 +329,7 @@ async def smoke_test(args):
                 endorsement = None
                 try:
                     endorsement = await gi.submit_endorsement(
-                        context, deployment, agent_id=endorser_id, proposal_ref=current,
+                        context, deployment, agent_id=endorser_id, proposal_ref=proposal.seed,
                         stake_amount=params.min_governance_endorsement,
                         wallet=keys, wallet_address=wallet_address,
                     )
