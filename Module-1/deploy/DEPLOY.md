@@ -225,4 +225,4 @@ Vector uses Conway-era CBOR encoding. Aiken's `plutus.json` output uses definite
 
 ## Compiled Blueprint
 
-The compiled Plutus V3 blueprint is available at [`plutus.json`](plutus.json). This contains all three validators pre-compiled and ready for deployment. The blueprint reflects the v14 mainnet contract build.
+The compiled Plutus V3 blueprint is available at [`plutus.json`](plutus.json). It is the unapplied build (aiken v1.1.21, `-t silent`) of the identity registry deployment in `contracts/` (claim, challenge, jury_pool and identity_party), equal to `contracts/plutus.json`. `scripts/identity_deploy.py plan` builds it again and applies the parameters. The v14 mainnet blueprint is in git history.
