@@ -16,7 +16,9 @@ Lifecycle (the "happy path"):
     4. select_jury          -> emits {"event_type": "select_jury_success", ..., "jurors":[did_hex,...]}
     5. commit_vote x5       -> emits {"event_type": "commit_vote_success",  "juror":did_hex, ...}
     6. reveal_vote x5       -> emits {"event_type": "reveal_vote_success",  "juror":did_hex, ..., "verdict":"ClaimerWins"|"AuditorWins"}
-    7. resolve_jury         -> emits {"event_type": "resolve_jury_success", "verdict":..., ...}
+    7. resolve_jury         -> emits {"event_type": "resolve_jury_success", "verdict":..., "verdict_ref":..., ...}
+    7b. apply_verdict       -> emits {"event_type": "apply_verdict_success", "agent_did":..., "action":...}
+                               only when the verdict policy gives a verdict for the outcome
     8. distribute_rewards x5-> emits {"event_type": "distribute_rewards_success", "juror":did_hex, "amount":int, ...}
     9. cleanup_resolved     -> emits {"event_type": "cleanup_resolved_success", ...}
 
@@ -32,8 +34,11 @@ Setup phase (3a) — runs once before the lifecycle:
         * allocate_indices(7, scenario=name, role="agents") → 7 ints
         * derive(idx, master_skey=...) → real {skey, vkey, address} per role
     - Bulk-fund all 7 derived addresses from master in ONE tx (50 ADA each).
-    - Register claimant DID + auditor DID at registry; register 5 jurors at
-      jury_pool with bonds. (Lifecycle steps in 3b will use these.)
+    - Create identity records (Part 2 §3.4): the claimant with Module-1 as an
+      Accountable party (Consent at registration); the auditor without it,
+      then a Consent Update; each juror with the master key listed as a
+      transaction key. Bond the jurors at jury_pool (the master key is the
+      declared juror_credential).
     - Emit ONE final event:
         {"event_type": "setup_complete", "agent_indices": [...], "scenario": name}
     - Set `_agent_setup_done = True` and persist `agent_indices` so restart
@@ -137,27 +142,6 @@ def _ordered_roles(jury_size: int) -> list[str]:
     return roles
 
 
-def _agent_did_from_seed(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
-    """Agent registry NFT asset-name = blake2b_256(cbor(OutputReference)),
-    full 32 bytes — matches the registry mint validator's on-chain hash.
-
-    Mirrors ``derive_asset_name_registry`` in the v15 deploy script. We
-    inline the CBOR encoding (rather than calling ``cbor2.dumps``) to match
-    the on-chain plutus encoding byte-for-byte — the validator recomputes
-    this and compares.
-    """
-    if seed_tx_idx <= 23:
-        idx_cbor = bytes([seed_tx_idx])
-    elif seed_tx_idx <= 255:
-        idx_cbor = bytes([0x18, seed_tx_idx])
-    else:
-        idx_cbor = bytes([0x19]) + seed_tx_idx.to_bytes(2, "big")
-    # 0xd8 0x79 = CBOR tag 121; 0x9f = indefinite-length array start;
-    # 0x58 0x20 = byte string of length 32; 0xff = break.
-    out_ref_cbor = b"\xd8\x79\x9f\x58\x20" + seed_tx_hash + idx_cbor + b"\xff"
-    return hashlib.blake2b(out_ref_cbor, digest_size=32).digest()
-
-
 def _juror_token_from_seed(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
     """Juror NFT asset-name = b"jur_" + blake2b_256(cbor(OutputReference))[:28].
 
@@ -183,7 +167,6 @@ def _juror_token_from_seed(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
 # remaining sub-wallet balance after the lifecycle, so the funding-gross
 # cost is fully recovered.
 FUNDING_PER_AGENT_LOVELACE = 80_000_000     # 80 ADA per derived sub-wallet
-DID_REG_OUTPUT_LOVELACE = 15_000_000        # locked at registry per-DID
 JUROR_BOND_LOVELACE = 25_000_000            # base-coin juror bond (Path B)
 WAIT_CONFIRM_SECS = 60                      # post-submit confirmation pause
                                             # Bumped 20→40 on 2026-04-21 after
@@ -303,6 +286,9 @@ class HappyPathScenario(ScenarioRunner):
         # Resolved-challenge UTxO ref (set by _step_resolve_jury, used
         # by _step_distribute_rewards and _step_cleanup_resolved).
         self._resolved_challenge_ref: str | None = None
+        # Verdict output ref (set by _step_resolve_jury when the verdict
+        # policy gives a verdict; used by _step_apply_verdict).
+        self._verdict_ref: str | None = None
         # Sum of ADA returned to the master via WithdrawJuror (across
         # all 15 jurors) — observability only, used by lifecycle verifier.
         self._withdraw_returned_lovelace: int = 0
@@ -548,6 +534,7 @@ class HappyPathScenario(ScenarioRunner):
             base["distribute_index"] = self._distribute_index
             base["withdraw_index"] = self._withdraw_index
             base["resolved_challenge_ref"] = self._resolved_challenge_ref
+            base["verdict_ref"] = self._verdict_ref
             base["withdraw_returned_lovelace"] = (
                 self._withdraw_returned_lovelace
             )
@@ -587,6 +574,8 @@ class HappyPathScenario(ScenarioRunner):
         self._withdraw_index = int(payload.get("withdraw_index", 0) or 0)
         if "resolved_challenge_ref" in payload:
             self._resolved_challenge_ref = payload.get("resolved_challenge_ref")
+        if "verdict_ref" in payload:
+            self._verdict_ref = payload.get("verdict_ref")
         self._withdraw_returned_lovelace = int(
             payload.get("withdraw_returned_lovelace", 0) or 0
         )
@@ -646,7 +635,11 @@ class HappyPathScenario(ScenarioRunner):
             event has been observed.
           - ``did_hexes``: dict[str, str] — role → DID hex from
             ``did_registered`` events (used to skip re-registration AND
-            to find the existing DID UTxO at the registry on resume).
+            to find the existing identity record at the identity address
+            on resume). The event name ``did_registered`` and the key
+            ``did_hex`` stay unchanged so that resume can read the metrics
+            files of earlier runs; ``did_hex`` is the 32-byte identity
+            identifier.
           - ``bonded_roles``: set[str] — juror roles whose ``juror_bonded``
             event has been observed.
           - ``juror_tokens``: dict[str, str] — role → juror token hex from
@@ -782,6 +775,7 @@ class HappyPathScenario(ScenarioRunner):
             "commit_vote": lambda: self._step_commit_vote_batch(epoch),
             "reveal_vote": lambda: self._step_reveal_vote_batch(epoch),
             "resolve_jury": lambda: self._step_resolve_jury(epoch),
+            "apply_verdict": lambda: self._step_apply_verdict(epoch),
             "distribute_rewards":
                 lambda: self._step_distribute_rewards(
                     epoch, self._distribute_index,
@@ -974,20 +968,17 @@ class HappyPathScenario(ScenarioRunner):
                 "setup_fund", partial["tx_hashes"].get("setup_fund", "")
             )
 
-        # 3. Register DIDs for claimant + auditor + each juror at the registry.
-        # Locate the registry mint script (try v15-deploy paths first,
-        # fall back to in-tree contracts).
-        registry_script = self._load_registry_mint_script()
-        if registry_script is None:
-            raise RuntimeError(
-                "agent registry mint script not found at any expected path "
-                "(testnet/agent-registry-plutus.json or "
-                "contracts/agent-registry-compliant/plutus.json). "
-                "Setup cannot proceed."
-            )
+        # 3. Create identity records for claimant + auditor + each juror
+        # (Part 2 §3.4). The claimant registers with Module-1 as an
+        # Accountable party (Consent at registration); the auditor
+        # registers without it and then consents with an Update. A verdict
+        # can name either of them. Each juror record lists the master key
+        # with the transaction purpose, because the master key is the
+        # declared juror_credential of the juror bonds.
+        deployment = self._deployment_state()
 
         # Hydrate in-memory DID hexes from any recovered state so the
-        # juror-bond loop can find the existing registry UTxOs.
+        # juror-bond loop can find the existing identity records.
         for role, did_hex in partial["did_hexes"].items():
             self._agent_did_hexes.setdefault(role, did_hex)
         for role, txh in partial["tx_hashes"].items():
@@ -998,15 +989,16 @@ class HappyPathScenario(ScenarioRunner):
             if role in partial["registered_roles"] \
                     or role in self._agent_did_hexes:
                 continue  # already registered (idempotent restart)
-            self._register_did_for(role, ctx, registry_script)
+            self._register_identity_for(role, ctx, deployment)
             self.checkpoint()
+        self._ensure_module1_consent(ROLE_AUDITOR, ctx, deployment)
 
         for i in range(self.pool_size):
             role = self._pool_role_name(i)
             if role in partial["registered_roles"] \
                     or role in self._agent_did_hexes:
                 continue
-            self._register_did_for(role, ctx, registry_script)
+            self._register_identity_for(role, ctx, deployment)
             self.checkpoint()
 
         # 4. Bond jurors at the jury pool (if manifest carries the required
@@ -1065,67 +1057,45 @@ class HappyPathScenario(ScenarioRunner):
                 return self._all_jurors[pool_i]
         raise KeyError(role)
 
-    def _load_registry_mint_script(self):
-        """Locate + load the agent registry mint Plutus V3 script."""
-        import json as _json
-        from pycardano import PlutusV3Script
-        import os as _os
-        _workspace = _os.environ.get("APEX_WORKSPACE")
-        candidates = [
-            Path(__file__).resolve().parents[2] / "contracts" / "agent-registry-compliant" / "plutus.json",
-            Path(__file__).resolve().parents[2] / "contracts" / "agent-registry" / "plutus.json",
-        ]
-        if _workspace:
-            _ws = Path(_workspace)
-            candidates.extend([
-                _ws / "contracts" / "agent-registry-compliant" / "plutus.json",
-                _ws / "testnet" / "agent-registry-plutus.json",
-            ])
-        for p in candidates:
-            if p.exists():
-                try:
-                    bp = _json.loads(p.read_text())
-                except Exception:
-                    continue
-                for v in bp.get("validators", []):
-                    if "mint" in v.get("title", "").lower():
-                        return PlutusV3Script(bytes.fromhex(v["compiledCode"]))
-        return None
+    def _record_name(self, role: str) -> bytes:
+        """The record name ``<scenario>_<role>``: 1 to 64 bytes of UTF-8
+        (Part 1 §5), cut at a character boundary."""
+        name = f"{self.name}_{role}".encode("utf-8")[:64]
+        return name.decode("utf-8", "ignore").encode("utf-8") or role.encode()
 
-    def _register_did_for(self, role: str, ctx, registry_script) -> None:
-        """Register one DID at the agent registry — thin wrapper around
-        ``tx_builder.build_register_did``.
+    def _register_identity_for(self, role: str, ctx, deployment) -> None:
+        """Create one identity record — thin wrapper around
+        ``tx_builder.build_register_identity``.
 
-        Construction logic (datum order, redeemer shape, signing semantics)
-        is in ``simulation.tx_builder`` so that lifecycle TX builders can
-        reuse the same code path. This wrapper handles submission, the
-        scenario-local DID/tx-hash bookkeeping, the post-submit wait, AND
-        emits a ``did_registered`` event into the metrics JSONL after the
-        TX confirms — restart safety hinge for ``_setup_agents``.
-
-        The per-role wallet's ``index`` (allocated by
-        ``simulation.wallet_derivation.allocate_indices``) is included in
-        the event so a future operator audit can map the DID back to the
-        funded sub-wallet without consulting the in-memory checkpoint.
+        The role's wallet key is the controller. The master pays the fees
+        and the deposit. The claimant registers with Module-1 as an
+        Accountable party; each juror record lists the master key with the
+        transaction purpose (the master key is the juror_credential of the
+        bonds). This wrapper submits, records the identifier, waits, AND
+        emits a ``did_registered`` event into the metrics JSONL after the TX
+        confirms — restart safety hinge for ``_setup_agents``.
         """
         from simulation.chain import submit_tx, tx_to_bytes, wait_confirm
         from simulation import tx_builder as _txb
+        from simulation.vector_identity import Role, did_from_id
 
         wallet = self._wallet_for_role(role)
-        agent_skey = wallet["skey"]
-        agent_vkh = wallet["vkey"].hash()
-
-        tx, did_hex = _txb.build_register_did(
+        is_juror = role.startswith(ROLE_JUROR_PREFIX + "_")
+        module1_role = Role.ACCOUNTABLE if role == ROLE_CLAIMANT else None
+        tx, did_hex = _txb.build_register_identity(
+            ctx, deployment,
             self.master_skey, self.master_vkey, self.master_wallet_addr,
-            agent_skey, agent_vkh,
-            registry_script,                # pre-loaded PlutusV3Script
-            ctx,
-            scenario_name=self.name,
-            role=role,
-            did_reg_output_lovelace=DID_REG_OUTPUT_LOVELACE,
+            wallet["skey"],
+            name=self._record_name(role),
+            description=f"vector agent {role}".encode("utf-8"),
+            framework=b"Vector-Agent",
+            transaction_keys=(self.master_skey,) if is_juror else (),
+            module1_role=module1_role,
         )
         tx_hash = submit_tx(tx_to_bytes(tx))
         self._agent_did_hexes[role] = did_hex
+        # The label "register_did_<role>" and the event "did_registered"
+        # keep their names so that resume reads the files of earlier runs.
         self._tx_hashes[f"register_did_{role}"] = tx_hash
         wait_confirm(secs=WAIT_CONFIRM_SECS)
 
@@ -1137,6 +1107,42 @@ class HappyPathScenario(ScenarioRunner):
             "index": wallet.get("index"),
             "role": role,
             "did_hex": did_hex,
+            "did": did_from_id(did_hex),
+            "module1_party": module1_role is not None,
+            "tx_hash": tx_hash,
+        })
+
+    def _ensure_module1_consent(self, role: str, ctx, deployment) -> None:
+        """Make Module-1 an Accountable party of the role's record with a
+        Consent Update (``tx_builder.build_consent_update``), unless the
+        record already has a Module-1 party. Idempotent on restart."""
+        from simulation.chain import submit_tx, tx_to_bytes, wait_confirm
+        from simulation import identity_party
+        from simulation import tx_builder as _txb
+        from simulation.vector_identity import Role
+
+        did_hex = self._agent_did_hexes.get(role)
+        if not did_hex:
+            raise RuntimeError(f"consent: {role} has no identity record.")
+        record = _txb.identity_record(ctx, deployment, did_hex)
+        if identity_party.has_module1_party(
+            record.datum, deployment.identity.identity_party_hash,
+        ):
+            return
+        wallet = self._wallet_for_role(role)
+        tx = _txb.build_consent_update(
+            ctx, deployment,
+            self.master_skey, self.master_vkey, self.master_wallet_addr,
+            wallet["skey"], did_hex,
+            module1_role=Role.ACCOUNTABLE,
+        )
+        tx_hash = submit_tx(tx_to_bytes(tx))
+        self._tx_hashes[f"module1_consent_{role}"] = tx_hash
+        wait_confirm(secs=WAIT_CONFIRM_SECS)
+        self.emit_event({
+            "event_type": "module1_consented",
+            "role": role,
+            "did_hex": did_hex,
             "tx_hash": tx_hash,
         })
 
@@ -1145,9 +1151,9 @@ class HappyPathScenario(ScenarioRunner):
     ) -> str | None:
         """Bond each juror at the jury pool — thin orchestration wrapper.
 
-        Looks up the manifest-supplied jury_pool/cross_refs/params reference
-        UTxOs, indexes registry UTxOs by DID, and calls
-        ``tx_builder.build_juror_bond`` once per juror. Returns ``None`` on
+        Calls ``tx_builder.build_juror_bond`` once per juror. The bond
+        reads the juror's identity record (the master key is the declared
+        juror_credential, listed in the record). Returns ``None`` on
         success or a string explaining what was skipped (carried into the
         setup_complete event for operator visibility).
 
@@ -1161,56 +1167,16 @@ class HappyPathScenario(ScenarioRunner):
         confirms — restart safety hinge for ``_setup_agents``.
         """
         already_bonded = already_bonded or set()
-        from simulation.chain import (
-            submit_tx, tx_to_bytes, wait_confirm,
-            resolve_utxo, resolve_ref_utxo,
-        )
-        from simulation.config import REGISTRY_POLICY, REGISTRY_ADDR
+        from simulation.chain import submit_tx, tx_to_bytes, wait_confirm
         from simulation import tx_builder as _txb
-        from pycardano import ScriptHash
-
-        deployment = self.deployment
-        jp_ref = deployment.get("jury_pool_ref") if isinstance(deployment, dict) else None
-        cross_refs = deployment.get("cross_refs_utxo") if isinstance(deployment, dict) else None
-        params_ref = deployment.get("params_utxo") if isinstance(deployment, dict) else None
-        jury_pool_hash = deployment.get("hashes", {}).get("jury_pool") if isinstance(deployment, dict) else None
-        jury_pool_addr = deployment.get("addresses", {}).get("jury_pool") if isinstance(deployment, dict) else None
-        if not (jp_ref and cross_refs and params_ref and jury_pool_hash and jury_pool_addr):
-            return (
-                "deployment manifest missing one of "
-                "jury_pool_ref/cross_refs_utxo/params_utxo/hashes.jury_pool/"
-                "addresses.jury_pool — juror bonding skipped. "
-                "FLAG for 3b: extend the manifest before live setup."
-            )
 
         try:
-            jp_txid, jp_idx = jp_ref.split("#")
-            jury_pool_ref_utxo = resolve_ref_utxo(jp_txid, int(jp_idx))
-            cr_txid, cr_idx = cross_refs.split("#")
-            cross_refs_utxo = resolve_utxo(cr_txid, int(cr_idx))
-            pa_txid, pa_idx = params_ref.split("#")
-            params_utxo = resolve_utxo(pa_txid, int(pa_idx))
+            deployment = self._deployment_state()
         except Exception as exc:
             return (
-                f"failed to resolve jury_pool/cross_refs/params reference "
-                f"UTxOs: {exc!r}. FLAG for 3b."
+                f"failed to resolve the deployment reference UTxOs: "
+                f"{exc!r}. FLAG for 3b."
             )
-
-        registry_sh = ScriptHash(bytes.fromhex(REGISTRY_POLICY))
-
-        try:
-            reg_utxos = ctx.utxos(REGISTRY_ADDR)
-        except Exception as exc:
-            return f"failed to query registry UTxOs: {exc!r}. FLAG for 3b."
-        did_to_reg: dict[str, Any] = {}
-        for u in reg_utxos:
-            ma = getattr(u.output.amount, "multi_asset", None)
-            if not ma or registry_sh not in ma:
-                continue
-            for an, qty in ma[registry_sh].items():
-                if qty == 1:
-                    did_to_reg[bytes(an).hex()] = u
-
         for i in range(self.pool_size):
             role = self._pool_role_name(i)
             # Skip if either:
@@ -1225,25 +1191,19 @@ class HappyPathScenario(ScenarioRunner):
                     self._juror_utxo_refs[i] = f"{bonded_tx}#0"
                 continue
             did_hex = self._agent_did_hexes.get(role)
-            if not did_hex or did_hex not in did_to_reg:
+            if not did_hex:
                 return (
-                    f"juror {role} DID {did_hex!r} not found in registry "
-                    "UTxOs after registration. FLAG for 3b."
+                    f"juror {role} has no identity record after "
+                    "registration. FLAG for 3b."
                 )
-            did_reg_utxo = did_to_reg[did_hex]
             wallet = self._wallet_for_role(role)
 
             try:
                 tx, jur_token_hex = _txb.build_juror_bond(
+                    ctx, deployment,
                     self.master_skey, self.master_vkey, self.master_wallet_addr,
-                    wallet["skey"], wallet["vkey"].hash(),
-                    jury_pool_ref_utxo, cross_refs_utxo, params_utxo,
                     JUROR_BOND_LOVELACE,
-                    ctx,
-                    did_hex=did_hex,
-                    did_reg_utxo=did_reg_utxo,
-                    jury_pool_hash_hex=jury_pool_hash,
-                    jury_pool_addr_str=jury_pool_addr,
+                    juror_did_hex=did_hex,
                 )
                 tx_hash = submit_tx(tx_to_bytes(tx))
             except Exception as exc:
@@ -2351,7 +2311,10 @@ class HappyPathScenario(ScenarioRunner):
         self._verdict = result["verdict"]
         self._resolved_challenge_ref = result["resolved_challenge_ref"]
         self._tx_hashes["resolve_jury"] = result["tx_hash"]
-        self._step = "distribute_rewards"
+        # A verdict output exists when the verdict policy gives a rule for
+        # the outcome; the next step applies it to the losing agent's record.
+        self._verdict_ref = result.get("verdict_ref")
+        self._step = "apply_verdict" if self._verdict_ref else "distribute_rewards"
         self._distribute_index = 0
         self.checkpoint()
 
@@ -2377,6 +2340,8 @@ class HappyPathScenario(ScenarioRunner):
                 "jury_fee": result["jury_fee"],
                 "claimer_payout": result.get("claimer_payout"),
                 "auditor_payout": result.get("auditor_payout"),
+                "verdict_ref": self._verdict_ref,
+                "identity_verdict": result.get("identity_verdict"),
             },
             {
                 "event_type": "verdict",
@@ -2392,6 +2357,44 @@ class HappyPathScenario(ScenarioRunner):
                 "epoch": epoch,
             },
         ]
+
+    def _step_apply_verdict(self, epoch: int) -> list[dict]:
+        """Apply the verdict of the resolution to the losing agent's identity
+        record (``tx_builder.build_apply_verdict``; Part 2 §3.8). The master
+        pays the fees; the application needs no other signature."""
+        self._require_real_master_skey()
+        from simulation.chain import OgmiosContext, wait_confirm
+        from simulation import tx_builder as _txb
+
+        ctx = OgmiosContext()
+        deployment = self._deployment_state()
+        if not self._verdict_ref:
+            raise RuntimeError("apply_verdict: no verdict_ref (run resolve_jury first).")
+
+        result = _txb.build_apply_verdict(
+            ctx, deployment,
+            self.master_skey, self.master_vkey, self.master_wallet_addr,
+            self._verdict_ref,
+        )
+        wait_confirm(secs=WAIT_CONFIRM_SECS)
+
+        self._tx_hashes["apply_verdict"] = result["tx_hash"]
+        self._step = "distribute_rewards"
+        self._distribute_index = 0
+        self.checkpoint()
+
+        return [{
+            "event_type": "apply_verdict_success",
+            "tx_hash": result["tx_hash"],
+            "slot": ctx.last_block_slot,
+            "step_index": 7,
+            "epoch": epoch,
+            "scenario": self.name,
+            "agent_did": result["agent_did"],
+            "action": result["action"],
+            "until": result["until"],
+            "verdict_ref": self._verdict_ref,
+        }]
 
     def _step_distribute_rewards(
         self, epoch: int, juror_index: int,

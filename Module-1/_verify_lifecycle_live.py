@@ -216,6 +216,14 @@ def main() -> int:
         elif "--inconclusive" in _sys.argv:
             tv = "Inconclusive"
         plutus_trace = "--plutus-trace" in _sys.argv
+        # The verdict policy of the deployment decides whether the
+        # resolution mints a verdict; then apply_verdict follows it.
+        from simulation.tx_builder import DeploymentState
+        if DeploymentState(deployment).verdict_policy.rule(tv) is not None:
+            expected_lifecycle.insert(
+                expected_lifecycle.index("resolve_jury_success") + 1,
+                "apply_verdict_success",
+            )
         s = HappyPathScenario(
             **kwargs, jury_size=5, pool_size=15, target_verdict=tv,
         )
@@ -321,8 +329,9 @@ def main() -> int:
         print(f"\n  master balance AFTER lifecycle: {after_balance/1_000_000:.3f} ADA")
         print(f"  master spend (NET, after withdraw + drain): {spent/1_000_000:.3f} ADA")
 
-        # Tolerate up to ~350 ADA — 15 + 2 = 17 unrecoverable DID locks
-        # (15 ADA each = 255 ADA) + lifecycle TX fees + slop.
+        # Tolerate up to ~350 ADA — 17 identity record deposits (at least
+        # 10 AP3X each, locked until a Retire and Reclaim) + lifecycle TX
+        # fees + slop.
         if spent > 350_000_000:
             print(f"  FAIL: spent {spent/1_000_000:.1f} ADA exceeds 350 ADA bound")
             return 1

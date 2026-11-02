@@ -10,9 +10,9 @@ and bonded juror UTxOs remain on chain. This script:
      jury_pool, returning ~25 ADA each to master.
   3. Drains every sub-wallet's pure-ADA UTxOs back to master.
 
-Limitation: DID lockups (~15 ADA each) are NOT recoverable — the v15
-contracts have no DID-revoke flow. So per-scenario this recovers ~1225
-ADA out of ~1490 ADA spent (255 ADA DID locks remain unrecoverable).
+Limitation: identity record deposits (at least 10 AP3X each) are NOT
+recovered — the simulation does not build Retire and Reclaim for the
+records. So per scenario the 17 record deposits stay locked.
 
 Usage:
     cd <module-root>

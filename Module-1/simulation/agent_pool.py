@@ -35,7 +35,7 @@ class SimAgent:
     """A simulated agent participating in Module 1."""
     id: int
     agent_type: AgentType
-    did_hex: str                          # Agent Registry DID
+    did_hex: str                          # 32-byte identity identifier (hex)
     wallet_address: str                   # Wallet address for TX building
     wallet_id: int                        # Index into wallet list
 

@@ -55,7 +55,7 @@ This is NOT a load test. It is an **economic simulation** — a population of ag
 
 **AgentPool** — N simulated agents, each with:
 - Wallet (address + signing key)
-- DID (registered in Agent Registry)
+- Identity record in the identity registry (did:vector; the wallet key is the controller)
 - AP3X balance
 - Strategy parameters (drawn from statistical distributions)
 - Action history
@@ -100,7 +100,7 @@ Each agent is initialized with:
 class SimAgent:
     id: int
     wallet: Wallet                     # pycardano signing key + address
-    did: bytes                         # Agent Registry DID (32 bytes)
+    did: bytes                         # identity identifier (32 bytes)
     agent_type: AgentType              # from mixture distribution
     p_honest: float                    # probability of submitting honest claim
     p_detect: float                    # probability of detecting a fraudulent claim
@@ -263,7 +263,7 @@ class EpochMetrics:
 
 ### 7.1 Phase A: Infrastructure (1-2 sessions)
 
-1. **Wallet factory:** Script to generate N wallets, register N DIDs in Agent Registry, fund each with AP3X
+1. **Wallet factory:** Script to generate N wallets, create N identity records in the identity registry, fund each with AP3X
 2. **TX builder library:** Reusable functions for all 13 validator actions (extracted from smoke tests)
 3. **World state tracker:** Reads on-chain UTxOs to maintain current state of all claims, challenges, jurors
 

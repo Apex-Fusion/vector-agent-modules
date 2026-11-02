@@ -129,8 +129,25 @@ class OgmiosContext:
     def last_block_slot(self):
         return ogmios_rpc("queryLedgerState/tip").get("slot", 0)
 
+    @property
+    def network(self):
+        """The address network (Vector uses mainnet address tags on both
+        chains). PyCardano reads it for the redeemer index of a withdrawal."""
+        return NETWORK
+
     def genesis_param(self):
         return None
+
+    def reward_account_balance(self, script_hash: bytes) -> int:
+        """The withdrawable reward balance (lovelace) of the reward account
+        with the stake credential ``Script(script_hash)``, from the ledger
+        state. A withdrawal from that account must take exactly this
+        amount."""
+        result = ogmios_rpc(
+            "queryLedgerState/rewardAccountSummaries",
+            {"scripts": [bytes(script_hash).hex()]},
+        )
+        return reward_balance_from_summaries(result, script_hash)
 
     def utxos(self, address):
         """Query UTxOs at an address via Ogmios."""
@@ -175,6 +192,39 @@ class OgmiosContext:
             to = TransactionOutput(addr, pv, datum=datum, script=script_ref)
             utxos.append(UTxO(ti, to))
         return utxos
+
+
+def reward_balance_from_summaries(result, credential: bytes) -> int:
+    """The reward balance of ``credential`` in the result of
+    ``queryLedgerState/rewardAccountSummaries``. Ogmios 6.x returns a map
+    keyed by the credential; newer versions return a list of summaries with
+    a ``credential`` field. Raises RuntimeError when the account is not
+    registered (no summary)."""
+    want = bytes(credential).hex()
+    summaries = []
+    if isinstance(result, list):
+        summaries = [
+            s for s in result
+            if isinstance(s, dict) and str(s.get("credential", "")).lower() == want
+        ]
+    elif isinstance(result, dict):
+        summaries = [
+            s for key, s in result.items()
+            if isinstance(s, dict) and (
+                str(key).lower() == want
+                or str(s.get("credential", "")).lower() == want
+                or len(result) == 1
+            )
+        ]
+    if not summaries:
+        raise RuntimeError(
+            f"the reward account of Script({want}) is not registered: register "
+            f"its stake credential before a withdrawal"
+        )
+    rewards = summaries[0].get("rewards", {})
+    if isinstance(rewards, dict):
+        return int(rewards.get("ada", {}).get("lovelace", 0))
+    return int(rewards)
 
 
 # Retry schedule (seconds) for the Ogmios "UTxO not found" race. On
@@ -747,13 +797,6 @@ def challenge_token_name(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
 
 def juror_token_name(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
     return derive_token_name(b"jur_", seed_tx_hash, seed_tx_idx)
-
-
-def agent_did_name(seed_tx_hash: bytes, seed_tx_idx: int) -> bytes:
-    """Agent DID = blake2b_256(cbor(OutputReference))[0:28] — no prefix."""
-    seed_ref_cbor = cbor2.dumps(cbor2.CBORTag(121, [seed_tx_hash, seed_tx_idx]))
-    h = hashlib.blake2b(seed_ref_cbor, digest_size=32).digest()
-    return h[:28]
 
 
 # ═══════════════════════════════════════════════════════════════════════

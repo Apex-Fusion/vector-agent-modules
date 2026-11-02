@@ -21,7 +21,9 @@ The helper prints `{"ok": true, "tx_hash": "...", "amount_ap3x": ..., "master_ba
 
 `~/code/vector-agent-modules/Module-1/simulation/tx_builder.py` has all 16 lifecycle builders. The ones you care about:
 
-- `build_register_did(master_skey, master_vkey, master_addr, agent_skey, agent_vkh, registry_script_path, ctx, scenario_name=..., role=...)` → DID registration. **Both master and agent sign.** Returns `(transaction, did_hex)`.
+- `build_register_identity(context, deployment, payer_skey, payer_vkey, payer_addr, controller_skey, *, name, description=b"", framework=b"", endpoint=b"", capabilities=(), transaction_keys=(), module1_role=None, window_slots=1200)` → identity record registration (Part 2 §3.4). The master (payer) pays the fees and the record deposit, which is max(10 AP3X, the ledger min-UTxO of the record output). Your agent key (`controller_skey`) is the controller, and it and each key in `transaction_keys` sign. `module1_role=Role.ACCOUNTABLE` (or `Role.RESPONSIBLE`) also makes Module-1 a party (Consent); that needs the identity configuration record. Returns `(transaction, did_hex)`, where `did_hex` is the 64-hex (32-byte) identity identifier and the DID is `did:vector:<did_hex>`.
+- `identity_record(context, deployment, did_hex)` → your authentic record at the identity address; raises `RecordNotFoundError` when there is none. `identity_chain(context, deployment, did_hex)` → the record and its ancestors.
+- Each builder that reads or changes identity data takes `window_slots` (slots from the lower to the upper validity bound; default 1200, at most 3600 = one hour).
 - `build_submit_claim(context, deployment, skey, vkey, wallet_addr, claim_hash, storage_uri, stake_amount, ...)` → submit a claim.
 - `build_withdraw_claim(...)` → recover stake after challenge window expires without a challenge.
 
@@ -45,11 +47,11 @@ CWD is `~/vector-agents/state/m1-claimer/`. Keep `state.json`, `journal.md`, `ev
 1. **Orient.** Read state + last ~10 lines of journal. Query your wallet balance.
 
 2. **Reconcile — chain truth beats state.json staleness.**
-   - If `state.did_hex` is set: verify the DID is on chain by walking the registry validator UTxOs (or using an SDK helper if one exists). **Never null `did_hex` based on a linear scan that didn't find it** — the registry has >1000 entries. If you can't verify definitively, keep the field and journal the uncertainty.
+   - If `state.did_hex` is set: verify the record with `identity_record(context, deployment, state.did_hex)` (or `identity_chain(...)`). **Never null `did_hex` because a scan did not find it.** If the call raises (for example `RecordNotFoundError` from an incomplete Ogmios answer), keep the field and journal the uncertainty.
    - If `state.pending_tx` is set: check chain state for the tx hash before declaring it lost. Only if the chain confirms no such tx exists AND `prepared_ts` is >2h should you discard.
 
 3. **Decide ONE action — submitting a claim is the default expected outcome:**
-   a. **Bootstrap** — if no DID: use `build_register_did(master_skey, master_vkey, master_addr, agent_skey, agent_vkh=vkey.hash(), registry_script_path=<Module-1/agent_registry plutus.json>, ctx=..., scenario_name="vector-testnet", role="claimer")`. Record tx_hash + returned `did_hex` in `pending_tx`. STOP.
+   a. **Bootstrap** — if no DID: use `build_register_identity(context, deployment, master_skey, master_vkey, master_addr, agent_skey, name=b"vector-testnet claimer", framework=b"Vector-Agent")`. Submit the returned transaction, and record tx_hash + returned `did_hex` in `pending_tx`. STOP.
    b. **Resolve settled claim** — if `active_claim` is now Adopted/Challenged-and-resolved on chain, record outcome (reward or slash), clear.
    c. **Submit new claim (expected).** Pick a concrete work unit grounded in observable chain state (e.g., "enumerated all Module-6 Open proposals as of slot N", "computed merkle root of Module-3 stakes at slot N", "indexed AP3X transfers in block range X..Y"). Build evidence as canonical JSON, hash it with `blake2b_256`, store the document off-chain (or attach a descriptive `storage_uri` if you don't have IPFS — the hash alone is sufficient proof for testnet). Call `build_submit_claim(...)` with 50 AP3X stake. Record tx_hash in `pending_tx`.
    d. **Noop is reserved for these specific cases only:** (i) `active_claim` is pending resolution (wait), (ii) wallet balance insufficient **AND master faucet also below your need** (genuine drained state), (iii) `build_submit_claim` returned a concrete error and you've journaled the stderr. "Testnet might not be ready" is **NOT** a valid noop reason — attempt the call.
@@ -87,7 +89,7 @@ import sys, os, json, hashlib
 sys.path.insert(0, "/home/user/code/vector-agent-modules/Module-3/python")
 from reputation_staking.ogmios_backend import OgmiosHttpContext as _o  # warms up the import chain
 sys.path.insert(0, "/home/user/code/vector-agent-modules/Module-1")
-from simulation.tx_builder import build_register_did, build_submit_claim, DeploymentState
+from simulation.tx_builder import build_register_identity, build_submit_claim, identity_record, DeploymentState
 from simulation.config import DEPLOYMENT_PATH, NETWORK
 from simulation.chain import OgmiosContext
 from pycardano import Address, PaymentSigningKey, PaymentVerificationKey
