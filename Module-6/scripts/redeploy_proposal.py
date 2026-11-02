@@ -22,7 +22,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import cbor2
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -64,7 +63,7 @@ from deploy import (
     compute_native_script_policy,
     mint_refs_nft,
 )
-from deploy_common import build_governance_config_cbor
+from deploy_common import build_cross_refs_data, build_governance_config_cbor
 
 
 async def redeploy():
@@ -192,8 +191,12 @@ async def redeploy():
             await asyncio.sleep(TX_WAIT)
 
         # Step 3: Re-mint CrossRefs NFT with updated hashes
-        # The CrossRefs datum needs updated proposal_mint_hash if it changed
-        cross_refs_needs_update = changed_mint or changed_spend or changed_crit_mint or changed_crit_spend
+        # The CrossRefs datum holds all five hashes (the endorsement
+        # validator last), so any changed hash needs a new datum.
+        cross_refs_needs_update = (
+            changed_mint or changed_spend or changed_crit_mint
+            or changed_crit_spend or changed_endorse
+        )
 
         if cross_refs_needs_update:
             print("\n--- Step 3: Re-mint CrossRefs NFT ---")
@@ -202,12 +205,13 @@ async def redeploy():
             proposal_mint_hash = new_proposal_mint_hash
             critique_mint_hash = new_critique_mint_hash
 
-            cross_refs_data = cbor2.CBORTag(121, [
-                bytes.fromhex(proposal_hash),
-                bytes.fromhex(critique_hash),
-                bytes.fromhex(proposal_mint_hash),
-                bytes.fromhex(critique_mint_hash),
-            ])
+            cross_refs_data = build_cross_refs_data(
+                proposal_hash,
+                critique_hash,
+                proposal_mint_hash,
+                critique_mint_hash,
+                new_endorsement_hash,
+            )
 
             _, native_script_cbor = compute_native_script_policy(wallet["vkey_hash"])
 

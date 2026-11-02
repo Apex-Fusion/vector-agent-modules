@@ -6,12 +6,13 @@ use aiken/builtin
 use aiken/collection/list
 use cardano/address.{Credential}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, OutputReference, ValidityRange}
+use cardano/transaction.{InlineDatum, Input, OutputReference}
 use governance_suggestion/types.{GovernanceConfig, GovernanceCrossRefs}
 use shared/credential
-use shared/identity
+use shared/identity.{Window}
 use shared/oracle
 use shared/token_naming
+use vector_identity/types.{IdentityDatum} as identity_types
 
 // ============================================================================
 // Cross-Validator References
@@ -48,47 +49,70 @@ pub fn get_cross_refs(
 /// position: proposal submission and amendment, critique submission and
 /// endorsement submission. Exits and settlements have no identity check.
 ///
+/// `w` is the window of the transaction (shared/identity.window): finite
+/// bounds, lo <= hi and hi - lo <= one hour. The caller gets it first and
+/// fails without it.
+///
 /// MUST:
-///   1. The validity range has finite bounds, lo <= hi and hi - lo <= one
-///      hour (shared/identity.window).
-///   2. The record of `agent_did` is a reference input at the exact identity
+///   1. The record of `agent_did` is a reference input at the exact identity
 ///      address that holds exactly one token (config.identity_hash,
-///      agent_did), and its effective status over the whole range [lo, hi]
+///      agent_did), and its effective status over the whole window [lo, hi]
 ///      is Active (shared/identity.active_record). The transaction fails when
 ///      a subagent's ancestor record is not a reference input.
-///   3. `agent_credential` is a declared credential of the record: a
+///   2. `agent_credential` is a declared credential of the record: a
 ///      verification key whose hash is the hash of the controller or of a
 ///      listed Ed25519 key with the transaction purpose
 ///      (shared/identity.declared_credential). A script credential never
 ///      passes.
-///   4. The key of `agent_credential` signed the transaction.
+///   3. The key of `agent_credential` signed the transaction.
 ///
-/// With the transaction's reference inputs, signatories and validity range,
-/// this is shared/identity.credential_opens.
+/// Returns the record when all hold, else None.
+pub fn agent_record(
+  config: GovernanceConfig,
+  agent_did: ByteArray,
+  agent_credential: Credential,
+  w: Window,
+  reference_inputs: List<Input>,
+  signatories: List<ByteArray>,
+) -> Option<IdentityDatum> {
+  when
+    identity.active_record(reference_inputs, config.identity_hash, agent_did, w)
+  is {
+    Some(record) ->
+      if and {
+        identity.declared_credential(record, agent_credential),
+        credential.verify_signer(agent_credential, signatories),
+      } {
+        Some(record)
+      } else {
+        None
+      }
+    None -> None
+  }
+}
+
+/// True when the identity check of `agent_record` holds. With the
+/// transaction's reference inputs, signatories and window, this is
+/// shared/identity.credential_opens.
 pub fn verify_active_agent(
   config: GovernanceConfig,
   agent_did: ByteArray,
   agent_credential: Credential,
+  w: Window,
   reference_inputs: List<Input>,
   signatories: List<ByteArray>,
-  validity_range: ValidityRange,
 ) -> Bool {
-  when identity.window(validity_range) is {
-    Some(w) ->
-      when
-        identity.active_record(
-          reference_inputs,
-          config.identity_hash,
-          agent_did,
-          w,
-        )
-      is {
-        Some(record) -> and {
-            identity.declared_credential(record, agent_credential),
-            credential.verify_signer(agent_credential, signatories),
-          }
-        None -> False
-      }
+  when
+    agent_record(
+      config,
+      agent_did,
+      agent_credential,
+      w,
+      reference_inputs,
+      signatories,
+    )
+  is {
+    Some(_) -> True
     None -> False
   }
 }

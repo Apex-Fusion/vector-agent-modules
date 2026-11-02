@@ -1,7 +1,8 @@
 // Module 6: Self-Improvement Module — Settlement Rules
-// Rules that bind a critique or endorsement spend to a proposal action in the
-// same transaction, and that return stakes to their owners.
+// Rules that bind a spend to a proposal action in the same transaction, that
+// continue a UTxO, and that return stakes to their owners.
 
+use aiken/builtin
 use aiken/collection/dict
 use aiken/collection/list
 use aiken/collection/pairs
@@ -11,17 +12,54 @@ use cardano/transaction.{
   DatumHash, InlineDatum, Input, NoDatum, Output, OutputReference, Spend,
   Transaction,
 }
-
 use governance_suggestion/types.{
-  AdoptProposal, AmendProposal, BurnCritiqueToken, BurnEndorsementToken,
-  CritiqueAction, CritiqueDatum, ExpireProposal, ExpireStaleProposal,
-  GovernanceCrossRefs, GovernanceEndorsementAction, GovernanceEndorsementDatum,
-  ProposalAction, ProposalDatum, RejectProposal, RewardCritique,
-  WithdrawProposal,
+  AmendProposal, GovernanceCrossRefs, ProposalAction,
 }
+use governance_suggestion/utils
+use shared/credential
 
 // ============================================================================
-// Inputs and redeemers
+// Constructor indices of the redeemers (types.ak). The constructor order is
+// part of the on-chain format; the test `redeemer_indices_match_types`
+// checks these values.
+// ============================================================================
+
+/// ProposalAction.SubmitProposal
+pub const submit_index: Int = 0
+
+/// ProposalAction.WithdrawProposal
+pub const withdraw_index: Int = 1
+
+/// ProposalAction.AdoptProposal
+pub const adopt_index: Int = 3
+
+/// ProposalAction.RejectProposal
+pub const reject_index: Int = 4
+
+/// ProposalAction.ExpireProposal
+pub const expire_index: Int = 5
+
+/// ProposalAction.ExpireStaleProposal
+pub const expire_stale_index: Int = 6
+
+/// ProposalAction.SpendActivity
+pub const spend_activity_index: Int = 8
+
+/// CritiqueAction.MintCritiqueToken and
+/// GovernanceEndorsementAction.MintEndorsementToken
+pub const mint_index: Int = 0
+
+/// CritiqueAction.RewardCritique
+pub const reward_critique_index: Int = 3
+
+/// CritiqueAction.BurnCritiqueToken
+pub const burn_critique_index: Int = 4
+
+/// GovernanceEndorsementAction.BurnEndorsementToken
+pub const burn_endorsement_index: Int = 2
+
+// ============================================================================
+// Inputs, redeemers and datums
 // ============================================================================
 
 /// The input that `own_ref` spends. Fails when the transaction does not spend it.
@@ -32,7 +70,7 @@ pub fn own_input(tx: Transaction, own_ref: OutputReference) -> Input {
 }
 
 /// True when the input is at the script `hash`.
-fn is_at_script(input: Input, hash: ByteArray) -> Bool {
+pub fn is_at_script(input: Input, hash: ByteArray) -> Bool {
   when input.output.address.payment_credential is {
     ScriptCredential(h) -> h == hash
     _ -> False
@@ -40,14 +78,14 @@ fn is_at_script(input: Input, hash: ByteArray) -> Bool {
 }
 
 /// The spend redeemer of an input. Fails when the input has none.
-fn spend_redeemer(tx: Transaction, input: Input) -> Data {
+pub fn spend_redeemer(tx: Transaction, input: Input) -> Data {
   expect Some(redeemer) =
     pairs.get_first(tx.redeemers, Spend(input.output_reference))
   redeemer
 }
 
 /// The datum of an input, inline or by hash. Fails when the input has none.
-fn input_datum(tx: Transaction, input: Input) -> Data {
+pub fn input_datum(tx: Transaction, input: Input) -> Data {
   when input.output.datum is {
     InlineDatum(raw) -> raw
     DatumHash(hash) -> {
@@ -58,22 +96,24 @@ fn input_datum(tx: Transaction, input: Input) -> Data {
   }
 }
 
-/// The ProposalAction redeemers of all inputs at the proposal validator.
-fn proposal_actions(
-  refs: GovernanceCrossRefs,
-  tx: Transaction,
-) -> List<ProposalAction> {
-  list.foldr(
-    tx.inputs,
-    [],
-    fn(input, acc) {
-      if is_at_script(input, refs.proposal_validator_hash) {
-        expect action: ProposalAction = spend_redeemer(tx, input)
-        [action, ..acc]
-      } else {
-        acc
-      }
-    },
+/// The constructor index of a Plutus Data constructor. Fails for other data.
+/// The validator of the input decodes the full redeemer or datum, so the
+/// index is enough here.
+pub fn constr_index(data: Data) -> Int {
+  builtin.fst_pair(builtin.un_constr_data(data))
+}
+
+/// The first field of a datum: the agent identifier of ProposalDatum,
+/// CritiqueDatum and GovernanceEndorsementDatum.
+pub fn did_field(datum: Data) -> ByteArray {
+  builtin.un_b_data(builtin.head_list(builtin.snd_pair(builtin.un_constr_data(datum))))
+}
+
+/// The second field of a datum: the owner credential of ProposalDatum,
+/// CritiqueDatum and GovernanceEndorsementDatum.
+fn credential_field(datum: Data) -> Data {
+  builtin.head_list(
+    builtin.tail_list(builtin.snd_pair(builtin.un_constr_data(datum))),
   )
 }
 
@@ -81,54 +121,126 @@ fn proposal_actions(
 // Proposal actions in the same transaction
 // ============================================================================
 
-/// True for the proposal actions that finalise a proposal: withdrawal,
-/// adoption, rejection, expiration and stale expiration. Each of them burns
-/// the proposal token.
-pub fn is_finalisation(action: ProposalAction) -> Bool {
-  when action is {
-    WithdrawProposal -> True
-    AdoptProposal { .. } -> True
-    RejectProposal { .. } -> True
-    ExpireProposal -> True
-    ExpireStaleProposal -> True
-    _ -> False
+/// True for the redeemer index of a proposal action that finalises a
+/// proposal: withdrawal, adoption, rejection, expiration and stale
+/// expiration. Each of them burns the proposal token.
+pub fn is_finalising(index: Int) -> Bool {
+  or {
+    index == withdraw_index,
+    index == adopt_index,
+    index == reject_index,
+    index == expire_index,
+    index == expire_stale_index,
   }
 }
 
-/// True when the transaction finalises a proposal.
-pub fn has_proposal_finalisation(
+/// True when the input is at the proposal validator and is spent with an
+/// action other than SpendActivity. An input without a redeemer counts as an
+/// action (a transaction always has the redeemer of a script input).
+pub fn is_proposal_action(
   refs: GovernanceCrossRefs,
+  input: Input,
   tx: Transaction,
 ) -> Bool {
-  list.any(proposal_actions(refs, tx), is_finalisation)
+  is_at_script(input, refs.proposal_validator_hash) && when
+    pairs.get_first(tx.redeemers, Spend(input.output_reference))
+  is {
+    Some(redeemer) -> constr_index(redeemer) != spend_activity_index
+    None -> True
+  }
 }
 
-/// True when the transaction adopts a proposal.
-pub fn has_proposal_adoption(refs: GovernanceCrossRefs, tx: Transaction) -> Bool {
+/// True when the transaction finalises the proposal that `proposal_ref`
+/// names: a proposal input that holds the proposal token
+/// utils.proposal_token_name(proposal_ref) is spent with a finalising action.
+///
+/// When `owner` signs, the finalisation of any proposal is enough. This is the
+/// way out for a critique or endorsement whose proposal ended without it.
+pub fn settles(
+  refs: GovernanceCrossRefs,
+  proposal_ref: OutputReference,
+  owner: Credential,
+  tx: Transaction,
+) -> Bool {
+  let token = utils.proposal_token_name(proposal_ref)
+  let signed = credential.verify_signer(owner, tx.extra_signatories)
   list.any(
-    proposal_actions(refs, tx),
-    fn(action) {
-      when action is {
-        AdoptProposal { .. } -> True
-        _ -> False
+    tx.inputs,
+    fn(input) {
+      and {
+        is_at_script(input, refs.proposal_validator_hash),
+        is_finalising(constr_index(spend_redeemer(tx, input))),
+        signed || assets.quantity_of(
+          input.output.value,
+          refs.proposal_mint_hash,
+          token,
+        ) == 1,
       }
     },
   )
 }
 
-/// True when the transaction amends a proposal and the amendment lists
-/// `critique_ref` in its incorporated critiques.
-pub fn amendment_incorporates(
+/// True when the transaction adopts the proposal that `proposal_ref` names:
+/// a proposal input that holds the proposal token
+/// utils.proposal_token_name(proposal_ref) is spent with AdoptProposal.
+pub fn adopts(
+  refs: GovernanceCrossRefs,
+  proposal_ref: OutputReference,
+  tx: Transaction,
+) -> Bool {
+  let token = utils.proposal_token_name(proposal_ref)
+  list.any(
+    tx.inputs,
+    fn(input) {
+      and {
+        is_at_script(input, refs.proposal_validator_hash),
+        constr_index(spend_redeemer(tx, input)) == adopt_index,
+        assets.quantity_of(input.output.value, refs.proposal_mint_hash, token) == 1,
+      }
+    },
+  )
+}
+
+/// The proposal input whose AmendProposal lists `critique_ref` in its
+/// incorporated critiques. None when the transaction has no such amendment.
+pub fn amendment_of(
   refs: GovernanceCrossRefs,
   tx: Transaction,
   critique_ref: OutputReference,
-) -> Bool {
+) -> Option<Input> {
+  list.find(
+    tx.inputs,
+    fn(input) {
+      if is_at_script(input, refs.proposal_validator_hash) {
+        expect action: ProposalAction = spend_redeemer(tx, input)
+        when action is {
+          AmendProposal { incorporated, .. } ->
+            list.has(incorporated, critique_ref)
+          _ -> False
+        }
+      } else {
+        False
+      }
+    },
+  )
+}
+
+// ============================================================================
+// Continuing outputs
+// ============================================================================
+
+/// True when an output continues `input`: the same address (payment and
+/// stake credential), the same tokens, at least the same AP3X, and the inline
+/// datum `datum`. A token that only `input` holds makes the output unique.
+pub fn continues(input: Input, datum: Data, outputs: List<Output>) -> Bool {
+  let value: Data = input.output.value
   list.any(
-    proposal_actions(refs, tx),
-    fn(action) {
-      when action is {
-        AmendProposal { incorporated, .. } -> list.has(incorporated, critique_ref)
-        _ -> False
+    outputs,
+    fn(output) {
+      and {
+        output.address == input.output.address,
+        assets.match(output.value, value, >=),
+        output.datum == InlineDatum(datum),
       }
     },
   )
@@ -170,16 +282,15 @@ pub fn burns_held_tokens(
 /// transaction returns to `owner`.
 ///
 /// The transaction returns to `owner` the lovelace of each input that it
-/// spends with a settling action and that names `owner`:
+/// spends with a settling action and whose datum names `owner` (second
+/// datum field):
 ///   - critique inputs spent with RewardCritique or BurnCritiqueToken,
-///   - endorsement inputs at `endorsement_hash` spent with
-///     BurnEndorsementToken (only when `endorsement_hash` is given),
+///   - endorsement inputs spent with BurnEndorsementToken,
 ///   - proposal inputs spent with a finalising action.
 /// The outputs to `owner` are summed, so one output cannot count for two
 /// inputs.
 pub fn owner_paid(
   refs: GovernanceCrossRefs,
-  endorsement_hash: Option<ByteArray>,
   owner: Credential,
   tx: Transaction,
 ) -> Bool {
@@ -195,59 +306,32 @@ pub fn owner_paid(
         }
       },
     )
-  paid >= owed_to(refs, endorsement_hash, owner, tx)
+  paid >= owed_to(refs, owner, tx)
 }
 
 /// The lovelace that the transaction returns to `owner` (see owner_paid).
 fn owed_to(
   refs: GovernanceCrossRefs,
-  endorsement_hash: Option<ByteArray>,
   owner: Credential,
   tx: Transaction,
 ) -> Int {
+  let owner_data: Data = owner
   list.foldl(
     tx.inputs,
     0,
     fn(input, total) {
-      let returned =
+      let settled =
         if is_at_script(input, refs.critique_validator_hash) {
-          expect action: CritiqueAction = spend_redeemer(tx, input)
-          when action is {
-            RewardCritique { .. } | BurnCritiqueToken -> {
-              expect critique: CritiqueDatum = input_datum(tx, input)
-              critique.critic_credential == owner
-            }
-            _ -> False
-          }
+          let index = constr_index(spend_redeemer(tx, input))
+          index == reward_critique_index || index == burn_critique_index
         } else if is_at_script(input, refs.proposal_validator_hash) {
-          expect action: ProposalAction = spend_redeemer(tx, input)
-          if is_finalisation(action) {
-            expect proposal: ProposalDatum = input_datum(tx, input)
-            proposal.proposer_credential == owner
-          } else {
-            False
-          }
+          is_finalising(constr_index(spend_redeemer(tx, input)))
+        } else if is_at_script(input, refs.endorsement_validator_hash) {
+          constr_index(spend_redeemer(tx, input)) == burn_endorsement_index
         } else {
-          when endorsement_hash is {
-            Some(hash) ->
-              if is_at_script(input, hash) {
-                expect action: GovernanceEndorsementAction =
-                  spend_redeemer(tx, input)
-                when action is {
-                  BurnEndorsementToken -> {
-                    expect endorsement: GovernanceEndorsementDatum =
-                      input_datum(tx, input)
-                    endorsement.endorser_credential == owner
-                  }
-                  _ -> False
-                }
-              } else {
-                False
-              }
-            None -> False
-          }
+          False
         }
-      if returned {
+      if settled && credential_field(input_datum(tx, input)) == owner_data {
         total + assets.lovelace_of(input.output.value)
       } else {
         total

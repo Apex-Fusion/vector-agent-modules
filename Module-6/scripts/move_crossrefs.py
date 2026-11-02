@@ -32,6 +32,7 @@ EXPLORER_URL = os.getenv("VECTOR_EXPLORER_URL", "https://vector.testnet.apexscan
 sys.path.insert(0, str(GAME6_ROOT))
 
 from deploy import compute_native_script_policy
+from deploy_common import build_cross_refs_data
 
 
 async def mint_crossrefs_at_oracle():
@@ -51,19 +52,22 @@ async def mint_crossrefs_at_oracle():
     critique_hash = state.get("critique_validator_hash", "")
     proposal_mint_hash = state["validators"]["proposal.proposal_mint.mint"]["hash"]
     critique_mint_hash = state["validators"]["critique.critique_mint.mint"]["hash"]
+    endorsement_hash = state["validators"]["critique.endorsement_spend.spend"]["hash"]
 
     print(f"CrossRefs datum:")
-    print(f"  proposal_spend:  {proposal_hash}")
-    print(f"  critique_spend:  {critique_hash}")
-    print(f"  proposal_mint:   {proposal_mint_hash}")
-    print(f"  critique_mint:   {critique_mint_hash}")
+    print(f"  proposal_spend:    {proposal_hash}")
+    print(f"  critique_spend:    {critique_hash}")
+    print(f"  proposal_mint:     {proposal_mint_hash}")
+    print(f"  critique_mint:     {critique_mint_hash}")
+    print(f"  endorsement_spend: {endorsement_hash}")
 
-    cross_refs_data = cbor2.CBORTag(121, [
-        bytes.fromhex(proposal_hash),
-        bytes.fromhex(critique_hash),
-        bytes.fromhex(proposal_mint_hash),
-        bytes.fromhex(critique_mint_hash),
-    ])
+    cross_refs_data = build_cross_refs_data(
+        proposal_hash,
+        critique_hash,
+        proposal_mint_hash,
+        critique_mint_hash,
+        endorsement_hash,
+    )
 
     _, native_script_cbor = compute_native_script_policy(wallet["vkey_hash"])
 

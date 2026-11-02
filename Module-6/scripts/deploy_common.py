@@ -10,6 +10,8 @@ They do not need pycardano or a chain connection.
   - apply_record_token_policy: one-shot record token policy for a seed UTxO
   - identity_hash_from_env: the identity_hash input (VECTOR_IDENTITY_HASH)
   - build_governance_config_cbor: GovernanceConfig (11 fields)
+  - build_cross_refs_data: GovernanceCrossRefs (5 fields, with the
+    endorsement validator hash last)
   - select_seed_utxo / select_collateral_utxo / find_record_utxo: read
     pycardano UTxO objects
 
@@ -254,6 +256,43 @@ def build_governance_config_cbor(
     ]
     # Plutus Data constructor: Tag 121 + 0 = constr(0, fields)
     return cbor2.dumps(cbor2.CBORTag(121, fields)).hex()
+
+
+# ── GovernanceCrossRefs datum ────────────────────────────────────────────────
+
+def build_cross_refs_data(
+    proposal_validator_hash: str,
+    critique_validator_hash: str,
+    proposal_mint_hash: str,
+    critique_mint_hash: str,
+    endorsement_validator_hash: str,
+) -> cbor2.CBORTag:
+    """Build the GovernanceCrossRefs datum as Plutus Data (cbor2.CBORTag).
+
+    Constructor 0 with 5 fields (all ByteArray) in the order of the Aiken type
+    (contracts/governance-suggestion/lib/governance_suggestion/types.ak):
+    proposal_validator_hash, critique_validator_hash, proposal_mint_hash,
+    critique_mint_hash, endorsement_validator_hash. The critique mint policy
+    reads endorsement_validator_hash to find endorsement inputs, so the
+    endorsement tokens can be minted and burned.
+
+    Each value is the hash of an applied validator of this deployment: 28
+    bytes and not all zero. Else ValueError.
+    """
+    fields = []
+    for name, value in (
+        ("proposal_validator_hash", proposal_validator_hash),
+        ("critique_validator_hash", critique_validator_hash),
+        ("proposal_mint_hash", proposal_mint_hash),
+        ("critique_mint_hash", critique_mint_hash),
+        ("endorsement_validator_hash", endorsement_validator_hash),
+    ):
+        raw = _hex_bytes(name, value or "", 28)
+        if raw == bytes(28):
+            raise ValueError(f"{name} is all zero")
+        fields.append(raw)
+    # Plutus Data constructor: Tag 121 + 0 = constr(0, fields)
+    return cbor2.CBORTag(121, fields)
 
 
 # ── Deploy state ─────────────────────────────────────────────────────────────

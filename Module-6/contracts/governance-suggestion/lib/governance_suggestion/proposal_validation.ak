@@ -4,20 +4,83 @@
 use aiken/builtin
 use aiken/collection/dict
 use aiken/collection/list
-use cardano/address.{Credential, Script as ScriptCredential}
+use aiken/collection/pairs
+use cardano/address.{Script as ScriptCredential}
 use cardano/assets
 use cardano/transaction.{
-  InlineDatum, Input, Output, OutputReference, ValidityRange,
+  InlineDatum, Input, Output, OutputReference, Spend, Transaction,
 }
 use governance_suggestion/activity_tracking
 use governance_suggestion/emergency
 use governance_suggestion/params as gov_params
+use governance_suggestion/settlement
 use governance_suggestion/types.{
   Amended, Emergency, GameActivation, GeneralSuggestion, GovernanceConfig,
-  GovernanceCrossRefs, GovernanceParams, Open, ParameterChange, ProposalDatum,
-  ProposalType, ProtocolUpgrade, Standard, TreasurySpend,
+  GovernanceCrossRefs, GovernanceParams, IncorporateCritique, Open,
+  ParameterChange, ProposalDatum, ProposalType, ProposerActivityDatum,
+  ProtocolUpgrade, Standard, TreasurySpend,
 }
 use governance_suggestion/utils
+use shared/identity
+
+// ============================================================================
+// One proposal action per transaction
+// ============================================================================
+
+/// True when exactly one input at the proposal validator is spent with an
+/// action other than SpendActivity (settlement.is_proposal_action). Every
+/// proposal_spend redeemer needs it, so a transaction submits, amends,
+/// extends or finalises one proposal, and spends at most the activity UTxO
+/// of that proposal's agent besides it.
+pub fn one_proposal_action(refs: GovernanceCrossRefs, tx: Transaction) -> Bool {
+  list.count(
+    tx.inputs,
+    fn(input) { settlement.is_proposal_action(refs, input, tx) },
+  ) == 1
+}
+
+// ============================================================================
+// Activity UTxO (SpendActivity)
+// ============================================================================
+
+/// Validate the spend of an activity UTxO.
+///
+/// MUST:
+///   1. The datum is a ProposerActivityDatum, and the input holds, under the
+///      proposal policy, exactly one token: the activity token of its agent
+///      (utils.activity_token_name(agent_did)), quantity 1.
+///   2. The one proposal action of the transaction (one_proposal_action) is
+///      SubmitProposal or a finalisation, and the datum of its input names
+///      the same agent (proposer_did == agent_did).
+/// The owner authorises the move through that action: SubmitProposal needs
+/// the proposer's identity check and signature, WithdrawProposal the
+/// proposer's signature, AdoptProposal and RejectProposal the oracle, and
+/// ExpireProposal and ExpireStaleProposal only lower the count. That action
+/// checks the continuing activity output (activity_tracking): the same
+/// address, the same tokens, at least the same AP3X, and the new count.
+pub fn validate_spend_activity(
+  refs: GovernanceCrossRefs,
+  raw_datum: Data,
+  own_ref: OutputReference,
+  tx: Transaction,
+) -> Bool {
+  expect activity: ProposerActivityDatum = raw_datum
+  let own = settlement.own_input(tx, own_ref)
+  expect Some(action_input) =
+    list.find(
+      tx.inputs,
+      fn(input) { settlement.is_proposal_action(refs, input, tx) },
+    )
+  let index =
+    settlement.constr_index(settlement.spend_redeemer(tx, action_input))
+  and {
+    dict.to_pairs(assets.tokens(own.output.value, refs.proposal_mint_hash)) == [
+      Pair(utils.activity_token_name(activity.agent_did), 1),
+    ],
+    index == settlement.submit_index || settlement.is_finalising(index),
+    settlement.did_field(settlement.input_datum(tx, action_input)) == activity.agent_did,
+  }
+}
 
 // ============================================================================
 // §5.1 Proposal Submission
@@ -25,176 +88,160 @@ use governance_suggestion/utils
 
 /// Validate a new proposal submission.
 ///
-/// `validity_range` is the transaction's validity range; `current_slot` is
-/// its lower bound.
+/// The transaction spends `own_ref`, a UTxO at the proposal validator with the
+/// datum `spent`, and creates the new proposal: the output that holds the new
+/// proposal token utils.proposal_token_name(own_ref). Every check reads the
+/// datum of that output (the new datum).
+///
+/// MUST:
+///   1. The validity range has finite bounds and is at most one hour long
+///      (shared/identity.window), and the proposer passes the identity check
+///      (utils.verify_active_agent) with the new datum.
+///   2. The new datum names the proposer and the credential of `spent`, so
+///      the locked funds stay with their owner.
+///   3. submitted_at is the lower bound of the validity range.
+///   4. Stake, hash, type, URI, review window, state Open, no amendment and
+///      no incorporated critique (§5.1, §5.1b).
+///   5. Rate limit and activity record, and the exact tokens under the
+///      proposal policy (activity_tracking.validate_submit_activity).
+///   6. The new proposal is at the address of `own_ref`, holds at least the
+///      stake, and holds exactly one token: the new proposal token.
 pub fn validate_submit_proposal(
   config: GovernanceConfig,
   refs: GovernanceCrossRefs,
   params: GovernanceParams,
-  datum: ProposalDatum,
-  current_slot: Int,
-  reference_inputs: List<Input>,
-  inputs: List<Input>,
-  outputs: List<Output>,
-  signatories: List<ByteArray>,
-  mint: assets.Value,
+  spent: ProposalDatum,
   own_ref: OutputReference,
-  validity_range: ValidityRange,
+  tx: Transaction,
 ) -> Bool {
-  // 1. The proposer's identity record is Active over a validity range of at
-  //    most one hour, and the proposer credential is a declared credential
-  //    of the record that signed (Part 2 §7, Module-6 row)
-  let identity_valid =
-    utils.verify_active_agent(
-      config,
-      datum.proposer_did,
-      datum.proposer_credential,
-      reference_inputs,
-      signatories,
-      validity_range,
-    )
-
-  // 2. Stake check (includes emergency reputation gate if Emergency priority)
-  let stake_valid =
-    validate_stake_for_priority(config, params, datum, reference_inputs)
-
-  // 3. Proposal hash is 32 bytes
-  let hash_valid = builtin.length_of_bytearray(datum.proposal_hash) == 32
-
-  // 4. Proposal type is well-formed
-  let type_valid = validate_proposal_type(params, datum.proposal_type)
-
-  // 5. Storage URI is non-empty
-  let uri_valid = builtin.length_of_bytearray(datum.storage_uri) > 0
-
-  // 6-7. Review window in valid range
-  let window_valid = validate_review_window(params, datum)
-
-  // 8. Output at proposal validator with correct state
-  let state_valid = datum.state == Open
-
-  // 9-10. Initial values
-  let init_valid =
-    datum.amendment_count == 0 && datum.incorporated_critiques == []
-
-  // 11. Signed by proposer
-  let signer_valid = utils.verify_signer(datum.proposer_credential, signatories)
-
-  // 12-16. Rate limiting
-  let rate_valid =
-    activity_tracking.validate_submit_rate_limit(
-      params,
-      config,
-      refs,
-      datum.proposer_did,
-      current_slot,
-      inputs,
-      outputs,
-    )
-
-  // Verify proposal token is minted (exactly 1)
-  // Use the script UTxO being spent (own_ref) as the seed for token name
-  let expected_token_name = utils.proposal_token_name(own_ref)
-  let token_minted =
-    assets.quantity_of(mint, refs.proposal_mint_hash, expected_token_name) == 1
-
-  // Verify proposal output is at the proposal validator address with stake
-  let output_at_validator =
-    list.any(
-      outputs,
+  let own = settlement.own_input(tx, own_ref)
+  let token = utils.proposal_token_name(own_ref)
+  expect Some(output) =
+    list.find(
+      tx.outputs,
       fn(output) {
-        when output.address.payment_credential is {
-          ScriptCredential(hash) ->
-            hash == refs.proposal_validator_hash && utils.lovelace_of(
-              output.value,
-            ) >= datum.stake_amount
-          _ -> False
-        }
+        assets.quantity_of(output.value, refs.proposal_mint_hash, token) == 1
       },
     )
-
-  if !identity_valid {
-    fail @"FAIL:identity_valid"
-  } else if !stake_valid {
-    fail @"FAIL:stake_valid"
-  } else if !hash_valid {
-    fail @"FAIL:hash_valid"
-  } else if !type_valid {
-    fail @"FAIL:type_valid"
-  } else if !uri_valid {
-    fail @"FAIL:uri_valid"
-  } else if !window_valid {
-    fail @"FAIL:window_valid"
-  } else if !state_valid {
-    fail @"FAIL:state_valid"
-  } else if !init_valid {
-    fail @"FAIL:init_valid"
-  } else if !signer_valid {
-    fail @"FAIL:signer_valid"
-  } else if !rate_valid {
-    fail @"FAIL:rate_valid"
-  } else if !token_minted {
-    fail @"FAIL:token_minted"
-  } else if !output_at_validator {
-    fail @"FAIL:output_at_validator"
-  } else {
-    True
+  expect InlineDatum(raw) = output.datum
+  expect datum: ProposalDatum = raw
+  when identity.window(tx.validity_range) is {
+    Some(w) -> {
+      let identity_valid =
+        utils.verify_active_agent(
+          config,
+          datum.proposer_did,
+          datum.proposer_credential,
+          w,
+          tx.reference_inputs,
+          tx.extra_signatories,
+        )
+      let owner_valid =
+        datum.proposer_did == spent.proposer_did && datum.proposer_credential == spent.proposer_credential
+      let stake_valid =
+        validate_stake_for_priority(config, params, datum, tx.reference_inputs)
+      let fields_valid =
+        and {
+          builtin.length_of_bytearray(datum.proposal_hash) == 32,
+          validate_proposal_type(params, datum.proposal_type),
+          builtin.length_of_bytearray(datum.storage_uri) > 0,
+          validate_review_window(params, datum),
+          datum.state == Open,
+          datum.amendment_count == 0,
+          datum.incorporated_critiques == [],
+        }
+      let output_valid =
+        and {
+          output.address == own.output.address,
+          utils.lovelace_of(output.value) >= datum.stake_amount,
+          assets.without_lovelace(output.value) == assets.from_asset(
+            refs.proposal_mint_hash,
+            token,
+            1,
+          ),
+        }
+      if !identity_valid {
+        fail @"FAIL:identity_valid"
+      } else if !owner_valid {
+        fail @"FAIL:spent_owner"
+      } else if datum.submitted_at != w.lo {
+        fail @"FAIL:submitted_at"
+      } else if !stake_valid {
+        fail @"FAIL:stake_valid"
+      } else if !fields_valid {
+        fail @"FAIL:fields_valid"
+      } else if !activity_tracking.validate_submit_activity(
+        params,
+        refs,
+        datum,
+        token,
+        w.lo,
+        own.output.address,
+        tx,
+      ) {
+        fail @"FAIL:rate_valid"
+      } else if !output_valid {
+        fail @"FAIL:output_valid"
+      } else {
+        True
+      }
+    }
+    None -> fail @"FAIL:identity_valid"
   }
 }
 
 // ============================================================================
-// §5.2 Proposal Withdrawal
+// Finalisation (§5.2, §5.4, §5.5, §5.6, §5.6b)
 // ============================================================================
 
-/// Validate proposal withdrawal. Proposer can retract at any time before finalization.
-pub fn validate_withdraw_proposal(
-  config: GovernanceConfig,
+/// The rules that every finalisation of the proposal `datum` at `own_ref`
+/// shares (withdraw, adopt, reject, expire, expire stale).
+///
+/// MUST:
+///   1. The proposal state is Open or Amended.
+///   2. The proposal input holds exactly one token under the proposal policy,
+///      and the transaction burns exactly that token, and mints or burns
+///      nothing else under the policy.
+///   3. The activity record of the proposer goes down by one
+///      (activity_tracking.validate_finalize_activity).
+///   4. The stake returns to the stored proposer credential: the outputs to
+///      it hold at least the lovelace that the transaction returns to it
+///      (settlement.owner_paid, which sums all outputs and all returned
+///      inputs of that credential).
+fn validate_finalisation(
   refs: GovernanceCrossRefs,
   datum: ProposalDatum,
-  inputs: List<Input>,
-  outputs: List<Output>,
-  signatories: List<ByteArray>,
-  mint: assets.Value,
+  own_ref: OutputReference,
+  tx: Transaction,
 ) -> Bool {
-  // 1. Proposal state is Open or Amended
-  let state_valid = utils.is_proposal_active(datum.state)
+  let own = settlement.own_input(tx, own_ref)
+  and {
+    utils.is_proposal_active(datum.state),
+    when dict.to_pairs(assets.tokens(own.output.value, refs.proposal_mint_hash)) is {
+      [Pair(name, quantity)] ->
+        quantity == 1 && dict.to_pairs(
+          assets.tokens(tx.mint, refs.proposal_mint_hash),
+        ) == [Pair(name, -1)]
+      _ -> False
+    },
+    activity_tracking.validate_finalize_activity(refs, datum.proposer_did, tx),
+    settlement.owner_paid(refs, datum.proposer_credential, tx),
+  }
+}
 
-  // 3. Signed by proposer
-  let signer_valid = utils.verify_signer(datum.proposer_credential, signatories)
-
-  // 4. Proposal token burned
-  let token_burned = verify_proposal_token_burned(refs, inputs, mint)
-
-  // 5. Activity decremented
-  let activity_valid =
-    activity_tracking.validate_finalize_activity(
-      config,
-      refs,
-      datum.proposer_did,
-      inputs,
-      outputs,
-    )
-
-  // 2. Stake returned to proposer
-  let stake_returned =
-    verify_output_to_credential(
-      outputs,
-      datum.proposer_credential,
-      datum.stake_amount,
-    )
-
-  if !state_valid {
-    fail @"FAIL:withdraw_state"
-  } else if !signer_valid {
-    fail @"FAIL:withdraw_signer"
-  } else if !token_burned {
-    fail @"FAIL:withdraw_token_burned"
-  } else if !activity_valid {
-    fail @"FAIL:withdraw_activity"
-  } else if !stake_returned {
-    fail @"FAIL:withdraw_stake_returned"
-  } else {
-    True
+/// Validate proposal withdrawal (§5.2). The proposer can retract at any time
+/// before finalisation.
+///
+/// MUST: the proposer credential signs, and validate_finalisation.
+pub fn validate_withdraw_proposal(
+  refs: GovernanceCrossRefs,
+  datum: ProposalDatum,
+  own_ref: OutputReference,
+  tx: Transaction,
+) -> Bool {
+  and {
+    utils.verify_signer(datum.proposer_credential, tx.extra_signatories),
+    validate_finalisation(refs, datum, own_ref, tx),
   }
 }
 
@@ -205,7 +252,27 @@ pub fn validate_withdraw_proposal(
 /// Validate proposal amendment incorporating critiques.
 ///
 /// An amendment is an action of the proposer on its open proposal, so it has
-/// the identity check of a submission (check 9).
+/// the identity check of a submission. The new datum is the spent datum with
+/// the new hash, the new URI, amendment_count + 1, the incorporated critiques
+/// appended in the order of the redeemer, and the state Amended with the
+/// previous hash. All other fields stay the same.
+///
+/// MUST:
+///   1. The proposal state is Open or Amended.
+///   2. The new hash is 32 bytes and differs from the current hash; the new
+///      URI is not empty.
+///   3. At most max_incorporated_critiques critiques and max_amendments
+///      amendments in total.
+///   4. The validity range has finite bounds and is at most one hour long, and
+///      the proposer of the new datum passes the identity check.
+///   5. The incorporated critiques are distinct, and the transaction spends
+///      each of them at the critique validator with IncorporateCritique. The
+///      critique validator checks that each critique names this proposal.
+///   6. The proposal input holds exactly one token under the proposal policy,
+///      and an output continues it with the new datum: the same address
+///      (payment and stake credential), the same tokens and at least the same
+///      AP3X (settlement.continues).
+///   7. The transaction mints and burns nothing under the proposal policy.
 pub fn validate_amend_proposal(
   config: GovernanceConfig,
   refs: GovernanceCrossRefs,
@@ -214,106 +281,51 @@ pub fn validate_amend_proposal(
   new_hash: ByteArray,
   new_uri: ByteArray,
   incorporated_refs: List<OutputReference>,
-  reference_inputs: List<Input>,
-  outputs: List<Output>,
-  signatories: List<ByteArray>,
-  validity_range: ValidityRange,
+  own_ref: OutputReference,
+  tx: Transaction,
 ) -> Bool {
-  // 1. Proposal state is Open or Amended
-  let state_valid = utils.is_proposal_active(datum.state)
-
-  // 2. New hash is 32 bytes and different from current
-  let hash_valid =
-    builtin.length_of_bytearray(new_hash) == 32 && new_hash != datum.proposal_hash
-
-  // 3. New URI is non-empty
-  let uri_valid = builtin.length_of_bytearray(new_uri) > 0
-
-  // 4-6. Incorporated critiques count within limit
-  let inc_count = list.length(incorporated_refs)
-  let inc_count_valid =
-    inc_count + list.length(datum.incorporated_critiques) <= params.max_incorporated_critiques
-
-  // 7. Amendment count within limit
-  let count_valid = datum.amendment_count + 1 <= params.max_amendments
-
-  // 8. Signed by proposer
-  let signer_valid = utils.verify_signer(datum.proposer_credential, signatories)
-
-  // 9. The proposer's identity record is Active over a validity range of at
-  //    most one hour, and the proposer credential is a declared credential
-  //    of the record that signed (Part 2 §7, Module-6 row)
-  let identity_valid =
-    utils.verify_active_agent(
-      config,
-      datum.proposer_did,
-      datum.proposer_credential,
-      reference_inputs,
-      signatories,
-      validity_range,
-    )
-
-  // Verify each incorporated critique has a continuing output with incorporated=True
-  let critiques_valid =
-    list.all(
-      incorporated_refs,
-      fn(_crit_ref) {
-        // Find the corresponding output with incorporated set to True
-        list.any(
-          outputs,
-          fn(output) {
-            when output.address.payment_credential is {
-              ScriptCredential(hash) ->
-                if hash == refs.critique_validator_hash {
-                  when output.datum is {
-                    InlineDatum(raw) -> {
-                      expect crit_datum: types.CritiqueDatum = raw
-                      // Must be incorporated and reference this proposal
-                      crit_datum.incorporated
-                    }
-                    _ -> False
-                  }
-                } else {
-                  False
-                }
-              _ -> False
-            }
-          },
-        )
-      },
-    )
-
-  // Verify continuing output with updated state
-  let output_valid =
-    list.any(
-      outputs,
-      fn(output) {
-        when output.datum is {
-          InlineDatum(out_raw) -> {
-            expect out_datum: ProposalDatum = out_raw
-            // State must be Amended with previous hash
-            let state_correct =
-              out_datum.state == Amended { previous_hash: datum.proposal_hash }
-            let hash_correct = out_datum.proposal_hash == new_hash
-            let uri_correct = out_datum.storage_uri == new_uri
-            let count_correct =
-              out_datum.amendment_count == datum.amendment_count + 1
-            // Proposer fields unchanged
-            let proposer_unchanged =
-              out_datum.proposer_did == datum.proposer_did && out_datum.proposer_credential == datum.proposer_credential && out_datum.stake_amount == datum.stake_amount
-            // Incorporated critiques list updated
-            let inc_updated =
-              list.length(out_datum.incorporated_critiques) == list.length(
-                datum.incorporated_critiques,
-              ) + inc_count
-            state_correct && hash_correct && uri_correct && count_correct && proposer_unchanged && inc_updated
-          }
-          _ -> False
-        }
-      },
-    )
-
-  state_valid && hash_valid && uri_valid && inc_count_valid && count_valid && signer_valid && identity_valid && critiques_valid && output_valid
+  let own = settlement.own_input(tx, own_ref)
+  let new_datum =
+    ProposalDatum {
+      ..datum,
+      proposal_hash: new_hash,
+      storage_uri: new_uri,
+      amendment_count: datum.amendment_count + 1,
+      incorporated_critiques: list.concat(
+        datum.incorporated_critiques,
+        incorporated_refs,
+      ),
+      state: Amended { previous_hash: datum.proposal_hash },
+    }
+  let new_data: Data = new_datum
+  when identity.window(tx.validity_range) is {
+    Some(w) ->
+      and {
+        utils.is_proposal_active(datum.state),
+        builtin.length_of_bytearray(new_hash) == 32,
+        new_hash != datum.proposal_hash,
+        builtin.length_of_bytearray(new_uri) > 0,
+        list.length(new_datum.incorporated_critiques) <= params.max_incorporated_critiques,
+        new_datum.amendment_count <= params.max_amendments,
+        utils.verify_active_agent(
+          config,
+          new_datum.proposer_did,
+          new_datum.proposer_credential,
+          w,
+          tx.reference_inputs,
+          tx.extra_signatories,
+        ),
+        list.unique(incorporated_refs) == incorporated_refs,
+        list.all(
+          incorporated_refs,
+          fn(critique_ref) { spends_incorporated(refs, critique_ref, tx) },
+        ),
+        holds_one_proposal_token(refs, own),
+        settlement.continues(own, new_data, tx.outputs),
+        dict.is_empty(assets.tokens(tx.mint, refs.proposal_mint_hash)),
+      }
+    None -> False
+  }
 }
 
 // ============================================================================
@@ -321,6 +333,12 @@ pub fn validate_amend_proposal(
 // ============================================================================
 
 /// Validate Foundation adoption of a proposal.
+///
+/// MUST: the oracle signs; the reward amount is within
+/// [min_adoption_reward, max_adoption_reward]; the reasoning hash is 32
+/// bytes; validate_finalisation (which includes the stake return to the
+/// stored proposer credential); the cross-module bonus when Module 3 is
+/// deployed.
 pub fn validate_adopt_proposal(
   config: GovernanceConfig,
   refs: GovernanceCrossRefs,
@@ -328,44 +346,24 @@ pub fn validate_adopt_proposal(
   datum: ProposalDatum,
   reasoning_hash: ByteArray,
   reward_amount: Int,
-  reference_inputs: List<Input>,
-  inputs: List<Input>,
-  outputs: List<Output>,
-  signatories: List<ByteArray>,
-  mint: assets.Value,
+  own_ref: OutputReference,
+  tx: Transaction,
 ) -> Bool {
-  // 1-2. Oracle check
-  let oracle_valid =
-    utils.verify_oracle_signature(config, reference_inputs, signatories)
-
-  // 3. Proposal is active
-  let state_valid = utils.is_proposal_active(datum.state)
-
-  // 4. Reward amount in valid range
-  let reward_valid =
-    reward_amount >= params.min_adoption_reward && reward_amount <= params.max_adoption_reward
-
-  // 5. Reasoning hash is 32 bytes
-  let reasoning_valid = builtin.length_of_bytearray(reasoning_hash) == 32
-
-  // 12. Proposal token burned
-  let token_burned = verify_proposal_token_burned(refs, inputs, mint)
-
-  // 14. Activity decremented
-  let activity_valid =
-    activity_tracking.validate_finalize_activity(
+  and {
+    utils.verify_oracle_signature(
       config,
-      refs,
-      datum.proposer_did,
-      inputs,
-      outputs,
-    )
-
-  // 15-16. cross-module bonus: proposer +10 AP3X, each incorporated critic +5 AP3X
-  // Only enforced if Module 3 is deployed (reputation_validator_hash != zeroed)
-  let bonus_valid = validate_cross_game_bonus(config, datum, outputs, mint)
-
-  oracle_valid && state_valid && reward_valid && reasoning_valid && token_burned && activity_valid && bonus_valid
+      tx.reference_inputs,
+      tx.extra_signatories,
+    ),
+    reward_amount >= params.min_adoption_reward,
+    reward_amount <= params.max_adoption_reward,
+    builtin.length_of_bytearray(reasoning_hash) == 32,
+    validate_finalisation(refs, datum, own_ref, tx),
+    // 15-16. cross-module bonus: proposer +10 AP3X, each incorporated critic
+    // +5 AP3X. Only enforced if Module 3 is deployed
+    // (reputation_validator_hash != zeroed)
+    validate_cross_game_bonus(config, tx.outputs, tx.mint),
+  }
 }
 
 // ============================================================================
@@ -373,49 +371,26 @@ pub fn validate_adopt_proposal(
 // ============================================================================
 
 /// Validate Foundation rejection of a proposal.
+///
+/// MUST: the oracle signs; the reasoning hash is 32 bytes;
+/// validate_finalisation.
 pub fn validate_reject_proposal(
   config: GovernanceConfig,
   refs: GovernanceCrossRefs,
   datum: ProposalDatum,
   reasoning_hash: ByteArray,
-  reference_inputs: List<Input>,
-  inputs: List<Input>,
-  outputs: List<Output>,
-  signatories: List<ByteArray>,
-  mint: assets.Value,
+  own_ref: OutputReference,
+  tx: Transaction,
 ) -> Bool {
-  // 1-2. Oracle check
-  let oracle_valid =
-    utils.verify_oracle_signature(config, reference_inputs, signatories)
-
-  // 3. Proposal is active
-  let state_valid = utils.is_proposal_active(datum.state)
-
-  // 4. Reasoning hash is 32 bytes
-  let reasoning_valid = builtin.length_of_bytearray(reasoning_hash) == 32
-
-  // 8. Proposal token burned
-  let token_burned = verify_proposal_token_burned(refs, inputs, mint)
-
-  // 10. Activity decremented
-  let activity_valid =
-    activity_tracking.validate_finalize_activity(
+  and {
+    utils.verify_oracle_signature(
       config,
-      refs,
-      datum.proposer_did,
-      inputs,
-      outputs,
-    )
-
-  // Stake returned to proposer
-  let stake_returned =
-    verify_output_to_credential(
-      outputs,
-      datum.proposer_credential,
-      datum.stake_amount,
-    )
-
-  oracle_valid && state_valid && reasoning_valid && token_burned && activity_valid && stake_returned
+      tx.reference_inputs,
+      tx.extra_signatories,
+    ),
+    builtin.length_of_bytearray(reasoning_hash) == 32,
+    validate_finalisation(refs, datum, own_ref, tx),
+  }
 }
 
 // ============================================================================
@@ -423,43 +398,20 @@ pub fn validate_reject_proposal(
 // ============================================================================
 
 /// Validate proposal expiration after review window. Callable by anyone.
+///
+/// MUST: the lower bound of the validity range is after
+/// submitted_at + review_window; validate_finalisation.
 pub fn validate_expire_proposal(
-  config: GovernanceConfig,
   refs: GovernanceCrossRefs,
   datum: ProposalDatum,
   current_slot: Int,
-  inputs: List<Input>,
-  outputs: List<Output>,
-  mint: assets.Value,
+  own_ref: OutputReference,
+  tx: Transaction,
 ) -> Bool {
-  // 1. Proposal is active
-  let state_valid = utils.is_proposal_active(datum.state)
-
-  // 2. Review window has passed
-  let expired = current_slot > datum.submitted_at + datum.review_window
-
-  // 4. Proposal token burned
-  let token_burned = verify_proposal_token_burned(refs, inputs, mint)
-
-  // 6. Activity decremented
-  let activity_valid =
-    activity_tracking.validate_finalize_activity(
-      config,
-      refs,
-      datum.proposer_did,
-      inputs,
-      outputs,
-    )
-
-  // Stake returned to proposer
-  let stake_returned =
-    verify_output_to_credential(
-      outputs,
-      datum.proposer_credential,
-      datum.stake_amount,
-    )
-
-  state_valid && expired && token_burned && activity_valid && stake_returned
+  and {
+    current_slot > datum.submitted_at + datum.review_window,
+    validate_finalisation(refs, datum, own_ref, tx),
+  }
 }
 
 // ============================================================================
@@ -469,65 +421,35 @@ pub fn validate_expire_proposal(
 /// Validate expiration of a stale ParameterChange proposal.
 /// A proposal is stale when its current_value no longer matches on-chain.
 /// Callable by anyone (permissionless).
+///
+/// MUST: the proposal is a ParameterChange; a reference input is at
+/// protocol_params_hash; validate_finalisation.
 pub fn validate_expire_stale_proposal(
   config: GovernanceConfig,
   refs: GovernanceCrossRefs,
   datum: ProposalDatum,
-  reference_inputs: List<Input>,
-  inputs: List<Input>,
-  outputs: List<Output>,
-  mint: assets.Value,
+  own_ref: OutputReference,
+  tx: Transaction,
 ) -> Bool {
-  // 1. Proposal is active
-  let state_valid = utils.is_proposal_active(datum.state)
-
-  // 2. Must be ParameterChange
-  let is_param_change =
-    when datum.proposal_type is {
-      ParameterChange { .. } -> True
-      _ -> False
-    }
-
-  // 3-4. Current on-chain value != proposal's current_value
   // Verify the ProtocolParams reference input exists at protocol_params_hash.
   // The staleness check requires the off-chain submitter to include the
   // ProtocolParams UTXO as a reference input; the validator confirms it exists.
   // Full value comparison would require knowing ProtocolParams datum structure;
   // for Phase 1.0 we trust the permissionless caller to only trigger this
   // when the value has actually changed (the Foundation can reject false claims).
-  let params_ref_exists =
+  and {
+    when datum.proposal_type is {
+      ParameterChange { .. } -> True
+      _ -> False
+    },
     list.any(
-      reference_inputs,
+      tx.reference_inputs,
       fn(input) {
-        when input.output.address.payment_credential is {
-          ScriptCredential(hash) -> hash == config.protocol_params_hash
-          _ -> False
-        }
+        settlement.is_at_script(input, config.protocol_params_hash)
       },
-    )
-
-  // 7. Proposal token burned
-  let token_burned = verify_proposal_token_burned(refs, inputs, mint)
-
-  // 8. Activity decremented
-  let activity_valid =
-    activity_tracking.validate_finalize_activity(
-      config,
-      refs,
-      datum.proposer_did,
-      inputs,
-      outputs,
-    )
-
-  // Stake returned to proposer
-  let stake_returned =
-    verify_output_to_credential(
-      outputs,
-      datum.proposer_credential,
-      datum.stake_amount,
-    )
-
-  state_valid && is_param_change && params_ref_exists && token_burned && activity_valid && stake_returned
+    ),
+    validate_finalisation(refs, datum, own_ref, tx),
+  }
 }
 
 // ============================================================================
@@ -535,50 +457,77 @@ pub fn validate_expire_stale_proposal(
 // ============================================================================
 
 /// Validate Foundation extending the review window.
+///
+/// MUST:
+///   1. The oracle signs, the proposal is Open or Amended,
+///      additional_slots > 0 and review_window + additional_slots <=
+///      max_review_window.
+///   2. The proposal input holds exactly one token under the proposal policy,
+///      and an output continues it with the spent datum and the new review
+///      window: the same address (payment and stake credential), the same
+///      tokens and at least the same AP3X (settlement.continues).
+///   3. The transaction mints and burns nothing under the proposal policy.
 pub fn validate_extend_review(
   config: GovernanceConfig,
+  refs: GovernanceCrossRefs,
   params: GovernanceParams,
   datum: ProposalDatum,
   additional_slots: Int,
-  reference_inputs: List<Input>,
-  outputs: List<Output>,
-  signatories: List<ByteArray>,
+  own_ref: OutputReference,
+  tx: Transaction,
 ) -> Bool {
-  // 1-2. Oracle check
-  let oracle_valid =
-    utils.verify_oracle_signature(config, reference_inputs, signatories)
-
-  // 3. Proposal is active
-  let state_valid = utils.is_proposal_active(datum.state)
-
-  // 4. Additional slots > 0
-  let slots_valid = additional_slots > 0
-
-  // 5. Total review window doesn't exceed MAX
+  let own = settlement.own_input(tx, own_ref)
   let new_window = datum.review_window + additional_slots
-  let window_valid = new_window <= params.max_review_window
-
-  // 6. Verify continuing output with updated review_window
-  let output_valid =
-    list.any(
-      outputs,
-      fn(output) {
-        when output.datum is {
-          InlineDatum(out_raw) -> {
-            expect out_datum: ProposalDatum = out_raw
-            out_datum.review_window == new_window && out_datum.proposer_did == datum.proposer_did && out_datum.proposal_hash == datum.proposal_hash && out_datum.state == datum.state
-          }
-          _ -> False
-        }
-      },
-    )
-
-  oracle_valid && state_valid && slots_valid && window_valid && output_valid
+  let new_data: Data = ProposalDatum { ..datum, review_window: new_window }
+  and {
+    utils.verify_oracle_signature(
+      config,
+      tx.reference_inputs,
+      tx.extra_signatories,
+    ),
+    utils.is_proposal_active(datum.state),
+    additional_slots > 0,
+    new_window <= params.max_review_window,
+    holds_one_proposal_token(refs, own),
+    settlement.continues(own, new_data, tx.outputs),
+    dict.is_empty(assets.tokens(tx.mint, refs.proposal_mint_hash)),
+  }
 }
 
 // ============================================================================
 // Internal Helpers
 // ============================================================================
+
+/// True when the input holds exactly one token under the proposal policy,
+/// with quantity 1 (the token of a proposal).
+fn holds_one_proposal_token(refs: GovernanceCrossRefs, input: Input) -> Bool {
+  when dict.to_pairs(assets.tokens(input.output.value, refs.proposal_mint_hash)) is {
+    [Pair(_, quantity)] -> quantity == 1
+    _ -> False
+  }
+}
+
+/// True when the transaction spends `critique_ref` at the critique validator
+/// with IncorporateCritique.
+fn spends_incorporated(
+  refs: GovernanceCrossRefs,
+  critique_ref: OutputReference,
+  tx: Transaction,
+) -> Bool {
+  let incorporate: Data = IncorporateCritique
+  and {
+    list.any(
+      tx.inputs,
+      fn(input) {
+        input.output_reference == critique_ref && settlement.is_at_script(
+          input,
+          refs.critique_validator_hash,
+        )
+      },
+    ),
+    pairs.get_first(tx.redeemers, Spend(critique_ref)) == Some(incorporate),
+  }
+}
 
 /// Validate stake amount based on proposal priority.
 /// Standard proposals check minimum stake; emergency proposals delegate to
@@ -630,59 +579,6 @@ fn validate_proposal_type(
   }
 }
 
-/// Verify that a proposal token is burned in this transaction
-fn verify_proposal_token_burned(
-  refs: GovernanceCrossRefs,
-  inputs: List<Input>,
-  mint: assets.Value,
-) -> Bool {
-  // Find any proposal token in the inputs and verify it's burned
-  list.any(
-    inputs,
-    fn(input) {
-      let is_at_proposal =
-        when input.output.address.payment_credential is {
-          ScriptCredential(hash) -> hash == refs.proposal_validator_hash
-          _ -> False
-        }
-      if is_at_proposal {
-        // Check that some token with "prop_" prefix from the mint policy is burned
-        let policy_tokens =
-          assets.tokens(input.output.value, refs.proposal_mint_hash)
-        dict.foldl(
-          policy_tokens,
-          False,
-          fn(name, _qty, acc) {
-            acc || builtin.slice_bytearray(0, 5, name) == "prop_" && assets.quantity_of(
-              mint,
-              refs.proposal_mint_hash,
-              name,
-            ) == -1
-          },
-        )
-      } else {
-        False
-      }
-    },
-  )
-}
-
-/// Verify that an output pays at least `min_lovelace` to a given credential.
-fn verify_output_to_credential(
-  outputs: List<Output>,
-  credential: Credential,
-  min_lovelace: Int,
-) -> Bool {
-  list.any(
-    outputs,
-    fn(output) {
-      output.address.payment_credential == credential && utils.lovelace_of(
-        output.value,
-      ) >= min_lovelace
-    },
-  )
-}
-
 // ============================================================================
 // §5.4 Cross-Module Bonus (items 15-16)
 // ============================================================================
@@ -699,7 +595,6 @@ const zeroed_hash: ByteArray =
 /// If Module 3 is not deployed (reputation_validator_hash == zeroed), this is skipped.
 fn validate_cross_game_bonus(
   config: GovernanceConfig,
-  datum: ProposalDatum,
   outputs: List<Output>,
   mint: assets.Value,
 ) -> Bool {

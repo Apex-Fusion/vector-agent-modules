@@ -4,19 +4,19 @@
 // reference input holds the record token of config.record_token_policy.
 
 use aiken/crypto.{blake2b_256}
+use aiken/interval
 use cardano/address.{Address, Script}
 use cardano/assets
 use cardano/transaction.{InlineDatum, Input, Output}
 use governance_suggestion/params
 use governance_suggestion/proposal_validation
 use governance_suggestion/tests/test_helpers.{
-  activity_input, activity_output, cross_refs_ref_input, default_proposal_datum,
-  identity_ref_input, make_ref, oracle_cred, oracle_key_hash, oracle_script_hash,
-  params_ref_input, params_script_hash, payment_output, proposal_input,
-  proposal_own_ref, proposal_token_mint, proposer_agent, proposer_cred,
-  proposer_did, test_config, test_cross_refs, treasury_script_hash,
+  cross_refs_ref_input, default_proposal_datum, finalisation_outputs,
+  finalisation_tx, identity_ref_input, make_ref, oracle_cred, oracle_key_hash,
+  oracle_script_hash, params_ref_input, params_script_hash, proposal_utxo_ref,
+  proposer_agent, test_config, test_cross_refs, treasury_script_hash,
 }
-use governance_suggestion/types.{GovernanceParams}
+use governance_suggestion/types.{AdoptProposal, GovernanceParams}
 use shared/oracle.{GovernanceOracleDatum}
 use shared/record_auth
 
@@ -82,30 +82,29 @@ fn key_oracle() -> GovernanceOracleDatum {
 /// oracle reference input.
 fn adopt_with_oracle(oracle_input: Input) -> Bool {
   let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
+  let reasoning_hash = blake2b_256("adoption reasoning")
+  let action: Data = AdoptProposal { reasoning_hash, reward_amount: 100_000_000 }
   proposal_validation.validate_adopt_proposal(
     test_config(),
     test_cross_refs(),
     params.default_governance_params(),
     datum,
-    blake2b_256("adoption reasoning"),
+    reasoning_hash,
     100_000_000,
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      identity_ref_input(proposer_agent),
-      oracle_input,
-    ],
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ],
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ],
-    [oracle_key_hash],
-    proposal_token_mint(own_ref, -1),
+    proposal_utxo_ref(),
+    finalisation_tx(
+      action,
+      datum,
+      [
+        cross_refs_ref_input(),
+        params_ref_input(),
+        identity_ref_input(proposer_agent),
+        oracle_input,
+      ],
+      finalisation_outputs(datum),
+      [oracle_key_hash],
+      interval.between(2_000_000_000, 2_000_600_000),
+    ),
   )
 }
 

@@ -26,7 +26,8 @@ pub type ProposalDatum {
   storage_uri: ByteArray,
   /// AP3X staked by proposer (skin in the game), in lovelace
   stake_amount: Int,
-  /// Slot when proposal was submitted
+  /// Time of the submission (POSIX ms): the lower bound of the validity range
+  /// of the submission transaction, which is at most one hour long
   submitted_at: Int,
   /// Review window: slots after submission during which Foundation can act
   review_window: Int,
@@ -34,7 +35,9 @@ pub type ProposalDatum {
   priority: ProposalPriority,
   /// Number of amendments made (tracks revision history)
   amendment_count: Int,
-  /// List of critique UTXOs incorporated in amendments (for reward sharing)
+  /// Output references of the critiques that amendments incorporated, in the
+  /// order of the amendments (for reward sharing). Each critique names this
+  /// proposal (its proposal_ref is the seed of this proposal)
   incorporated_critiques: List<OutputReference>,
   /// Current state
   state: ProposalState,
@@ -107,8 +110,10 @@ pub type ProposalAction {
   ExpireStaleProposal
   /// Foundation signals "under review" — extends review window
   ExtendReview { additional_slots: Int }
-  /// Allow activity UTXO to be consumed alongside a proposal finalization.
-  /// Validation is done by the proposal UTXO's evaluation (via validate_finalize_activity).
+  /// Spend the activity UTxO of an agent. Only together with the one proposal
+  /// action of the transaction, when that action is SubmitProposal or a
+  /// finalisation of a proposal of the same agent. That action checks the
+  /// continuing activity output (validate_spend_activity).
   SpendActivity
 }
 
@@ -125,7 +130,9 @@ pub type CritiqueDatum {
   /// needs a declared credential of the critic's record
   /// (utils.verify_active_agent)
   critic_credential: Credential,
-  /// Reference to the proposal being critiqued
+  /// The proposal that is critiqued: the seed of the proposal, the output
+  /// reference that its SubmitProposal spent. The proposal holds the token
+  /// utils.proposal_token_name(proposal_ref)
   proposal_ref: OutputReference,
   /// blake2b_256 hash of the critique document (stored off-chain)
   critique_hash: ByteArray,
@@ -135,7 +142,8 @@ pub type CritiqueDatum {
   critique_type: CritiqueType,
   /// AP3X staked by critic (skin in the game), in lovelace
   stake_amount: Int,
-  /// Slot when critique was submitted
+  /// Time of the submission (POSIX ms): the lower bound of the validity range
+  /// of the submission transaction, which is at most one hour long
   submitted_at: Int,
   /// Whether this critique was incorporated into a proposal amendment
   incorporated: Bool,
@@ -178,11 +186,13 @@ pub type GovernanceEndorsementDatum {
   /// Payment credential of endorser. Submission needs a declared credential
   /// of the endorser's record (utils.verify_active_agent)
   endorser_credential: Credential,
-  /// Reference to the proposal being endorsed
+  /// The proposal that is endorsed: the seed of the proposal (see
+  /// CritiqueDatum.proposal_ref)
   proposal_ref: OutputReference,
   /// AP3X staked as endorsement signal, in lovelace
   stake_amount: Int,
-  /// Slot when endorsement was created
+  /// Time of the endorsement (POSIX ms): the lower bound of the validity
+  /// range of the endorsement transaction, which is at most one hour long
   created_at: Int,
 }
 
@@ -327,6 +337,9 @@ pub type GovernanceCrossRefs {
   proposal_mint_hash: ByteArray,
   /// Policy ID (script hash) of the critique mint policy (for token minting/burning)
   critique_mint_hash: ByteArray,
+  /// Script hash of the endorsement spend validator. The critique mint policy
+  /// uses it to find the endorsement inputs of a transaction
+  endorsement_validator_hash: ByteArray,
 }
 
 // ============================================================================

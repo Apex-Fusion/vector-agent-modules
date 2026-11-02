@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Module 6: offline checks of the identity_hash input and the GovernanceConfig layout
+Module 6: offline checks of the identity_hash input, the GovernanceConfig
+layout and the GovernanceCrossRefs layout
 
 No chain connection, no keys and no aiken CLI. Needs cbor2.
 
@@ -14,6 +15,9 @@ Checks:
     without a valid identity_hash.
   - resume_state_error refuses a state of the legacy registry layout and a
     state with another identity_hash.
+  - build_cross_refs_data gives constructor 0 with 5 fields in the order of
+    the Aiken type GovernanceCrossRefs, with endorsement_validator_hash last.
+    It refuses a missing, short or zero hash.
 
 Usage:
     python3 scripts/test_deploy_config.py
@@ -27,6 +31,7 @@ from deploy_common import (
     IDENTITY_HASH_ENV,
     LEGACY_REGISTRY_HASH,
     DeployInputError,
+    build_cross_refs_data,
     build_governance_config_cbor,
     identity_hash_from_env,
     resume_state_error,
@@ -126,6 +131,36 @@ def main() -> int:
           "legacy agent registry" in (resume_state_error(legacy, OWNER, IDENTITY) or ""))
     check("resume with another identity_hash: refused",
           "identity_hash" in (resume_state_error(saved, OWNER, dummy(0x2E)) or ""))
+
+    print("\nModule-6 GovernanceCrossRefs datum")
+    refs = build_cross_refs_data(
+        dummy(0x11), dummy(0x12), dummy(0x13), dummy(0x14), dummy(0x15),
+    )
+    check("cross refs: constructor 0", refs.tag == 121)
+    check("cross refs: 5 fields", len(refs.value) == 5)
+    check("cross refs: field order, endorsement_validator_hash last",
+          [field.hex() for field in refs.value] == [
+              dummy(0x11),  # proposal_validator_hash
+              dummy(0x12),  # critique_validator_hash
+              dummy(0x13),  # proposal_mint_hash
+              dummy(0x14),  # critique_mint_hash
+              dummy(0x15),  # endorsement_validator_hash
+          ])
+    check("cross refs: CBOR round trip",
+          cbor2.loads(cbor2.dumps(refs)).value == refs.value)
+    for label, value in [
+        ("missing", ""),
+        ("27 bytes", "ab" * 27),
+        ("all zero", ZERO),
+    ]:
+        try:
+            build_cross_refs_data(
+                dummy(0x11), dummy(0x12), dummy(0x13), dummy(0x14), value,
+            )
+            refused = False
+        except ValueError:
+            refused = True
+        check(f"cross refs: endorsement_validator_hash {label}: refused", refused)
 
     print("\nAll checks passed." if not FAILED else f"\n{len(FAILED)} checks failed.")
     return 1 if FAILED else 0

@@ -67,6 +67,7 @@ from deploy_common import (
     DeployInputError,
     apply_holder,
     apply_record_token_policy,
+    build_cross_refs_data,
     build_governance_config_cbor,
     find_record_utxo,
     identity_hash_from_env,
@@ -669,12 +670,17 @@ async def deploy():
             critique_mint_hash = applied_validators.get(
                 "critique.critique_mint.mint", {}
             ).get("hash", "")
-            cross_refs_data = cbor2.CBORTag(121, [
-                bytes.fromhex(proposal_hash),
-                bytes.fromhex(critique_hash),
-                bytes.fromhex(proposal_mint_hash),
-                bytes.fromhex(critique_mint_hash),
-            ])
+            endorsement_hash = applied_validators.get(
+                "critique.endorsement_spend.spend", {}
+            ).get("hash", "")
+            # GovernanceCrossRefs: 5 fields, the endorsement validator last
+            cross_refs_data = build_cross_refs_data(
+                proposal_hash,
+                critique_hash,
+                proposal_mint_hash,
+                critique_mint_hash,
+                endorsement_hash,
+            )
             # Mint at oracle holder address (not wallet) to prevent
             # coin selection from consuming the CrossRefs UTxO.
             oracle_holder_addr = script_hash_to_address(holders["oracle"]["hash"])

@@ -26,7 +26,12 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-from deploy_common import ORACLE_TOKEN_NAME, PARAMS_TOKEN_NAME, find_record_utxo
+from deploy_common import (
+    ORACLE_TOKEN_NAME,
+    PARAMS_TOKEN_NAME,
+    build_cross_refs_data,
+    find_record_utxo,
+)
 
 DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
@@ -229,18 +234,21 @@ async def main():
             print("\n--- Re-minting CrossRefs NFT ---")
             _, native_script_cbor = compute_native_script_policy(wallet["vkey_hash"])
 
-            # Build CrossRefs datum with validator hashes
+            # Build CrossRefs datum with validator hashes (5 fields, the
+            # endorsement validator last)
             proposal_hash = validators.get("proposal.proposal_spend.spend", {}).get("hash", "")
             critique_hash = validators.get("critique.critique_spend.spend", {}).get("hash", "")
             proposal_mint_hash = validators.get("proposal.proposal_mint.mint", {}).get("hash", "")
             critique_mint_hash = validators.get("critique.critique_mint.mint", {}).get("hash", "")
+            endorsement_hash = validators.get("critique.endorsement_spend.spend", {}).get("hash", "")
 
-            cross_refs_data = cbor2.CBORTag(121, [
-                bytes.fromhex(proposal_hash),
-                bytes.fromhex(critique_hash),
-                bytes.fromhex(proposal_mint_hash),
-                bytes.fromhex(critique_mint_hash),
-            ])
+            cross_refs_data = build_cross_refs_data(
+                proposal_hash,
+                critique_hash,
+                proposal_mint_hash,
+                critique_mint_hash,
+                endorsement_hash,
+            )
 
             tx = await mint_refs_nft(agent, native_script_cbor, cross_refs_data, oracle_addr)
             tx_hashes["cross_refs_nft"] = tx

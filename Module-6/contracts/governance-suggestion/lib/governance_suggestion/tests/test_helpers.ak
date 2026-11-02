@@ -5,18 +5,18 @@
 // simulate what the validators see in a real transaction, enabling tests
 // that exercise the validation functions with realistic transaction data.
 
-use aiken/builtin
 use aiken/crypto.{blake2b_256}
 use aiken/interval
 use cardano/address.{Address, Credential, Script, VerificationKey}
 use cardano/assets
 use cardano/transaction.{
-  InlineDatum, Input, NoDatum, Output, OutputReference, ValidityRange,
+  InlineDatum, Input, NoDatum, Output, OutputReference, ScriptPurpose, Spend,
+  Transaction, ValidityRange,
 }
 use governance_suggestion/params
 use governance_suggestion/types.{
-  GovernanceConfig, GovernanceCrossRefs, GovernanceParams, ProposalDatum,
-  ProposerActivityDatum,
+  CritiqueDatum, GovernanceConfig, GovernanceCrossRefs, ProposalDatum,
+  ProposerActivityDatum, SpendActivity,
 }
 use governance_suggestion/utils
 use shared/identity_fixtures.{
@@ -40,6 +40,9 @@ pub const proposal_mint_hash: ByteArray =
 
 pub const critique_mint_hash: ByteArray =
   #"dd00000000000000000000000000000000000000000000000000dd00"
+
+pub const endorsement_validator_hash: ByteArray =
+  #"ab000000000000000000000000000000000000000000000000000ab0"
 
 pub const refs_token_policy: ByteArray =
   #"ee00000000000000000000000000000000000000000000000000ee00"
@@ -131,6 +134,7 @@ pub fn test_cross_refs() -> GovernanceCrossRefs {
     critique_validator_hash,
     proposal_mint_hash,
     critique_mint_hash,
+    endorsement_validator_hash,
   }
 }
 
@@ -158,6 +162,26 @@ pub fn critique_own_ref() -> OutputReference {
   )
 }
 
+/// The UTxO of the proposal of proposal_input (its seed is proposal_own_ref)
+pub fn proposal_utxo_ref() -> OutputReference {
+  make_ref(
+    #"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0002",
+    0,
+  )
+}
+
+/// The UTxO of activity_input
+pub fn activity_utxo_ref() -> OutputReference {
+  make_ref(
+    #"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb0001",
+    0,
+  )
+}
+
+/// The spend redeemer of the input `ref`
+pub fn spend_redeemer(ref: OutputReference, action: Data) -> Pair<ScriptPurpose, Data> {
+  Pair(Spend(ref), action)
+}
 // ============================================================================
 // Reference Input Builders
 // ============================================================================
@@ -356,9 +380,21 @@ pub fn proposal_input(datum: ProposalDatum, own_ref: OutputReference) -> Input {
 // Transaction Output Builders
 // ============================================================================
 
-/// Activity UTXO output at proposal validator address
+/// Activity UTXO output at proposal validator address (the proposer's
+/// credential)
 pub fn activity_output(
   agent_did: ByteArray,
+  count: Int,
+  last_slot: Int,
+) -> Output {
+  activity_output_for(agent_did, proposer_cred(), count, last_slot)
+}
+
+/// Activity UTXO output at proposal validator address with the credential
+/// `agent_credential`
+pub fn activity_output_for(
+  agent_did: ByteArray,
+  agent_credential: Credential,
   count: Int,
   last_slot: Int,
 ) -> Output {
@@ -366,7 +402,7 @@ pub fn activity_output(
   let activity_datum =
     ProposerActivityDatum {
       agent_did,
-      agent_credential: proposer_cred(),
+      agent_credential,
       active_proposal_count: count,
       last_proposal_slot: last_slot,
     }
@@ -445,4 +481,97 @@ pub fn default_proposal_datum() -> ProposalDatum {
     incorporated_critiques: [],
     state: types.Open,
   }
+}
+
+// ============================================================================
+// Submission and finalisation transactions
+// ============================================================================
+
+/// The UTxO that a proposal submission spends (the seed proposal_own_ref):
+/// the stake and the datum `datum`, at the proposal validator
+pub fn proposal_seed_input(datum: ProposalDatum) -> Input {
+  Input {
+    output_reference: proposal_own_ref(),
+    output: Output {
+      address: Address {
+        payment_credential: Script(proposal_validator_hash),
+        stake_credential: None,
+      },
+      value: assets.from_lovelace(datum.stake_amount),
+      datum: InlineDatum(datum),
+      reference_script: None,
+    },
+  }
+}
+
+/// The UTxO that a critique submission spends (the seed `seed`): 7 AP3X and
+/// the datum `datum`, at the critique validator
+pub fn critique_seed_input(seed: OutputReference, datum: CritiqueDatum) -> Input {
+  Input {
+    output_reference: seed,
+    output: Output {
+      address: Address {
+        payment_credential: Script(critique_validator_hash),
+        stake_credential: None,
+      },
+      value: assets.from_lovelace(7_000_000),
+      datum: InlineDatum(datum),
+      reference_script: None,
+    },
+  }
+}
+
+/// The new critique of a critique submission with the seed `seed`: 7 AP3X,
+/// the critique token and the datum `datum`, at the critique validator
+pub fn critique_output(seed: OutputReference, datum: CritiqueDatum) -> Output {
+  Output {
+    address: Address {
+      payment_credential: Script(critique_validator_hash),
+      stake_credential: None,
+    },
+    value: assets.from_lovelace(7_000_000)
+      |> assets.add(critique_mint_hash, utils.critique_token_name(seed), 1),
+    datum: InlineDatum(datum),
+    reference_script: None,
+  }
+}
+
+/// A finalisation of the proposal `datum` (seed proposal_own_ref) with the
+/// proposal action `action`: it spends the proposal (proposal_utxo_ref) and
+/// the proposer's activity record (count 1), burns the proposal token, and
+/// has the redeemers of both inputs. The caller gives the outputs.
+pub fn finalisation_tx(
+  action: Data,
+  datum: ProposalDatum,
+  reference_inputs: List<Input>,
+  outputs: List<Output>,
+  signatories: List<ByteArray>,
+  validity_range: ValidityRange,
+) -> Transaction {
+  let spend_activity: Data = SpendActivity
+  Transaction {
+    ..transaction.placeholder,
+    inputs: [
+      proposal_input(datum, proposal_own_ref()),
+      activity_input(datum.proposer_did, 1, 1_000_000_000),
+    ],
+    reference_inputs: reference_inputs,
+    outputs: outputs,
+    mint: proposal_token_mint(proposal_own_ref(), -1),
+    extra_signatories: signatories,
+    validity_range: validity_range,
+    redeemers: [
+      spend_redeemer(proposal_utxo_ref(), action),
+      spend_redeemer(activity_utxo_ref(), spend_activity),
+    ],
+  }
+}
+
+/// The outputs of a finalisation of `datum`: the stake to the proposer and the
+/// activity record with count 0
+pub fn finalisation_outputs(datum: ProposalDatum) -> List<Output> {
+  [
+    payment_output(datum.proposer_credential, datum.stake_amount),
+    activity_output(datum.proposer_did, 0, 1_000_000_000),
+  ]
 }

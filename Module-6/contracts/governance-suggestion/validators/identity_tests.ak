@@ -28,20 +28,22 @@ use critique
 use governance_suggestion/params
 use governance_suggestion/proposal_validation
 use governance_suggestion/tests/test_helpers.{
-  activity_input, activity_output, activity_token_mint, critic_agent,
-  critic_cred, critic_key_hash, critique_own_ref, critique_validator_hash,
-  cross_refs_ref_input, default_proposal_datum, make_ref, params_ref_input,
-  payment_output, proposal_input, proposal_output, proposal_own_ref,
-  proposal_ref_input, proposal_token_mint, proposal_validator_hash,
-  proposer_agent, proposer_cred, proposer_did, proposer_key_hash, test_config,
-  test_cross_refs,
+  activity_input, activity_output, activity_output_for, activity_token_mint,
+  activity_utxo_ref, critic_agent, critic_cred, critic_key_hash,
+  critique_mint_hash, critique_output, critique_own_ref, critique_validator_hash,
+  cross_refs_ref_input, default_proposal_datum, endorsement_validator_hash,
+  make_ref, params_ref_input, payment_output, proposal_input, proposal_output,
+  proposal_own_ref, proposal_ref_input, proposal_token_mint,
+  proposal_validator_hash, proposer_agent, proposer_cred, proposer_did,
+  proposer_key_hash, spend_redeemer, test_config, test_cross_refs,
 }
 use governance_suggestion/types.{
   AmendProposal, Amended, CritiqueDatum, GovernanceEndorsementDatum,
   MintCritiqueToken, MintEndorsementToken, ProposalAction, ProposalDatum,
-  SubmitProposal, Supportive, WithdrawCritique, WithdrawEndorsement,
-  WithdrawProposal,
+  SpendActivity, SubmitProposal, Supportive, WithdrawCritique,
+  WithdrawEndorsement, WithdrawProposal,
 }
+use governance_suggestion/utils
 use proposal
 use shared/identity_fixtures.{
   accountable_until, agent_id, controller_hash, ed_key, ed_key_hash, p256_key,
@@ -72,8 +74,12 @@ const other_agent: Int = 7
 
 const parent_agent: Int = 9
 
-const endorsement_validator_hash: ByteArray =
-  #"ab000000000000000000000000000000000000000000000000000ab0"
+/// The proposer's record (agent 1). Critique and endorsement submissions
+/// read it for the rule that the critic or endorser and the proposer are
+/// different parties.
+fn proposer_record() -> Input {
+  record_input(agent_id(proposer_agent), record(proposer_agent, []))
+}
 
 /// Lovelace of a critique or endorsement UTxO (5 AP3X stake + 2 AP3X).
 const position_lovelace: Int = 7_000_000
@@ -340,12 +346,14 @@ fn subagent_without_parent(n: Int) -> Case {
 // Actions that open or extend a position
 // ============================================================================
 
-/// The default proposal with the agent and the credential of `c`.
+/// The default proposal with the agent and the credential of `c`, submitted
+/// at the lower bound `lo`.
 fn proposal_of(c: Case) -> ProposalDatum {
   ProposalDatum {
     ..default_proposal_datum(),
     proposer_did: c.did,
     proposer_credential: c.credential,
+    submitted_at: lo,
   }
 }
 
@@ -365,7 +373,10 @@ fn submit_proposal_tx(c: Case) -> Transaction {
       ),
     ],
     reference_inputs: [cross_refs_ref_input(), params_ref_input(), ..c.records],
-    outputs: [proposal_output(datum), activity_output(c.did, 1, lo)],
+    outputs: [
+      proposal_output(datum),
+      activity_output_for(c.did, c.credential, 1, lo),
+    ],
     mint: proposal_token_mint(proposal_own_ref(), 1)
       |> assets.merge(activity_token_mint(c.did, 1)),
     extra_signatories: c.signers,
@@ -444,7 +455,8 @@ fn critique_of(c: Case) -> CritiqueDatum {
 }
 
 /// A MintCritiqueToken transaction for `c`: it spends the locked critique
-/// UTxO; the open default proposal is a reference input.
+/// UTxO and creates the critique with its token; the open default proposal
+/// and the proposer's record are reference inputs.
 fn submit_critique(c: Case) -> Bool {
   let raw: Data = critique_of(c)
   let tx =
@@ -462,8 +474,10 @@ fn submit_critique(c: Case) -> Bool {
         cross_refs_ref_input(),
         params_ref_input(),
         proposal_ref_input(default_proposal_datum()),
+        proposer_record(),
         ..c.records
       ],
+      outputs: [critique_output(critique_own_ref(), critique_of(c))],
       extra_signatories: c.signers,
       validity_range: c.range,
     }
@@ -488,7 +502,8 @@ fn endorsement_of(c: Case) -> GovernanceEndorsementDatum {
 }
 
 /// A MintEndorsementToken transaction for `c`: it spends the locked
-/// endorsement UTxO; the open default proposal is a reference input.
+/// endorsement UTxO and creates the endorsement with its token; the open
+/// default proposal and the proposer's record are reference inputs.
 fn submit_endorsement(c: Case) -> Bool {
   let raw: Data = endorsement_of(c)
   let tx =
@@ -506,7 +521,24 @@ fn submit_endorsement(c: Case) -> Bool {
         cross_refs_ref_input(),
         params_ref_input(),
         proposal_ref_input(default_proposal_datum()),
+        proposer_record(),
         ..c.records
+      ],
+      outputs: [
+        Output {
+          address: Address {
+            payment_credential: Script(endorsement_validator_hash),
+            stake_credential: None,
+          },
+          value: assets.from_lovelace(position_lovelace)
+            |> assets.add(
+                critique_mint_hash,
+                utils.endorsement_token_name(c.did, proposal_own_ref()),
+                1,
+              ),
+          datum: InlineDatum(raw),
+          reference_script: None,
+        },
       ],
       extra_signatories: c.signers,
       validity_range: c.range,
@@ -529,6 +561,8 @@ fn submit_endorsement(c: Case) -> Bool {
 fn withdraw_proposal(records: List<Input>, range: ValidityRange) -> Bool {
   let datum = default_proposal_datum()
   let raw: Data = datum
+  let withdraw: Data = WithdrawProposal
+  let spend_activity: Data = SpendActivity
   let input = proposal_input(datum, proposal_own_ref())
   let tx =
     Transaction {
@@ -542,6 +576,10 @@ fn withdraw_proposal(records: List<Input>, range: ValidityRange) -> Bool {
       mint: proposal_token_mint(proposal_own_ref(), -1),
       extra_signatories: [proposer_key_hash],
       validity_range: range,
+      redeemers: [
+        spend_redeemer(input.output_reference, withdraw),
+        spend_redeemer(activity_utxo_ref(), spend_activity),
+      ],
     }
   proposal.proposal_spend.spend(
     test_config(),
@@ -736,14 +774,8 @@ test submit_proposal_check_rejects_range_without_lower_bound() fail {
     test_cross_refs(),
     params.default_governance_params(),
     proposal_of(c),
-    lo,
-    tx.reference_inputs,
-    tx.inputs,
-    tx.outputs,
-    tx.extra_signatories,
-    tx.mint,
     proposal_own_ref(),
-    tx.validity_range,
+    tx,
   )
 }
 
@@ -862,6 +894,7 @@ test amend_proposal_check_rejects_range_without_lower_bound() {
   let c = range_without_lower_bound(proposer_agent)
   let tx = amend_proposal_tx(c)
   expect AmendProposal { new_hash, new_uri, incorporated } = amendment()
+  expect [input] = tx.inputs
   !proposal_validation.validate_amend_proposal(
     test_config(),
     test_cross_refs(),
@@ -870,10 +903,8 @@ test amend_proposal_check_rejects_range_without_lower_bound() {
     new_hash,
     new_uri,
     incorporated,
-    tx.reference_inputs,
-    tx.outputs,
-    tx.extra_signatories,
-    tx.validity_range,
+    input.output_reference,
+    tx,
   )
 }
 

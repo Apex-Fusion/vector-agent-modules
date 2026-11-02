@@ -1,907 +1,317 @@
 // Oracle: Self-Improvement Module — Validator-Level Mock Transaction Tests
 //
 // These tests call the validation functions from proposal_validation.ak and
-// critique_validation.ak with fully constructed transaction arguments (inputs,
-// outputs, reference inputs, mint values, signatories), simulating what the
-// validator entry points pass through.
+// critique_validation.ak with fully constructed transactions (inputs,
+// outputs, reference inputs, mint values, signatories, redeemers), as the
+// validator entry points pass them.
 //
-// Each test constructs the minimum viable transaction data for a specific
-// action and verifies both positive (valid tx) and negative (invalid tx) cases.
+// Each test constructs the minimum viable transaction for a specific action
+// and verifies both positive (valid tx) and negative (invalid tx) cases.
 
 use aiken/crypto.{blake2b_256}
-use cardano/address.{VerificationKey}
+use cardano/address.{Address, Script}
 use cardano/assets
-use cardano/transaction.{Input, NoDatum, OutputReference}
+use cardano/transaction.{InlineDatum, Input, Output, Transaction}
 use governance_suggestion/critique_validation
 use governance_suggestion/params
 use governance_suggestion/proposal_validation
 use governance_suggestion/tests/test_helpers.{
-  activity_input, activity_output, activity_token_mint, critic_agent,
-  critic_cred, critic_did, critic_key_hash, critique_mint_hash, critique_own_ref,
-  cross_refs_ref_input, default_proposal_datum, identity_ref_input, oracle_cred,
-  oracle_key_hash, oracle_ref_input, oracle_ref_inputs, oracle_script_hash,
-  params_ref_input, params_script_hash, payment_output, proposal_input,
-  proposal_mint_hash, proposal_output, proposal_own_ref, proposal_ref_input,
-  proposal_token_mint, proposal_validator_hash, proposer_agent, proposer_cred,
-  proposer_did, proposer_key_hash, protocol_params_ref_input,
+  activity_output, activity_token_mint, critic_agent, critic_cred, critic_did,
+  critic_key_hash, critique_output, critique_own_ref, critique_seed_input,
+  cross_refs_ref_input, default_proposal_datum, finalisation_outputs,
+  finalisation_tx, identity_ref_input, oracle_key_hash, oracle_ref_inputs,
+  params_ref_input, proposal_input, proposal_output, proposal_own_ref,
+  proposal_ref_input, proposal_seed_input, proposal_utxo_ref, proposer_agent,
+  proposer_cred, proposer_did, proposer_key_hash, protocol_params_ref_input,
   standard_ref_inputs, test_config, test_cross_refs, validity_range_from,
 }
 use governance_suggestion/types.{
-  Amended, CritiqueDatum, Emergency, GeneralSuggestion,
-  GovernanceEndorsementDatum, Open, ParameterChange, ProposalDatum, Standard,
-  Supportive,
+  AdoptProposal, Amended, CritiqueDatum, ExpireProposal, ExpireStaleProposal,
+  GovernanceEndorsementDatum, ParameterChange, ProposalDatum, RejectProposal,
+  Supportive, WithdrawProposal,
 }
 use governance_suggestion/utils
+
+// ============================================================================
+// Builders
+// ============================================================================
+
+/// The lower bound of the submission transactions.
+const submit_lo: Int = 2_000_000_000
+
+/// The default proposal, submitted at `submit_lo`.
+fn submitted() -> ProposalDatum {
+  ProposalDatum { ..default_proposal_datum(), submitted_at: submit_lo }
+}
+
+/// A first proposal submission of `datum` (the new datum; the seed holds the
+/// same datum), with the given reference inputs and signers.
+fn submit_with(
+  datum: ProposalDatum,
+  reference_inputs: List<Input>,
+  signatories: List<ByteArray>,
+) -> Bool {
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [proposal_seed_input(datum)],
+      reference_inputs: reference_inputs,
+      outputs: [
+        proposal_output(datum),
+        activity_output(proposer_did, 1, submit_lo),
+      ],
+      mint: test_helpers.proposal_token_mint(proposal_own_ref(), 1)
+        |> assets.merge(activity_token_mint(proposer_did, 1)),
+      extra_signatories: signatories,
+      validity_range: validity_range_from(submit_lo),
+    }
+  proposal_validation.validate_submit_proposal(
+    test_config(),
+    test_cross_refs(),
+    params.default_governance_params(),
+    datum,
+    proposal_own_ref(),
+    tx,
+  )
+}
+
+fn submit(datum: ProposalDatum) -> Bool {
+  submit_with(datum, standard_ref_inputs(proposer_agent), [proposer_key_hash])
+}
 
 // ============================================================================
 // §5.1 SubmitProposal Tests
 // ============================================================================
 
 test submit_proposal_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  // Inputs: activity UTXO (first-time proposer uses InitActivity, so no activity input needed)
-  // For first-time: no activity input, outputs must contain activity with count=1
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-
-  // Outputs: proposal UTXO + activity UTXO (count=1)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-
-  // Mint: proposal token + activity token (first time)
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-
-  let signatories = [proposer_key_hash]
-  let inputs = []
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    inputs,
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
-  )
+  submit(submitted())
 }
 
 test submit_proposal_missing_did() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
   // No identity record reference input — the identity check fails
-  let reference_inputs = [cross_refs_ref_input(), params_ref_input()]
-
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
+  submit_with(
+    submitted(),
+    [cross_refs_ref_input(), params_ref_input()],
+    [proposer_key_hash],
   )
 }
 
 test submit_proposal_insufficient_stake() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
   // Stake below min (25 AP3X = 25_000_000)
-  let datum =
-    ProposalDatum { ..default_proposal_datum(), stake_amount: 1_000_000 }
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
-  )
+  submit(ProposalDatum { ..submitted(), stake_amount: 1_000_000 })
 }
 
 test submit_proposal_bad_hash_length() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
   // Hash is 16 bytes instead of 32
-  let datum =
+  submit(
     ProposalDatum {
-      ..default_proposal_datum(),
+      ..submitted(),
       proposal_hash: #"aabbccddaabbccddaabbccddaabbccdd",
-    }
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
+    },
   )
 }
 
 test submit_proposal_empty_uri() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = ProposalDatum { ..default_proposal_datum(), storage_uri: "" }
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
-  )
+  submit(ProposalDatum { ..submitted(), storage_uri: "" })
 }
 
 test submit_proposal_wrong_signer() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
   // Wrong signer — critic instead of proposer
-  let signatories = [critic_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
+  submit_with(
+    submitted(),
+    standard_ref_inputs(proposer_agent),
+    [critic_key_hash],
   )
 }
 
 test submit_proposal_window_too_short() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
   // Review window below min (259_200_000 = ~3 days)
-  let datum = ProposalDatum { ..default_proposal_datum(), review_window: 1_000 }
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
-  )
+  submit(ProposalDatum { ..submitted(), review_window: 1_000 })
 }
 
 test submit_proposal_window_too_long() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
   // Review window above max (2_419_200_000 = ~28 days)
-  let datum =
-    ProposalDatum { ..default_proposal_datum(), review_window: 9_999_999_999 }
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
-  )
+  submit(ProposalDatum { ..submitted(), review_window: 9_999_999_999 })
 }
 
 test submit_proposal_non_open_state() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum =
+  submit(
     ProposalDatum {
-      ..default_proposal_datum(),
+      ..submitted(),
       state: Amended { previous_hash: blake2b_256("old") },
-    }
-  let own_ref = proposal_own_ref()
-  let current_slot = 2_000_000_000
-
-  let reference_inputs = standard_ref_inputs(proposer_agent)
-  let outputs =
-    [proposal_output(datum), activity_output(proposer_did, 1, current_slot)]
-  let mint =
-    proposal_token_mint(own_ref, 1)
-      |> assets.merge(activity_token_mint(proposer_did, 1))
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_submit_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    current_slot,
-    reference_inputs,
-    [],
-    outputs,
-    signatories,
-    mint,
-    own_ref,
-    validity_range_from(current_slot),
+    },
   )
 }
 
 // ============================================================================
-// §5.2 WithdrawProposal Tests
+// Finalisations: WithdrawProposal, ExpireProposal, AdoptProposal,
+// RejectProposal, ExpireStaleProposal
 // ============================================================================
 
-test withdraw_proposal_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-
-  // Inputs: proposal UTXO + activity UTXO
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-
-  // Outputs: stake return + activity UTXO (count decremented)
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-
-  // Burn the proposal token
-  let mint = proposal_token_mint(own_ref, -1)
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_withdraw_proposal(
-    config,
-    refs,
+/// The finalisation of the default proposal with `action`, the reference
+/// inputs `refs_in`, the outputs of finalisation_outputs, the signers
+/// `signatories` and a range from `lo`.
+fn finalise(
+  action: Data,
+  datum: ProposalDatum,
+  refs_in: List<Input>,
+  signatories: List<ByteArray>,
+  lo: Int,
+) -> Transaction {
+  finalisation_tx(
+    action,
     datum,
-    inputs,
-    outputs,
+    refs_in,
+    finalisation_outputs(datum),
     signatories,
-    mint,
+    validity_range_from(lo),
   )
+}
+
+// §5.2 WithdrawProposal
+
+fn withdraw(signatories: List<ByteArray>) -> Bool {
+  let datum = default_proposal_datum()
+  let action: Data = WithdrawProposal
+  proposal_validation.validate_withdraw_proposal(
+    test_cross_refs(),
+    datum,
+    proposal_utxo_ref(),
+    finalise(action, datum, [], signatories, submit_lo),
+  )
+}
+
+test withdraw_proposal_valid() {
+  withdraw([proposer_key_hash])
 }
 
 test withdraw_proposal_wrong_signer() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
+  withdraw([critic_key_hash])
+}
+
+// §5.6 ExpireProposal
+
+fn expire(current_slot: Int) -> Bool {
   let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-  // Wrong signer
-  let signatories = [critic_key_hash]
-
-  proposal_validation.validate_withdraw_proposal(
-    config,
-    refs,
+  let action: Data = ExpireProposal
+  proposal_validation.validate_expire_proposal(
+    test_cross_refs(),
     datum,
-    inputs,
-    outputs,
-    signatories,
-    mint,
+    current_slot,
+    proposal_utxo_ref(),
+    finalise(action, datum, [], [], current_slot),
   )
 }
 
-// ============================================================================
-// §5.6 ExpireProposal Tests
-// ============================================================================
-
 test expire_proposal_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-
   // Current slot past submitted_at + review_window
-  let current_slot = datum.submitted_at + datum.review_window + 1
-
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-
-  proposal_validation.validate_expire_proposal(
-    config,
-    refs,
-    datum,
-    current_slot,
-    inputs,
-    outputs,
-    mint,
-  )
+  let datum = default_proposal_datum()
+  expire(datum.submitted_at + datum.review_window + 1)
 }
 
 test expire_proposal_too_early() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-
   // Current slot BEFORE window expiry
-  let current_slot = datum.submitted_at + datum.review_window - 1_000
-
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-
-  proposal_validation.validate_expire_proposal(
-    config,
-    refs,
-    datum,
-    current_slot,
-    inputs,
-    outputs,
-    mint,
-  )
+  let datum = default_proposal_datum()
+  expire(datum.submitted_at + datum.review_window - 1_000)
 }
 
-// ============================================================================
-// §5.4 AdoptProposal Tests
-// ============================================================================
+// §5.4 AdoptProposal
 
-test adopt_proposal_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
+fn adopt(reward_amount: Int, signatories: List<ByteArray>) -> Bool {
   let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
   let reasoning_hash = blake2b_256("adoption reasoning")
-  let reward_amount = 100_000_000
-
-  // 100 AP3X
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-
-  // Outputs: proposer reward + activity decremented
-  // No critics incorporated → proposer gets 90% (reward - protocol fee)
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-
-  let mint = proposal_token_mint(own_ref, -1)
-  // Oracle must sign
-  let signatories = [oracle_key_hash]
-
+  let action: Data = AdoptProposal { reasoning_hash, reward_amount }
   proposal_validation.validate_adopt_proposal(
-    config,
-    refs,
-    gov_params,
+    test_config(),
+    test_cross_refs(),
+    params.default_governance_params(),
     datum,
     reasoning_hash,
     reward_amount,
-    reference_inputs,
-    inputs,
-    outputs,
-    signatories,
-    mint,
+    proposal_utxo_ref(),
+    finalise(
+      action,
+      datum,
+      oracle_ref_inputs(proposer_agent),
+      signatories,
+      submit_lo,
+    ),
   )
+}
+
+test adopt_proposal_valid() {
+  // 100 AP3X, oracle signs
+  adopt(100_000_000, [oracle_key_hash])
 }
 
 test adopt_proposal_no_oracle_sig() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let reasoning_hash = blake2b_256("adoption reasoning")
-  let reward_amount = 100_000_000
-
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
   // No oracle signature — regular proposer signed instead
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_adopt_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    reasoning_hash,
-    reward_amount,
-    reference_inputs,
-    inputs,
-    outputs,
-    signatories,
-    mint,
-  )
+  adopt(100_000_000, [proposer_key_hash])
 }
 
 test adopt_proposal_reward_too_low() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let reasoning_hash = blake2b_256("adoption reasoning")
   // Below min_adoption_reward (50_000_000)
-  let reward_amount = 1_000_000
-
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-  let signatories = [oracle_key_hash]
-
-  proposal_validation.validate_adopt_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    reasoning_hash,
-    reward_amount,
-    reference_inputs,
-    inputs,
-    outputs,
-    signatories,
-    mint,
-  )
+  adopt(1_000_000, [oracle_key_hash])
 }
 
 test adopt_proposal_reward_too_high() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let reasoning_hash = blake2b_256("adoption reasoning")
   // Above max_adoption_reward (500_000_000)
-  let reward_amount = 999_000_000
+  adopt(999_000_000, [oracle_key_hash])
+}
 
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-  let signatories = [oracle_key_hash]
+// §5.5 RejectProposal
 
-  proposal_validation.validate_adopt_proposal(
-    config,
-    refs,
-    gov_params,
+fn reject(signatories: List<ByteArray>) -> Bool {
+  let datum = default_proposal_datum()
+  let reasoning_hash = blake2b_256("rejection reasoning")
+  let action: Data = RejectProposal { reasoning_hash }
+  proposal_validation.validate_reject_proposal(
+    test_config(),
+    test_cross_refs(),
     datum,
     reasoning_hash,
-    reward_amount,
-    reference_inputs,
-    inputs,
-    outputs,
-    signatories,
-    mint,
+    proposal_utxo_ref(),
+    finalise(
+      action,
+      datum,
+      oracle_ref_inputs(proposer_agent),
+      signatories,
+      submit_lo,
+    ),
   )
 }
 
-// ============================================================================
-// §5.5 RejectProposal Tests
-// ============================================================================
-
 test reject_proposal_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let reasoning_hash = blake2b_256("rejection reasoning")
-
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-  let signatories = [oracle_key_hash]
-
-  proposal_validation.validate_reject_proposal(
-    config,
-    refs,
-    datum,
-    reasoning_hash,
-    reference_inputs,
-    inputs,
-    outputs,
-    signatories,
-    mint,
-  )
+  reject([oracle_key_hash])
 }
 
 test reject_proposal_no_oracle_sig() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-  let reasoning_hash = blake2b_256("rejection reasoning")
-
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
   // No oracle sig
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_reject_proposal(
-    config,
-    refs,
-    datum,
-    reasoning_hash,
-    reference_inputs,
-    inputs,
-    outputs,
-    signatories,
-    mint,
-  )
+  reject([proposer_key_hash])
 }
 
-// ============================================================================
-// §5.6c ExtendReview Tests
-// ============================================================================
+// §5.6b ExpireStaleProposal
 
-test extend_review_valid() {
-  let config = test_config()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let additional_slots = 100_000_000
-
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-
-  // Continuing output with updated review_window
-  let updated_datum =
-    ProposalDatum {
-      ..datum,
-      review_window: datum.review_window + additional_slots,
-    }
-  let outputs = [proposal_output(updated_datum)]
-  let signatories = [oracle_key_hash]
-
-  proposal_validation.validate_extend_review(
-    config,
-    gov_params,
+fn expire_stale(datum: ProposalDatum) -> Bool {
+  let action: Data = ExpireStaleProposal
+  proposal_validation.validate_expire_stale_proposal(
+    test_config(),
+    test_cross_refs(),
     datum,
-    additional_slots,
-    reference_inputs,
-    outputs,
-    signatories,
+    proposal_utxo_ref(),
+    // Reference inputs must include ProtocolParams at protocol_params_hash
+    finalise(
+      action,
+      datum,
+      [cross_refs_ref_input(), protocol_params_ref_input()],
+      [],
+      submit_lo,
+    ),
   )
 }
-
-test extend_review_exceeds_max() fail {
-  let config = test_config()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  // Push total past max_review_window (2_419_200_000)
-  let additional_slots = 9_999_999_999
-
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-
-  let updated_datum =
-    ProposalDatum {
-      ..datum,
-      review_window: datum.review_window + additional_slots,
-    }
-  let outputs = [proposal_output(updated_datum)]
-  let signatories = [oracle_key_hash]
-
-  proposal_validation.validate_extend_review(
-    config,
-    gov_params,
-    datum,
-    additional_slots,
-    reference_inputs,
-    outputs,
-    signatories,
-  )
-}
-
-test extend_review_no_oracle_sig() fail {
-  let config = test_config()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let additional_slots = 100_000_000
-
-  let reference_inputs = oracle_ref_inputs(proposer_agent)
-
-  let updated_datum =
-    ProposalDatum {
-      ..datum,
-      review_window: datum.review_window + additional_slots,
-    }
-  let outputs = [proposal_output(updated_datum)]
-  // No oracle signature
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_extend_review(
-    config,
-    gov_params,
-    datum,
-    additional_slots,
-    reference_inputs,
-    outputs,
-    signatories,
-  )
-}
-
-// ============================================================================
-// §5.3 AmendProposal Tests
-// ============================================================================
-
-test amend_proposal_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let datum = default_proposal_datum()
-  let new_hash = blake2b_256("amended proposal content v2")
-  let new_uri = "ipfs://QmAmendedProposal"
-
-  // No incorporated critiques for simplicity
-  let incorporated_refs = []
-
-  // Continuing output with Amended state
-  let amended_datum =
-    ProposalDatum {
-      ..datum,
-      state: Amended { previous_hash: datum.proposal_hash },
-      proposal_hash: new_hash,
-      storage_uri: new_uri,
-      amendment_count: 1,
-    }
-  let outputs = [proposal_output(amended_datum)]
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_amend_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    new_hash,
-    new_uri,
-    incorporated_refs,
-    standard_ref_inputs(proposer_agent),
-    outputs,
-    signatories,
-    validity_range_from(1_500_000_000),
-  )
-}
-
-test amend_proposal_max_amendments() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  // Already at max amendments (5)
-  let datum = ProposalDatum { ..default_proposal_datum(), amendment_count: 5 }
-  let new_hash = blake2b_256("amended proposal content v7")
-  let new_uri = "ipfs://QmAmended7"
-  let incorporated_refs = []
-
-  let amended_datum =
-    ProposalDatum {
-      ..datum,
-      state: Amended { previous_hash: datum.proposal_hash },
-      proposal_hash: new_hash,
-      storage_uri: new_uri,
-      amendment_count: 6,
-    }
-  let outputs = [proposal_output(amended_datum)]
-  let signatories = [proposer_key_hash]
-
-  proposal_validation.validate_amend_proposal(
-    config,
-    refs,
-    gov_params,
-    datum,
-    new_hash,
-    new_uri,
-    incorporated_refs,
-    standard_ref_inputs(proposer_agent),
-    outputs,
-    signatories,
-    validity_range_from(1_500_000_000),
-  )
-}
-
-// ============================================================================
-// §5.6b ExpireStaleProposal Tests
-// ============================================================================
 
 test expire_stale_proposal_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let datum =
+  expire_stale(
     ProposalDatum {
       ..default_proposal_datum(),
       proposal_type: ParameterChange {
@@ -909,63 +319,111 @@ test expire_stale_proposal_valid() {
         current_value: 50_000_000,
         proposed_value: 25_000_000,
       },
-    }
-  let own_ref = proposal_own_ref()
-
-  // Reference inputs must include ProtocolParams at protocol_params_hash
-  let reference_inputs = [cross_refs_ref_input(), protocol_params_ref_input()]
-
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-
-  proposal_validation.validate_expire_stale_proposal(
-    config,
-    refs,
-    datum,
-    reference_inputs,
-    inputs,
-    outputs,
-    mint,
+    },
   )
 }
 
 test expire_stale_proposal_not_param_change() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
   // GeneralSuggestion — not a ParameterChange, should fail
+  expire_stale(default_proposal_datum())
+}
+
+// ============================================================================
+// §5.6c ExtendReview Tests
+// ============================================================================
+
+fn extend(additional_slots: Int, signatories: List<ByteArray>) -> Bool {
   let datum = default_proposal_datum()
-  let own_ref = proposal_own_ref()
-
-  let reference_inputs = [cross_refs_ref_input(), protocol_params_ref_input()]
-  let inputs =
-    [
-      proposal_input(datum, own_ref),
-      activity_input(proposer_did, 1, 1_000_000_000),
-    ]
-  let outputs =
-    [
-      payment_output(proposer_cred(), datum.stake_amount),
-      activity_output(proposer_did, 0, 1_000_000_000),
-    ]
-  let mint = proposal_token_mint(own_ref, -1)
-
-  proposal_validation.validate_expire_stale_proposal(
-    config,
-    refs,
+  // Continuing output with updated review_window
+  let updated_datum =
+    ProposalDatum {
+      ..datum,
+      review_window: datum.review_window + additional_slots,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [proposal_input(datum, proposal_own_ref())],
+      reference_inputs: oracle_ref_inputs(proposer_agent),
+      outputs: [proposal_output(updated_datum)],
+      extra_signatories: signatories,
+      validity_range: validity_range_from(submit_lo),
+    }
+  proposal_validation.validate_extend_review(
+    test_config(),
+    test_cross_refs(),
+    params.default_governance_params(),
     datum,
-    reference_inputs,
-    inputs,
-    outputs,
-    mint,
+    additional_slots,
+    proposal_utxo_ref(),
+    tx,
+  )
+}
+
+test extend_review_valid() {
+  extend(100_000_000, [oracle_key_hash])
+}
+
+test extend_review_exceeds_max() fail {
+  // Push total past max_review_window (2_419_200_000)
+  extend(9_999_999_999, [oracle_key_hash])
+}
+
+test extend_review_no_oracle_sig() fail {
+  // No oracle signature
+  extend(100_000_000, [proposer_key_hash])
+}
+
+// ============================================================================
+// §5.3 AmendProposal Tests
+// ============================================================================
+
+fn amend(datum: ProposalDatum, new_hash: ByteArray, new_uri: ByteArray) -> Bool {
+  // No incorporated critiques for simplicity
+  let amended_datum =
+    ProposalDatum {
+      ..datum,
+      state: Amended { previous_hash: datum.proposal_hash },
+      proposal_hash: new_hash,
+      storage_uri: new_uri,
+      amendment_count: datum.amendment_count + 1,
+    }
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [proposal_input(datum, proposal_own_ref())],
+      reference_inputs: standard_ref_inputs(proposer_agent),
+      outputs: [proposal_output(amended_datum)],
+      extra_signatories: [proposer_key_hash],
+      validity_range: validity_range_from(1_500_000_000),
+    }
+  proposal_validation.validate_amend_proposal(
+    test_config(),
+    test_cross_refs(),
+    params.default_governance_params(),
+    datum,
+    new_hash,
+    new_uri,
+    [],
+    proposal_utxo_ref(),
+    tx,
+  )
+}
+
+test amend_proposal_valid() {
+  amend(
+    default_proposal_datum(),
+    blake2b_256("amended proposal content v2"),
+    "ipfs://QmAmendedProposal",
+  )
+}
+
+test amend_proposal_max_amendments() fail {
+  // Already at max amendments (5)
+  amend(
+    ProposalDatum { ..default_proposal_datum(), amendment_count: 5 },
+    blake2b_256("amended proposal content v7"),
+    "ipfs://QmAmended7",
   )
 }
 
@@ -973,205 +431,108 @@ test expire_stale_proposal_not_param_change() fail {
 // §5.7 SubmitCritique Tests
 // ============================================================================
 
-test submit_critique_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let proposal_datum = default_proposal_datum()
+/// The lower bound of the critique and endorsement submissions.
+const critique_lo: Int = 1_500_000_000
 
-  let critique_datum =
-    CritiqueDatum {
-      critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique content"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
+fn critique_by(did: ByteArray, critique_type: types.CritiqueType) -> CritiqueDatum {
+  CritiqueDatum {
+    critic_did: did,
+    critic_credential: if did == proposer_did {
+      proposer_cred()
+    } else {
+      critic_cred()
+    },
+    proposal_ref: proposal_own_ref(),
+    critique_hash: blake2b_256("critique content"),
+    storage_uri: "ipfs://QmCritique",
+    critique_type,
+    stake_amount: 5_000_000,
+    submitted_at: critique_lo,
+    incorporated: False,
+  }
+}
+
+/// A critique submission of `datum` (the seed holds the same datum), signed
+/// by `signer`, with the identity records `records`, the proposer's record
+/// and the open default proposal as reference inputs.
+fn submit_critique(
+  datum: CritiqueDatum,
+  records: List<Input>,
+  signer: ByteArray,
+) -> Bool {
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [critique_seed_input(critique_own_ref(), datum)],
+      reference_inputs: [
+        cross_refs_ref_input(),
+        params_ref_input(),
+        proposal_ref_input(default_proposal_datum()),
+        ..records
+      ],
+      outputs: [critique_output(critique_own_ref(), datum)],
+      extra_signatories: [signer],
+      validity_range: validity_range_from(critique_lo),
     }
-
-  // Reference inputs: cross_refs, params, critic's DID, and the proposal
-  let reference_inputs =
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      identity_ref_input(critic_agent),
-      proposal_ref_input(proposal_datum),
-    ]
-
-  let signatories = [critic_key_hash]
-
   critique_validation.validate_submit_critique(
-    config,
-    refs,
-    gov_params,
-    critique_datum,
-    reference_inputs,
-    signatories,
-    validity_range_from(1_500_000_000),
+    test_config(),
+    test_cross_refs(),
+    params.default_governance_params(),
+    datum,
+    critique_own_ref(),
+    tx,
+  )
+}
+
+/// The records of the critic and of the proposer.
+fn both_records() -> List<Input> {
+  [identity_ref_input(critic_agent), identity_ref_input(proposer_agent)]
+}
+
+test submit_critique_valid() {
+  submit_critique(
+    critique_by(critic_did, Supportive),
+    both_records(),
+    critic_key_hash,
   )
 }
 
 test submit_critique_self_critique_supportive() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let proposal_datum = default_proposal_datum()
-
   // Critic DID == Proposer DID with Supportive type — should fail
-  let critique_datum =
-    CritiqueDatum {
-      critic_did: proposer_did,
-      critic_credential: proposer_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("self critique"),
-      storage_uri: "ipfs://QmSelfCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
-    }
-
-  let reference_inputs =
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      identity_ref_input(proposer_agent),
-      proposal_ref_input(proposal_datum),
-    ]
-  let signatories = [proposer_key_hash]
-
-  critique_validation.validate_submit_critique(
-    config,
-    refs,
-    gov_params,
-    critique_datum,
-    reference_inputs,
-    signatories,
-    validity_range_from(1_500_000_000),
+  submit_critique(
+    critique_by(proposer_did, Supportive),
+    [identity_ref_input(proposer_agent)],
+    proposer_key_hash,
   )
 }
 
 test submit_critique_self_amendment_allowed() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let proposal_datum = default_proposal_datum()
-
   // Self-critique with Amendment type — should be allowed
-  let critique_datum =
-    CritiqueDatum {
-      critic_did: proposer_did,
-      critic_credential: proposer_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("self amendment"),
-      storage_uri: "ipfs://QmSelfAmendment",
-      critique_type: types.Amendment {
-        suggested_change_hash: blake2b_256("improvement"),
-      },
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
-    }
-
-  let reference_inputs =
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      identity_ref_input(proposer_agent),
-      proposal_ref_input(proposal_datum),
-    ]
-  let signatories = [proposer_key_hash]
-
-  critique_validation.validate_submit_critique(
-    config,
-    refs,
-    gov_params,
-    critique_datum,
-    reference_inputs,
-    signatories,
-    validity_range_from(1_500_000_000),
+  submit_critique(
+    critique_by(
+      proposer_did,
+      types.Amendment { suggested_change_hash: blake2b_256("improvement") },
+    ),
+    [identity_ref_input(proposer_agent)],
+    proposer_key_hash,
   )
 }
 
 test submit_critique_missing_did() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let proposal_datum = default_proposal_datum()
-
-  let critique_datum =
-    CritiqueDatum {
-      critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
-    }
-
   // No identity record of the critic
-  let reference_inputs =
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      proposal_ref_input(proposal_datum),
-    ]
-  let signatories = [critic_key_hash]
-
-  critique_validation.validate_submit_critique(
-    config,
-    refs,
-    gov_params,
-    critique_datum,
-    reference_inputs,
-    signatories,
-    validity_range_from(1_500_000_000),
+  submit_critique(
+    critique_by(critic_did, Supportive),
+    [identity_ref_input(proposer_agent)],
+    critic_key_hash,
   )
 }
 
 test submit_critique_insufficient_stake() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let proposal_datum = default_proposal_datum()
-
-  let critique_datum =
-    CritiqueDatum {
-      critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      // Below min_critique_stake (5_000_000)
-      stake_amount: 1_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
-    }
-
-  let reference_inputs =
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      identity_ref_input(critic_agent),
-      proposal_ref_input(proposal_datum),
-    ]
-  let signatories = [critic_key_hash]
-
-  critique_validation.validate_submit_critique(
-    config,
-    refs,
-    gov_params,
-    critique_datum,
-    reference_inputs,
-    signatories,
-    validity_range_from(1_500_000_000),
+  // Below min_critique_stake (5_000_000)
+  submit_critique(
+    CritiqueDatum { ..critique_by(critic_did, Supportive), stake_amount: 1_000 },
+    both_records(),
+    critic_key_hash,
   )
 }
 
@@ -1179,165 +540,126 @@ test submit_critique_insufficient_stake() fail {
 // §5.8 WithdrawCritique Tests
 // ============================================================================
 
-test withdraw_critique_valid() {
-  let refs = test_cross_refs()
-  let proposal_datum = default_proposal_datum()
-
+fn withdraw_critique(incorporated: Bool, signer: ByteArray) -> Bool {
   let critique_datum =
-    CritiqueDatum {
-      critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
-    }
-
+    CritiqueDatum { ..critique_by(critic_did, Supportive), incorporated }
   // Need proposal as reference input to check it's still active
-  let reference_inputs = [proposal_ref_input(proposal_datum)]
-  let signatories = [critic_key_hash]
-
   critique_validation.validate_withdraw_critique(
     critique_datum,
-    reference_inputs,
-    refs,
-    signatories,
+    [proposal_ref_input(default_proposal_datum())],
+    test_cross_refs(),
+    [signer],
   )
+}
+
+test withdraw_critique_valid() {
+  withdraw_critique(False, critic_key_hash)
 }
 
 test withdraw_critique_incorporated() fail {
-  let refs = test_cross_refs()
-  let proposal_datum = default_proposal_datum()
-
   // Already incorporated — can't withdraw
-  let critique_datum =
-    CritiqueDatum {
-      critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: True,
-    }
-
-  let reference_inputs = [proposal_ref_input(proposal_datum)]
-  let signatories = [critic_key_hash]
-
-  critique_validation.validate_withdraw_critique(
-    critique_datum,
-    reference_inputs,
-    refs,
-    signatories,
-  )
+  withdraw_critique(True, critic_key_hash)
 }
 
 test withdraw_critique_wrong_signer() fail {
-  let refs = test_cross_refs()
-  let proposal_datum = default_proposal_datum()
-
-  let critique_datum =
-    CritiqueDatum {
-      critic_did,
-      critic_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      critique_hash: blake2b_256("critique"),
-      storage_uri: "ipfs://QmCritique",
-      critique_type: Supportive,
-      stake_amount: 5_000_000,
-      submitted_at: 1_500_000_000,
-      incorporated: False,
-    }
-
-  let reference_inputs = [proposal_ref_input(proposal_datum)]
   // Wrong signer
-  let signatories = [proposer_key_hash]
-
-  critique_validation.validate_withdraw_critique(
-    critique_datum,
-    reference_inputs,
-    refs,
-    signatories,
-  )
+  withdraw_critique(False, proposer_key_hash)
 }
 
 // ============================================================================
 // §5.9 SubmitEndorsement Tests
 // ============================================================================
 
-test submit_endorsement_valid() {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let proposal_datum = default_proposal_datum()
+fn endorsement_by(did: ByteArray) -> GovernanceEndorsementDatum {
+  GovernanceEndorsementDatum {
+    endorser_did: did,
+    endorser_credential: if did == proposer_did {
+      proposer_cred()
+    } else {
+      critic_cred()
+    },
+    proposal_ref: proposal_own_ref(),
+    stake_amount: 5_000_000,
+    created_at: critique_lo,
+  }
+}
 
-  let endorsement_datum =
-    GovernanceEndorsementDatum {
-      endorser_did: critic_did,
-      endorser_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      stake_amount: 5_000_000,
-      created_at: 1_500_000_000,
+/// An endorsement submission of `datum`, signed by `signer`, with the
+/// identity records `records` and the open default proposal.
+fn submit_endorsement(
+  datum: GovernanceEndorsementDatum,
+  records: List<Input>,
+  signer: ByteArray,
+) -> Bool {
+  let seed =
+    test_helpers.make_ref(
+      #"3333333333333333333333333333333333333333333333333333333333333333",
+      0,
+    )
+  let address =
+    Address {
+      payment_credential: Script(test_helpers.endorsement_validator_hash),
+      stake_credential: None,
     }
-
-  let reference_inputs =
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      identity_ref_input(critic_agent),
-      proposal_ref_input(proposal_datum),
-    ]
-  let signatories = [critic_key_hash]
-
+  let tx =
+    Transaction {
+      ..transaction.placeholder,
+      inputs: [
+        Input {
+          output_reference: seed,
+          output: Output {
+            address,
+            value: assets.from_lovelace(7_000_000),
+            datum: InlineDatum(datum),
+            reference_script: None,
+          },
+        },
+      ],
+      reference_inputs: [
+        cross_refs_ref_input(),
+        params_ref_input(),
+        proposal_ref_input(default_proposal_datum()),
+        ..records
+      ],
+      outputs: [
+        Output {
+          address,
+          value: assets.from_lovelace(7_000_000)
+            |> assets.add(
+                test_helpers.critique_mint_hash,
+                utils.endorsement_token_name(
+                  datum.endorser_did,
+                  datum.proposal_ref,
+                ),
+                1,
+              ),
+          datum: InlineDatum(datum),
+          reference_script: None,
+        },
+      ],
+      extra_signatories: [signer],
+      validity_range: validity_range_from(critique_lo),
+    }
   critique_validation.validate_submit_endorsement(
-    config,
-    refs,
-    gov_params,
-    endorsement_datum,
-    reference_inputs,
-    signatories,
-    validity_range_from(1_500_000_000),
+    test_config(),
+    test_cross_refs(),
+    params.default_governance_params(),
+    datum,
+    seed,
+    tx,
   )
 }
 
+test submit_endorsement_valid() {
+  submit_endorsement(endorsement_by(critic_did), both_records(), critic_key_hash)
+}
+
 test submit_endorsement_self_endorse() fail {
-  let config = test_config()
-  let refs = test_cross_refs()
-  let gov_params = params.default_governance_params()
-  let proposal_datum = default_proposal_datum()
-
   // Endorser DID == Proposer DID — not allowed
-  let endorsement_datum =
-    GovernanceEndorsementDatum {
-      endorser_did: proposer_did,
-      endorser_credential: proposer_cred(),
-      proposal_ref: proposal_own_ref(),
-      stake_amount: 5_000_000,
-      created_at: 1_500_000_000,
-    }
-
-  let reference_inputs =
-    [
-      cross_refs_ref_input(),
-      params_ref_input(),
-      identity_ref_input(proposer_agent),
-      proposal_ref_input(proposal_datum),
-    ]
-  let signatories = [proposer_key_hash]
-
-  critique_validation.validate_submit_endorsement(
-    config,
-    refs,
-    gov_params,
-    endorsement_datum,
-    reference_inputs,
-    signatories,
-    validity_range_from(1_500_000_000),
+  submit_endorsement(
+    endorsement_by(proposer_did),
+    [identity_ref_input(proposer_agent)],
+    proposer_key_hash,
   )
 }
 
@@ -1346,36 +668,16 @@ test submit_endorsement_self_endorse() fail {
 // ============================================================================
 
 test withdraw_endorsement_valid() {
-  let endorsement_datum =
-    GovernanceEndorsementDatum {
-      endorser_did: critic_did,
-      endorser_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      stake_amount: 5_000_000,
-      created_at: 1_500_000_000,
-    }
-  let signatories = [critic_key_hash]
-
   critique_validation.validate_withdraw_endorsement(
-    endorsement_datum,
-    signatories,
+    endorsement_by(critic_did),
+    [critic_key_hash],
   )
 }
 
 test withdraw_endorsement_wrong_signer() fail {
-  let endorsement_datum =
-    GovernanceEndorsementDatum {
-      endorser_did: critic_did,
-      endorser_credential: critic_cred(),
-      proposal_ref: proposal_own_ref(),
-      stake_amount: 5_000_000,
-      created_at: 1_500_000_000,
-    }
   // Wrong signer
-  let signatories = [proposer_key_hash]
-
   critique_validation.validate_withdraw_endorsement(
-    endorsement_datum,
-    signatories,
+    endorsement_by(critic_did),
+    [proposer_key_hash],
   )
 }
