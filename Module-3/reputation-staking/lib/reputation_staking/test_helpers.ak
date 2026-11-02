@@ -9,6 +9,8 @@ use cardano/transaction.{
 }
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
+use reputation_staking/types.{StakeDatum}
+use reputation_staking/utils.{derive_stake_token_name}
 use shared/identity_fixtures
 use shared/record_auth
 use vector_identity/types as identity_types
@@ -74,6 +76,22 @@ pub const test_owner_key_hash_2: ByteArray =
 
 pub const test_tx_hash: ByteArray =
   #"0000000000000000000000000000000000000000000000000000000000000000"
+
+/// The stake_id of the test stakes: the output reference of the seed input
+/// that their CreateStake spent. Test endorsements back this stake
+/// (target_stake).
+pub const test_stake_id: OutputReference =
+  OutputReference {
+    transaction_id: #"5eed000000000000000000000000000000000000000000000000000000000001",
+    output_index: 3,
+  }
+
+/// The stake_id of another stake of the same agent.
+pub const test_other_stake_id: OutputReference =
+  OutputReference {
+    transaction_id: #"5eed000000000000000000000000000000000000000000000000000000000002",
+    output_index: 0,
+  }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Config and params builders
@@ -235,6 +253,55 @@ pub fn agent_signers() -> List<ByteArray> {
 /// test_agent_did_2.
 pub fn agent_2_signers() -> List<ByteArray> {
   [test_owner_key_hash_2, test_controller_hash(2)]
+}
+
+/// The identity records of test_agent_did (controller 1) and
+/// test_agent_did_2 (controller 2) as reference inputs. A payout to a party
+/// of a position goes to the party's payee, which needs the party's record
+/// (`utils.paid`).
+pub fn party_record_inputs() -> List<Input> {
+  [
+    make_identity_ref_input(test_agent_did, 1),
+    make_identity_ref_input(test_agent_did_2, 2),
+  ]
+}
+
+/// The stake of `agent_did` with `stake_id` and the challenge locks `locks`
+/// (20 AP3X, the test capabilities, owner key 2) at the exact reputation
+/// address with the stake token of the agent, as an input with output index
+/// 60. As a reference input it is the bound stake of the endorsements with
+/// target_stake = `stake_id`.
+pub fn stake_ref_input(
+  agent_did: ByteArray,
+  stake_id: OutputReference,
+  locks: List<ByteArray>,
+) -> Input {
+  let datum =
+    StakeDatum {
+      agent_did,
+      owner_credential: VerificationKey(test_owner_key_hash_2),
+      stake_amount: 20_000_000,
+      staked_capabilities: test_capabilities,
+      last_updated: 0,
+      history_points: 0,
+      challenge_locks: locks,
+      stake_id,
+    }
+  make_input(
+    test_tx_hash,
+    60,
+    make_output(
+      script_address(test_reputation_policy_id),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 20_000_000)
+        |> assets.add(
+            test_reputation_policy_id,
+            derive_stake_token_name(agent_did),
+            1,
+          ),
+      datum,
+    ),
+  )
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

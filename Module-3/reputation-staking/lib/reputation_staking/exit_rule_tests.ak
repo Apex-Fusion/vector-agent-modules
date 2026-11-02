@@ -16,7 +16,7 @@
 use aiken/interval
 use cardano/address.{Credential, VerificationKey}
 use cardano/assets
-use cardano/transaction.{Input, Output, Transaction}
+use cardano/transaction.{Input, Output, OutputReference, Transaction}
 use reputation_staking/challenge_validation.{validate_mint_challenge}
 use reputation_staking/endorsement_validation.{
   validate_mint_endorsement, validate_withdraw_endorsement,
@@ -26,10 +26,10 @@ use reputation_staking/stake_validation.{
 }
 use reputation_staking/test_helpers.{
   base_tx, key_address, make_input, make_output, make_output_no_datum,
-  script_address, test_agent_did, test_agent_did_2, test_ap3x_asset_name,
-  test_ap3x_policy_id, test_capabilities, test_config,
+  script_address, stake_ref_input, test_agent_did, test_agent_did_2,
+  test_ap3x_asset_name, test_ap3x_policy_id, test_capabilities, test_config,
   test_endorsement_policy_id, test_owner_key_hash_2, test_params, test_refs,
-  test_reputation_policy_id, test_tx_hash,
+  test_reputation_policy_id, test_stake_id, test_tx_hash,
 }
 use reputation_staking/types.{
   Challenge, EndorsementDatum, Open, ReputationChallengeDatum, StakeDatum,
@@ -110,6 +110,7 @@ fn decrease(
       last_updated: t0 - 86_400_000,
       history_points: 0,
       challenge_locks: [],
+      stake_id: test_stake_id,
     }
   let datum =
     StakeDatum { ..input, stake_amount: 15_000_000, last_updated: t0 + 600_000 }
@@ -233,12 +234,16 @@ fn withdraw(
       endorsed_capabilities: ["code_review"],
       created_at: t0 - 172_800_000,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
   validate_withdraw_endorsement(
     Transaction {
       ..base_tx(t0),
       validity_range: range(),
-      reference_inputs: [agent_ref(r)],
+      reference_inputs: [
+        agent_ref(r),
+        stake_ref_input(test_agent_did_2, test_stake_id, []),
+      ],
       outputs: [ap3x_to(payee, 5_000_000)],
       mint: assets.from_asset(
         test_endorsement_policy_id,
@@ -320,6 +325,8 @@ fn create_with_owner(credential: Credential, key: ByteArray) -> Bool {
       last_updated: t0 + 600_000,
       history_points: 0,
       challenge_locks: [],
+      // The seed below
+      stake_id: OutputReference { transaction_id: test_tx_hash, output_index: 9 },
     }
   let output =
     make_output(
@@ -401,6 +408,7 @@ fn target_stake() -> Input {
         last_updated: 500,
         history_points: 0,
         challenge_locks: [],
+        stake_id: test_stake_id,
       },
     ),
   )
@@ -417,6 +425,7 @@ fn endorse_with(credential: Credential, key: ByteArray) -> Bool {
       endorsed_capabilities: ["code_review"],
       created_at: t0,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
   let token = derive_endorsement_token_name(test_agent_did, test_agent_did_2)
   let output =

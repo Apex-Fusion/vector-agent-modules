@@ -90,6 +90,19 @@ signature, target credential, challenger age, exact address) makes the
 matching negative tests fail. The W4-MODFIX scratch copies with the old rule
 of each item made the item's new tests fail (see the W4-MODFIX report).
 
+### W4-MODFIX2 (bound stake, decay payout, payees of permissionless payouts)
+
+| Rule | Where | Tests |
+|---|---|---|
+| CreateStake sets `stake_id` = the output reference of the spent seed; every continuing stake keeps it | `stake_validation.validate_create_stake` (rule 8), the `..input_datum` updates, `decay.stake_continues` | `create_stake_sets_stake_id_to_seed`, `create_stake_with_stake_id_of_other_stake_fails`, `decay_with_changed_stake_id_fails`, `decay_of_whole_stake_with_changed_stake_id_fails` |
+| Bound stake: the reference input at the exact reputation address with the target's stake token and `stake_id == target_stake` (`utils.bound_stake`) | MintEndorsementToken, WithdrawEndorsement, SlashEndorsement | `mint_endorsement_reads_bound_stake`, `mint_endorsement_with_capability_of_other_stake_fails`, `mint_endorsement_without_bound_stake_fails` |
+| WithdrawEndorsement needs the bound stake without challenge locks (replaces the scan of the challenge reference inputs that the spender chose) | `endorsement_validation.validate_withdraw_endorsement` (rule 3) | `withdraw_endorsement_with_unlocked_bound_stake`, `withdraw_endorsement_with_locked_bound_stake_fails`, `withdraw_endorsement_with_locked_bound_stake_and_other_stake_fails`, `withdraw_endorsement_with_other_stake_only_fails`, `withdraw_endorsement_without_bound_stake_fails`, `withdraw_endorsement_with_bound_stake_at_other_address_fails`, `withdraw_endorsement_with_bound_stake_without_token_fails`, `withdraw_endorsement_ignores_challenge_of_other_stake`; handler: `withdraw_endorsement_spend_*` |
+| SlashEndorsement needs the lock of the challenge on the bound stake | `validators/endorsement.ak` `validate_endorsement_slash` | `slash_endorsement_without_lock_on_bound_stake_fails`, `slash_endorsement_with_lock_of_other_challenge_fails`, `slash_endorsement_without_bound_stake_fails` |
+| ClaimDecayRefund always continues the stake (stake_amount 0 when the remainder is below MIN_SELF_STAKE); the owner's payee receives the remainder; no stake token burn | `decay.validate_claim_decay_refund`; `StakeMintAction` has no `BurnStakeToken` | `decay_keeps_stake_with_remaining_amount`, `decay_can_set_last_updated`, `decay_with_changed_capabilities_fails`, `decay_with_changed_history_points_fails`, `decay_of_whole_stake_pays_owner`, `decay_of_whole_stake_without_owner_payout_fails`, `decay_of_whole_stake_underpaying_owner_fails`, `decay_of_whole_stake_after_key_removal_pays_controller`, `decay_of_whole_stake_after_key_removal_paying_removed_key_fails`, `decay_of_whole_stake_without_owner_record_fails`, `decay_of_whole_stake_with_token_burn_fails`, `decay_of_zero_stake_fails`, `burn_stake_token_with_genesis_burn_redeemer_fails`, `burn_stake_token_with_stake_mint_redeemer_fails` |
+| Payee rule for permissionless payouts: the stored credential while the record declares it, else the controller key (`utils.paid`); the record is a reference input with any status | ExpireChallenge, DistributeOutcome (three outcomes), SlashEndorsement (challenger and endorser) | `expire_challenge_*` and `distribute_*` in `payee_tests.ak`; `slash_endorsement_closing_after_endorser_key_removal_*`, `slash_endorsement_after_challenger_key_removal_*`, `slash_endorsement_without_challenger_record_fails`, `slash_endorsement_continuing_without_endorser_record` |
+
+Failing-before evidence: a scratch copy with the old `utils`, `endorsement_validation`, `decay`, `challenge_validation`, `stake_validation` and `validators/endorsement.ak` (and the new types and tests) is in `/tmp/w4modfix2/m3/old/`; `failing-before.txt` there lists the new tests that fail on the old rules.
+
 ## Decisions
 
 1. **Exits (rule D-exit, W4).** DecreaseStake, WithdrawEndorsement and

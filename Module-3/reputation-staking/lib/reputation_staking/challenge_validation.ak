@@ -21,6 +21,13 @@
 /// Every path that closes a challenge (WithdrawChallenge, ExpireChallenge,
 /// DistributeOutcome) also spends the target's StakeUTXO, which removes the
 /// lock (ReleaseChallenge, or SlashStake for CapabilityFalsified).
+///
+/// Payouts: every payout to a party of the challenge goes to the party's
+/// payee (`utils.paid`): the stored credential while the party's identity
+/// record declares it, else the record's controller key. The record is a
+/// reference input (any status). Exits also need the controller's signature
+/// (`utils.exit_paid`); the permissionless payouts (ExpireChallenge,
+/// DistributeOutcome) need no signature.
 
 use aiken/builtin
 use aiken/collection/dict
@@ -39,9 +46,8 @@ use reputation_staking/types.{
   RepChallengeOutcome, ReputationChallengeDatum, Resolved, StakeDatum,
 }
 use reputation_staking/utils.{
-  ap3x_paid_to, derive_challenge_token_name, derive_stake_token_name,
-  exact_address, get_ap3x_amount, has_credential_signed, has_key_signed,
-  treasury_paid,
+  derive_challenge_token_name, derive_stake_token_name, exact_address,
+  get_ap3x_amount, has_credential_signed, has_key_signed, paid, treasury_paid,
 }
 use shared/identity
 use shared/identity.{Window}
@@ -573,8 +579,8 @@ pub fn challenge_timeout(params: ProtocolParams, created_at: Int) -> Int {
 ///      challenge without a response is closed by DefaultJudgment instead.)
 ///   2. The lower bound of the validity range is after challenge_timeout.
 ///   3. The challenge token is burned.
-///   4. The outputs to challenger_credential hold at least stake_amount AP3X
-///      in total.
+///   4. The challenger's payee (`utils.paid`) receives at least stake_amount
+///      AP3X.
 ///   5. The transaction spends the target's StakeUTXO, which removes the
 ///      lock of the challenge (ReleaseChallenge) and keeps all its AP3X. No
 ///      fee is taken.
@@ -614,8 +620,14 @@ pub fn validate_expire_challenge(
     unresolved,
     timed_out,
     token_burned,
-    // Rule 4: Challenger receives the challenge stake
-    ap3x_paid_to(cfg, tx.outputs, challenge_datum.challenger_credential) >= challenge_datum.stake_amount,
+    // Rule 4: the challenger's payee receives the challenge stake
+    paid(
+      cfg,
+      tx,
+      challenge_datum.challenger_did,
+      challenge_datum.challenger_credential,
+      challenge_datum.stake_amount,
+    ),
     // Rule 5: the lock of the challenge goes
     spends_target_stake(tx, refs, challenge_datum.target_did),
   }
@@ -634,22 +646,24 @@ pub fn validate_expire_challenge(
 /// CapabilityFalsified, ReleaseChallenge for the other outcomes). The
 /// locked stake always exists: DecreaseStake, UpdateCapabilities and decay
 /// need a stake without locks. So the challenger's own stake can always be
-/// settled. All payout checks add up the outputs to the payee.
+/// settled. All payout checks add up the outputs to the payee: the stored
+/// credential while the party's record declares it, else the record's
+/// controller key (`utils.paid`; the record is a reference input).
 ///
 /// CapabilityFalsified:
 ///   - Target slashed: self_stake × (1 / num_staked_capabilities)
 ///   - Endorsers slashed: 50% of endorsement stake (SlashEndorsement)
-///   - Challenger receives: the AP3X that the challenge holds + slash -
-///     protocol_fee
+///   - Challenger's payee receives: the AP3X that the challenge holds +
+///     slash - protocol_fee
 ///   - Protocol treasury receives: protocol_fee
 ///
 /// CapabilityVerified:
 ///   - Challenger loses entire stake
-///   - Target receives: challenger_stake - protocol_fee
+///   - Target's payee receives: challenger_stake - protocol_fee
 ///   - Protocol treasury receives: protocol_fee
 ///
 /// Inconclusive:
-///   - Challenger receives: challenger_stake - half of protocol_fee
+///   - Challenger's payee receives: challenger_stake - half of protocol_fee
 ///   - Protocol treasury receives: half of protocol_fee
 ///   - The target's stake keeps its AP3X
 pub fn validate_distribute_outcome(
@@ -703,7 +717,7 @@ pub fn validate_distribute_outcome(
 /// slash = stake_amount / num_staked_capabilities of the target's stake
 /// (SlashStake takes it from the stake), protocol_fee = slash ×
 /// protocol_fee_rate.
-///   - The outputs to challenger_credential hold at least
+///   - The challenger's payee receives at least
 ///     held + slash - protocol_fee AP3X, where held is the AP3X that the
 ///     challenge holds.
 ///   - The treasury receives at least protocol_fee.
@@ -727,7 +741,13 @@ fn validate_falsified_payouts(
   let protocol_fee = target_slash * params.protocol_fee_rate / 10_000
 
   and {
-    ap3x_paid_to(cfg, tx.outputs, challenge_datum.challenger_credential) >= held + target_slash - protocol_fee,
+    paid(
+      cfg,
+      tx,
+      challenge_datum.challenger_did,
+      challenge_datum.challenger_credential,
+      held + target_slash - protocol_fee,
+    ),
     treasury_paid(cfg, tx.outputs, protocol_fee),
   }
 }
@@ -750,8 +770,14 @@ fn validate_verified_payouts(
     challenge_datum.stake_amount * params.protocol_fee_rate / 10_000
 
   and {
-    // Target receives challenger's stake minus protocol fee
-    ap3x_paid_to(cfg, tx.outputs, challenge_datum.target_credential) >= challenge_datum.stake_amount - protocol_fee,
+    // Target's payee receives challenger's stake minus protocol fee
+    paid(
+      cfg,
+      tx,
+      challenge_datum.target_did,
+      challenge_datum.target_credential,
+      challenge_datum.stake_amount - protocol_fee,
+    ),
     // Protocol treasury receives fee
     treasury_paid(cfg, tx.outputs, protocol_fee),
   }
@@ -763,8 +789,8 @@ fn validate_verified_payouts(
 /// keeps its AP3X (ReleaseChallenge). So the challenger pays only its half
 /// of the protocol fee, and the target pays nothing:
 /// half_fee = (stake_amount × protocol_fee_rate) / 2.
-///   - The outputs to challenger_credential hold at least
-///     stake_amount - half_fee AP3X.
+///   - The challenger's payee receives at least stake_amount - half_fee
+///     AP3X.
 ///   - The treasury receives at least half_fee.
 /// The payouts add up to stake_amount, which the challenge holds.
 fn validate_inconclusive_payouts(
@@ -778,7 +804,13 @@ fn validate_inconclusive_payouts(
   let half_fee = total_fee / 2
 
   and {
-    ap3x_paid_to(cfg, tx.outputs, challenge_datum.challenger_credential) >= challenge_datum.stake_amount - half_fee,
+    paid(
+      cfg,
+      tx,
+      challenge_datum.challenger_did,
+      challenge_datum.challenger_credential,
+      challenge_datum.stake_amount - half_fee,
+    ),
     treasury_paid(cfg, tx.outputs, half_fee),
   }
 }

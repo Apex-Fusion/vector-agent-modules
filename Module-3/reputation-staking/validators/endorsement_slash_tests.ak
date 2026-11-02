@@ -8,17 +8,24 @@
 /// R4 P-3: a resolved challenge slashes an endorsement at most once. The
 /// continuing endorsement records the challenge token name in slashed_by,
 /// and a slash with a recorded name fails.
+///
+/// The bound stake of the endorsement (target agent 2, stake_id
+/// test_stake_id) is a reference input and holds the lock of the challenge.
+/// The payouts go to the payees of the challenger (agent 1) and of the
+/// endorser (agent 3); their records are reference inputs.
 
 use cardano/address.{VerificationKey}
 use cardano/assets
 use cardano/transaction.{Input, Output, OutputReference, Transaction}
 use endorsement
 use reputation_staking/test_helpers.{
-  base_tx, key_address, make_input, make_output, make_output_no_datum,
-  make_params_ref_input, script_address, test_agent_did, test_agent_did_2,
-  test_ap3x_asset_name, test_ap3x_policy_id, test_config,
+  base_tx, key_address, make_identity_ref_input, make_input, make_output,
+  make_output_no_datum, make_params_ref_input, script_address,
+  stake_ref_input, test_agent_did, test_agent_did_2, test_ap3x_asset_name,
+  test_ap3x_policy_id, test_capabilities, test_config,
   test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
-  test_refs, test_refs_token_policy, test_treasury_script_hash, test_tx_hash,
+  test_refs, test_refs_token_policy, test_stake_id, test_treasury_script_hash,
+  test_tx_hash,
 }
 use reputation_staking/types.{
   CapabilityFalsified, Challenge, Endorsement, EndorsementDatum,
@@ -27,6 +34,9 @@ use reputation_staking/types.{
 use reputation_staking/utils.{
   derive_challenge_token_name, derive_endorsement_token_name,
 }
+use shared/identity_fixtures.{
+  controller_hash, ed_key_hash, record, record_input, with_transaction_key,
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -34,8 +44,15 @@ use reputation_staking/utils.{
 
 const endorser_did: ByteArray = "agent_did_003"
 
-const endorser_key: ByteArray =
-  #"aabb00000000000000000000000000000000000000000000000000000000000c"
+/// The endorser's key: the listed transaction key 3 of the endorser's record.
+fn endorser_key() -> ByteArray {
+  ed_key_hash(3)
+}
+
+/// The record of the endorser (controller 3, listed transaction key 3).
+fn endorser_record_input() -> Input {
+  record_input(endorser_did, with_transaction_key(record(3, test_capabilities), 3))
+}
 
 const other_key: ByteArray =
   #"aabb00000000000000000000000000000000000000000000000000000000000d"
@@ -64,12 +81,13 @@ fn challenge_token() -> ByteArray {
 fn endorsement_datum(stake: Int) -> EndorsementDatum {
   EndorsementDatum {
     endorser_did,
-    endorser_credential: VerificationKey(endorser_key),
+    endorser_credential: VerificationKey(endorser_key()),
     target_did: test_agent_did_2,
     stake_amount: stake,
     endorsed_capabilities: ["code_review"],
     created_at: 1_000,
     slashed_by: [],
+    target_stake: test_stake_id,
   }
 }
 
@@ -150,9 +168,13 @@ fn ap3x_output(address: address.Address, amount: Int) -> Output {
   )
 }
 
-/// SlashEndorsement of the endorsement with `input_datum`.
-fn slash_from(
+/// SlashEndorsement of the endorsement with `input_datum`. The reference
+/// inputs hold the bound stake with `locks` and the identity records
+/// `records`.
+fn slash_tx(
   input_datum: EndorsementDatum,
+  locks: List<ByteArray>,
+  records: List<Input>,
   outputs: List<Output>,
   mint: assets.Value,
 ) -> Bool {
@@ -164,6 +186,8 @@ fn slash_from(
         make_params_ref_input(),
         refs_ref_input(),
         falsified_challenge_ref_input(),
+        stake_ref_input(test_agent_did_2, test_stake_id, locks),
+        ..records
       ],
       outputs,
       mint,
@@ -175,6 +199,31 @@ fn slash_from(
     endorsement_ref(),
     tx,
   )
+}
+
+/// The records of the challenger (agent 1) and of the endorser (agent 3).
+fn party_records() -> List<Input> {
+  [make_identity_ref_input(test_agent_did, 1), endorser_record_input()]
+}
+
+/// SlashEndorsement with the bound stake `locks` and both party records.
+fn slash_with_locks(
+  input_datum: EndorsementDatum,
+  locks: List<ByteArray>,
+  outputs: List<Output>,
+  mint: assets.Value,
+) -> Bool {
+  slash_tx(input_datum, locks, party_records(), outputs, mint)
+}
+
+/// SlashEndorsement of the endorsement with `input_datum`; the challenge
+/// locks the bound stake.
+fn slash_from(
+  input_datum: EndorsementDatum,
+  outputs: List<Output>,
+  mint: assets.Value,
+) -> Bool {
+  slash_with_locks(input_datum, [challenge_token()], outputs, mint)
 }
 
 /// SlashEndorsement of a new endorsement of `stake` AP3X.
@@ -347,7 +396,7 @@ test slash_endorsement_closes_and_returns_remaining() {
   slash(
     stake_close,
     [
-      ap3x_output(key_address(endorser_key), 3_000_000),
+      ap3x_output(key_address(endorser_key()), 3_000_000),
       ap3x_output(key_address(test_owner_key_hash), 2_850_000),
       ap3x_output(script_address(test_treasury_script_hash), 150_000),
     ],
@@ -374,10 +423,160 @@ test slash_endorsement_closing_twice_with_same_challenge_fails() {
   !slash_from(
     slashed_datum(stake_close),
     [
-      ap3x_output(key_address(endorser_key), 3_000_000),
+      ap3x_output(key_address(endorser_key()), 3_000_000),
       ap3x_output(key_address(test_owner_key_hash), 2_850_000),
       ap3x_output(script_address(test_treasury_script_hash), 150_000),
     ],
     endorsement_burn(),
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// The challenge locks the bound stake (W4-MODFIX2 item 1)
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn continuing_outputs() -> List<Output> {
+  [
+    continuing_endorsement(slashed_datum(5_000_000)),
+    ap3x_output(key_address(test_owner_key_hash), 4_750_000),
+    ap3x_output(script_address(test_treasury_script_hash), 250_000),
+  ]
+}
+
+/// The bound stake holds no lock of the challenge: the challenge did not
+/// challenge the stake that this endorsement backs. The old rule did not
+/// read the bound stake.
+test slash_endorsement_without_lock_on_bound_stake_fails() {
+  !slash_with_locks(
+    endorsement_datum(stake_continue),
+    [],
+    continuing_outputs(),
+    assets.zero,
+  )
+}
+
+test slash_endorsement_with_lock_of_other_challenge_fails() {
+  !slash_with_locks(
+    endorsement_datum(stake_continue),
+    [derive_challenge_token_name(endorser_did, test_agent_did_2, "code_review")],
+    continuing_outputs(),
+    assets.zero,
+  )
+}
+
+test slash_endorsement_without_bound_stake_fails() fail {
+  let datum = endorsement_datum(stake_continue)
+  let tx =
+    Transaction {
+      ..base_tx(2_000),
+      inputs: [endorsement_input(datum)],
+      reference_inputs: [
+        make_params_ref_input(),
+        refs_ref_input(),
+        falsified_challenge_ref_input(),
+        ..party_records()
+      ],
+      outputs: continuing_outputs(),
+    }
+  endorsement.endorsement.spend(
+    test_config(),
+    Some(Endorsement(datum)),
+    EndorsementSpend(SlashEndorsement { challenge_ref: challenge_ref() }),
+    endorsement_ref(),
+    tx,
+  )
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Payees (W4-MODFIX2 item 5)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The record of the endorser after the removal of its listed key.
+fn endorser_record_without_key() -> Input {
+  record_input(endorser_did, record(3, test_capabilities))
+}
+
+fn closing_outputs(endorser_payee: ByteArray, challenger_payee: ByteArray) -> List<Output> {
+  [
+    ap3x_output(key_address(endorser_payee), 3_000_000),
+    ap3x_output(key_address(challenger_payee), 2_850_000),
+    ap3x_output(script_address(test_treasury_script_hash), 150_000),
+  ]
+}
+
+/// The endorser's record no longer lists its key: the remaining stake goes
+/// to the record's controller key.
+test slash_endorsement_closing_after_endorser_key_removal_pays_controller() {
+  slash_tx(
+    endorsement_datum(stake_close),
+    [challenge_token()],
+    [make_identity_ref_input(test_agent_did, 1), endorser_record_without_key()],
+    closing_outputs(controller_hash(3), test_owner_key_hash),
+    endorsement_burn(),
+  )
+}
+
+/// The old rule paid the stored endorser key.
+test slash_endorsement_closing_after_endorser_key_removal_paying_removed_key_fails() {
+  !slash_tx(
+    endorsement_datum(stake_close),
+    [challenge_token()],
+    [make_identity_ref_input(test_agent_did, 1), endorser_record_without_key()],
+    closing_outputs(endorser_key(), test_owner_key_hash),
+    endorsement_burn(),
+  )
+}
+
+/// The challenger's record no longer lists its key: the slash share goes to
+/// the challenger's controller key.
+test slash_endorsement_after_challenger_key_removal_pays_controller() {
+  slash_tx(
+    endorsement_datum(stake_continue),
+    [challenge_token()],
+    [
+      record_input(test_agent_did, record(1, test_capabilities)),
+      endorser_record_input(),
+    ],
+    [
+      continuing_endorsement(slashed_datum(5_000_000)),
+      ap3x_output(key_address(controller_hash(1)), 4_750_000),
+      ap3x_output(script_address(test_treasury_script_hash), 250_000),
+    ],
+    assets.zero,
+  )
+}
+
+test slash_endorsement_after_challenger_key_removal_paying_removed_key_fails() {
+  !slash_tx(
+    endorsement_datum(stake_continue),
+    [challenge_token()],
+    [
+      record_input(test_agent_did, record(1, test_capabilities)),
+      endorser_record_input(),
+    ],
+    continuing_outputs(),
+    assets.zero,
+  )
+}
+
+test slash_endorsement_without_challenger_record_fails() fail {
+  slash_tx(
+    endorsement_datum(stake_continue),
+    [challenge_token()],
+    [endorser_record_input()],
+    continuing_outputs(),
+    assets.zero,
+  )
+}
+
+/// A continuing endorsement pays nothing to the endorser, so the endorser's
+/// record is not needed.
+test slash_endorsement_continuing_without_endorser_record() {
+  slash_tx(
+    endorsement_datum(stake_continue),
+    [challenge_token()],
+    [make_identity_ref_input(test_agent_did, 1)],
+    continuing_outputs(),
+    assets.zero,
   )
 }

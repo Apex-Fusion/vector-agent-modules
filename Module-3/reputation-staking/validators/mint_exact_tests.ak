@@ -16,10 +16,11 @@ use reputation_staking/test_helpers.{
   test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_controller_hash, test_endorsement_policy_id, test_oracle_credential,
   test_owner_key_hash, test_owner_key_hash_2, test_refs,
-  test_refs_token_policy, test_reputation_policy_id, test_tx_hash,
+  test_refs_token_policy, test_reputation_policy_id, test_stake_id,
+  test_tx_hash,
 }
 use reputation_staking/types.{
-  BurnChallengeToken, BurnEndorsementToken, BurnGenesisBonus, BurnStakeToken,
+  BurnChallengeToken, BurnEndorsementToken, BurnGenesisBonus,
   Challenge, ChallengeWon, CreateStake, Endorsement, EndorsementDatum,
   GenesisBonus, HistoryBonusDatum, IncreaseStake, MintChallengeToken,
   MintEndorsementToken, MintHistoryBonus, MintStakeToken, Open,
@@ -109,6 +110,7 @@ fn new_stake() -> StakeDatum {
     last_updated: t0 + 600_000,
     history_points: 0,
     challenge_locks: [],
+    stake_id: seed_ref(),
   }
 }
 
@@ -232,24 +234,26 @@ test create_stake_on_existing_stake_fails() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// BurnStakeToken
+// Stake token burns
 // ──────────────────────────────────────────────────────────────────────────────
 
 fn burn_stake_tx(mint: assets.Value) -> Transaction {
-  Transaction { ..base_tx(t0), inputs: [seed_input()], mint }
+  Transaction {
+    ..base_tx(t0),
+    inputs: [seed_input()],
+    reference_inputs: [make_params_ref_input()],
+    mint,
+  }
 }
 
-test burn_stake_token() {
-  mint_rep(BurnStakeToken, burn_stake_tx(rep(stake_token(), -1)))
+/// No mint redeemer burns a stake token: every spend of a stake continues
+/// it (a fully decayed stake continues with stake_amount 0).
+test burn_stake_token_with_genesis_burn_redeemer_fails() {
+  !mint_rep(BurnGenesisBonus, burn_stake_tx(rep(stake_token(), -1)))
 }
 
-test burn_stake_token_with_extra_token_fails() {
-  !mint_rep(
-    BurnStakeToken,
-    burn_stake_tx(
-      assets.merge(rep(stake_token(), -1), rep(other_stake_token(), -1)),
-    ),
-  )
+test burn_stake_token_with_stake_mint_redeemer_fails() {
+  !mint_rep(MintStakeToken, burn_stake_tx(rep(stake_token(), -1)))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -394,6 +398,7 @@ fn target_stake() -> Input {
         last_updated: 500,
         history_points: 0,
         challenge_locks: [],
+        stake_id: test_stake_id,
       },
     ),
   )
@@ -408,6 +413,7 @@ fn endorsement_datum() -> EndorsementDatum {
     endorsed_capabilities: ["code_review"],
     created_at: t0,
     slashed_by: [],
+    target_stake: test_stake_id,
   }
 }
 

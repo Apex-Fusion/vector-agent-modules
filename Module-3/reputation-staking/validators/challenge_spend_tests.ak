@@ -20,7 +20,7 @@ use reputation_staking/test_helpers.{
   test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_controller_hash, test_endorsement_policy_id, test_owner_key_hash,
   test_owner_key_hash_2, test_params, test_refs, test_refs_token_policy,
-  test_reputation_policy_id, test_tx_hash,
+  test_reputation_policy_id, test_stake_id, test_tx_hash,
 }
 use reputation_staking/types.{
   CapabilityFalsified, Challenge, ChallengeSpend, DefaultJudgment,
@@ -139,6 +139,7 @@ fn locked_target_stake() -> Input {
         last_updated: 500,
         history_points: 0,
         challenge_locks: [challenge_token()],
+        stake_id: test_stake_id,
       },
     ),
   )
@@ -332,6 +333,8 @@ test withdraw_challenge_with_upper_bound_after_deadline_fails() {
 // ExpireChallenge: the challenge timeout returns the challenge stake
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// An expiry: the challenger's identity record is a reference input (the
+/// payout goes to the challenger's payee); nobody signs.
 fn expire_tx(current_slot: Int) -> Transaction {
   let tx =
     challenge_tx(
@@ -343,6 +346,10 @@ fn expire_tx(current_slot: Int) -> Transaction {
   Transaction {
     ..tx,
     inputs: [locked_target_stake(), ..tx.inputs],
+    reference_inputs: [
+      make_identity_ref_input(test_agent_did, 1),
+      ..tx.reference_inputs
+    ],
     mint: assets.from_asset(test_endorsement_policy_id, challenge_token(), -1),
   }
 }

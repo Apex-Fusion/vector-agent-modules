@@ -28,7 +28,7 @@
 use aiken/interval.{Finite}
 use cardano/address.{Script, VerificationKey}
 use cardano/assets
-use cardano/transaction.{Input, Output, Transaction, ValidityRange}
+use cardano/transaction.{Input, Output, OutputReference, Transaction, ValidityRange}
 use reputation_staking/challenge_validation.{
   validate_distribute_outcome, validate_mint_challenge,
 }
@@ -42,10 +42,11 @@ use reputation_staking/stake_validation.{
 }
 use reputation_staking/test_helpers.{
   agent_signers, base_tx, key_address, make_input, make_output,
-  make_output_no_datum, script_address, test_agent_did, test_agent_did_2,
-  test_ap3x_asset_name, test_ap3x_policy_id, test_capabilities, test_config,
-  test_controller_hash, test_endorsement_policy_id, test_owner_key_hash,
-  test_owner_key_hash_2, test_params, test_refs, test_reputation_policy_id,
+  make_output_no_datum, script_address, stake_ref_input, test_agent_did,
+  test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id,
+  test_capabilities, test_config, test_controller_hash,
+  test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
+  test_params, test_refs, test_reputation_policy_id, test_stake_id,
   test_treasury_script_hash, test_tx_hash,
 }
 use reputation_staking/types.{
@@ -235,6 +236,7 @@ fn stake_datum(
     last_updated,
     history_points: 0,
     challenge_locks: [],
+    stake_id: test_stake_id,
   }
 }
 
@@ -268,6 +270,7 @@ fn target_stake_with(locks: List<ByteArray>) -> Input {
       last_updated: 500,
       history_points: 0,
       challenge_locks: locks,
+      stake_id: test_stake_id,
     }
   make_input(
     test_tx_hash,
@@ -307,13 +310,19 @@ fn create_stake(
 }
 
 /// CreateStake of `datum`: the transaction spends a seed input at the
-/// reputation address and mints the stake token.
+/// reputation address and mints the stake token. The new stake_id is the
+/// output reference of the seed.
 fn create_stake_with(
   refs: List<Input>,
   signers: List<ByteArray>,
   validity_range: ValidityRange,
   datum: StakeDatum,
 ) -> Bool {
+  let datum =
+    StakeDatum {
+      ..datum,
+      stake_id: OutputReference { transaction_id: test_tx_hash, output_index: 9 },
+    }
   let output = stake_output(datum)
   let seed =
     make_input(
@@ -440,6 +449,7 @@ fn endorsement_datum(
     endorsed_capabilities: capabilities,
     created_at: created,
     slashed_by: [],
+    target_stake: test_stake_id,
   }
 }
 
@@ -521,11 +531,17 @@ fn withdraw_endorsement_paying(
   validity_range: ValidityRange,
   payee: ByteArray,
 ) -> Bool {
-  // The endorsement cooldown (48 h) ended at t0.
+  // The endorsement cooldown (48 h) ended at t0. The bound stake of the
+  // endorsement has no challenge lock.
   let input = endorsement_datum(["code_review"], 5_000_000, t0 - 172_800_000)
   let tx =
     Transaction {
-      ..tx_with(refs, signers, validity_range, [ap3x_to(payee, 5_000_000)]),
+      ..tx_with(
+        [stake_ref_input(test_agent_did_2, test_stake_id, []), ..refs],
+        signers,
+        validity_range,
+        [ap3x_to(payee, 5_000_000)],
+      ),
       mint: assets.from_asset(
         test_endorsement_policy_id,
         endorsement_token(),
@@ -1746,7 +1762,9 @@ test mint_challenge_subagent_without_parent_record_fails() fail {
 
 /// DistributeOutcome of a CapabilityVerified challenge that pays `target`
 /// to the target's owner key and 1.25 AP3X to the treasury. The transaction
-/// spends the challenge (25 AP3X) and the target's locked StakeUTXO.
+/// spends the challenge (25 AP3X) and the target's locked StakeUTXO. The
+/// target's record is a reference input (the payout goes to its payee); it
+/// needs no status and no signature.
 fn distribute_verified(target: Int) -> Bool {
   let datum =
     ReputationChallengeDatum {
@@ -1773,6 +1791,7 @@ fn distribute_verified(target: Int) -> Bool {
     Transaction {
       ..base_tx(t0),
       inputs: [challenge, target_stake_with([challenge_token("code_review")])],
+      reference_inputs: [target_ref(target_record())],
       outputs: [
         ap3x_to(test_owner_key_hash_2, target),
         make_output_no_datum(

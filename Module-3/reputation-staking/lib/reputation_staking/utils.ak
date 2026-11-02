@@ -13,11 +13,11 @@ use aiken/collection/list
 use aiken/crypto.{blake2b_224}
 use cardano/address.{Address, Credential, Script, VerificationKey}
 use cardano/assets
-use cardano/transaction.{Input, Output, OutputReference, Transaction}
+use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
 use reputation_staking/config.{ReputationConfig}
 use reputation_staking/types.{
-  challenge_token_prefix, endorsement_token_prefix, history_bonus_token_prefix,
-  stake_token_prefix,
+  StakeDatum, challenge_token_prefix, endorsement_token_prefix,
+  history_bonus_token_prefix, stake_token_prefix,
 }
 use shared/bytearray as shared_bytearray
 use shared/credential as shared_credential
@@ -25,6 +25,7 @@ use shared/identity.{Window}
 use shared/token_naming
 use shared/utxo
 use vector_identity.{controller_signed, find_record}
+use vector_identity/types.{IdentityDatum} as identity_types
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Credential / signature checks
@@ -71,16 +72,58 @@ pub fn opens_with(
   }
 }
 
+/// The payee of a payout to a position whose stored credential is `stored`,
+/// for the record of the position's agent (the payee rule): `stored` when
+/// the record still declares it (`identity.declared_credential`: the
+/// controller key or a listed key with the transaction purpose), else the
+/// controller key of the record. So after a controller change, a recovery
+/// or a key removal, the funds go to a key that the record trusts now.
+fn record_payee(record: IdentityDatum, stored: Credential) -> Credential {
+  if identity.declared_credential(record, stored) {
+    stored
+  } else {
+    VerificationKey(blake2b_224(record.controller))
+  }
+}
+
+/// The payee of a payout to a position of agent `id` whose stored credential
+/// is `stored` (`record_payee`). The record of `id` is a reference input
+/// (`find_record`, any status, also a tombstone); None without it.
+pub fn payee(
+  cfg: ReputationConfig,
+  tx: Transaction,
+  id: ByteArray,
+  stored: Credential,
+) -> Option<Credential> {
+  when find_record(tx.reference_inputs, cfg.identity_hash, id) is {
+    Some(record) -> Some(record_payee(record, stored))
+    None -> None
+  }
+}
+
+/// True when the outputs to the payee of agent `id` and the stored
+/// credential `stored` (`payee`) hold at least `amount` AP3X in total. False
+/// without the record of `id`. The permissionless payouts of positions use
+/// it (ExpireChallenge, DistributeOutcome, SlashEndorsement,
+/// ClaimDecayRefund); the exits use `exit_paid`.
+pub fn paid(
+  cfg: ReputationConfig,
+  tx: Transaction,
+  id: ByteArray,
+  stored: Credential,
+  amount: Int,
+) -> Bool {
+  when payee(cfg, tx, id, stored) is {
+    Some(to) -> ap3x_paid_to(cfg, tx.outputs, to) >= amount
+    None -> False
+  }
+}
+
 /// An exit of a position of agent `id` that returns `amount` AP3X to its
-/// owner at the owner's request (rule D-exit):
-///   - The record of `id` is a reference input (`find_record`, any status,
-///     also a tombstone) and its controller signed the transaction.
-///   - The outputs to the payee hold at least `amount` AP3X in total. The
-///     payee is `stored` (the credential of the position) when the record
-///     still trusts it (`identity.declared_credential`). Else the payee is
-///     the controller key of the record. So after a controller change, a
-///     recovery or a key removal, the funds go to a key that the record
-///     trusts now.
+/// owner at the owner's request (rule D-exit): the record of `id` is a
+/// reference input (any status, also a tombstone), its controller signed
+/// the transaction, and the outputs to the payee (`record_payee`) hold at
+/// least `amount` AP3X in total.
 pub fn exit_paid(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -89,17 +132,50 @@ pub fn exit_paid(
   amount: Int,
 ) -> Bool {
   when find_record(tx.reference_inputs, cfg.identity_hash, id) is {
-    Some(record) -> {
-      let payee =
-        if identity.declared_credential(record, stored) {
-          stored
-        } else {
-          VerificationKey(blake2b_224(record.controller))
-        }
-      controller_signed(record, tx) && ap3x_paid_to(cfg, tx.outputs, payee) >= amount
-    }
+    Some(record) ->
+      controller_signed(record, tx) && ap3x_paid_to(
+        cfg,
+        tx.outputs,
+        record_payee(record, stored),
+      ) >= amount
     None -> False
   }
+}
+
+/// The bound stake of an endorsement: the datum of the reference input at
+/// the exact reputation address that holds the stake token of `target_did`
+/// and whose datum has `stake_id`. At most one output carries a stake_id
+/// with the stake token, so the transaction cannot name another version of
+/// the stake. Fails when there is no such reference input.
+pub fn bound_stake(
+  reference_inputs: List<Input>,
+  reputation_policy: ByteArray,
+  target_did: ByteArray,
+  stake_id: OutputReference,
+) -> StakeDatum {
+  let address = exact_address(reputation_policy)
+  let token = derive_stake_token_name(target_did)
+  expect Some(stake) =
+    list.find_map(
+      reference_inputs,
+      fn(input) {
+        if and {
+          input.output.address == address,
+          assets.quantity_of(input.output.value, reputation_policy, token) == 1,
+        } {
+          expect InlineDatum(raw) = input.output.datum
+          expect stake: StakeDatum = raw
+          if stake.stake_id == stake_id {
+            Some(stake)
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      },
+    )
+  stake
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

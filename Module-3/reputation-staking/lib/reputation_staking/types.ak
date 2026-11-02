@@ -12,11 +12,17 @@ use cardano/transaction.{OutputReference}
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// An agent's self-stake backing their claimed capabilities.
-/// One StakeUTXO per agent. Updated via IncreaseStake/DecreaseStake.
+/// Updated via IncreaseStake/DecreaseStake.
+///
+/// The stake token name comes from agent_did, so it does not tell two stakes
+/// of one agent apart. `stake_id` does: it is the output reference of the
+/// seed input that CreateStake spends, and every continuing stake keeps it.
+/// An endorsement names the stake that it backs by this value
+/// (EndorsementDatum.target_stake).
 ///
 /// Field order (deployment and off-chain encoders): agent_did,
 /// owner_credential, stake_amount, staked_capabilities, last_updated,
-/// history_points, challenge_locks.
+/// history_points, challenge_locks, stake_id.
 pub type StakeDatum {
   /// Identity registry identifier of the staking agent (did:vector, the
   /// asset name of its record token)
@@ -40,8 +46,12 @@ pub type StakeDatum {
   /// this stake. A challenge adds its token name when it opens
   /// (LockForChallenge) and removes it when it closes (ReleaseChallenge or
   /// SlashStake). While the list is not empty, the stake cannot decrease,
-  /// change its capabilities or decay. It is empty at creation.
+  /// change its capabilities or decay, and no endorsement of this stake can
+  /// be withdrawn. It is empty at creation.
   challenge_locks: List<ByteArray>,
+  /// The output reference of the seed input that CreateStake spent. It is
+  /// unique and never changes: at most one stake output carries it.
+  stake_id: OutputReference,
 }
 
 /// Redeemer for the reputation validator spend handler.
@@ -69,12 +79,12 @@ pub type StakeAction {
   ReleaseChallenge { challenge_ref: OutputReference }
 }
 
-/// Redeemer for the reputation validator mint handler.
+/// Redeemer for the reputation validator mint handler. No redeemer burns a
+/// stake token: a stake that decays below the minimum continues with
+/// stake_amount 0, so the endorsements of the stake can always read it.
 pub type StakeMintAction {
   /// Mint a stake tracking token when an agent first stakes
   MintStakeToken
-  /// Burn a stake tracking token when stake drops below minimum
-  BurnStakeToken
   /// Mint a history bonus token for a qualifying cross-module event
   MintHistoryBonus
   /// Burn an expired genesis bonus token (permissionless cleanup)
@@ -88,9 +98,15 @@ pub type StakeMintAction {
 /// An endorsement: Agent B stakes AP3X vouching for Agent A's capabilities.
 /// One EndorsementUTXO per endorser-endorsee pair.
 ///
+/// The endorsement backs one stake of the target: the stake whose stake_id
+/// is target_stake (the bound stake). The bound stake is a reference input
+/// of every withdrawal and slash: a withdrawal needs a bound stake without
+/// challenge locks, and a slash needs a bound stake that the challenge
+/// locks.
+///
 /// Field order (deployment and off-chain encoders): endorser_did,
 /// endorser_credential, target_did, stake_amount, endorsed_capabilities,
-/// created_at, slashed_by.
+/// created_at, slashed_by, target_stake.
 pub type EndorsementDatum {
   /// DID of the endorsing agent
   endorser_did: ByteArray,
@@ -101,7 +117,8 @@ pub type EndorsementDatum {
   target_did: ByteArray,
   /// AP3X staked as endorsement
   stake_amount: Int,
-  /// Which specific capabilities are endorsed (subset of target's capabilities)
+  /// Which specific capabilities are endorsed (a subset of the staked
+  /// capabilities of the bound stake)
   endorsed_capabilities: List<ByteArray>,
   /// POSIX ms when the endorsement was created (lower bound of a validity
   /// range of at most one hour)
@@ -110,6 +127,9 @@ pub type EndorsementDatum {
   /// slashed this endorsement. A challenge slashes an endorsement at most
   /// once. It is empty at creation.
   slashed_by: List<ByteArray>,
+  /// The stake_id of the target stake that this endorsement backs (the
+  /// bound stake). It never changes.
+  target_stake: OutputReference,
 }
 
 /// Redeemer for endorsement spend actions.

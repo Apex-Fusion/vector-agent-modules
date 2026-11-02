@@ -207,8 +207,10 @@ pub type StakeAction {
 /// STAKE TOKEN:
 ///   Asset name = "rstk_" ++ blake2b_256(agent_did)[0..28]
 ///   Policy ID = reputation_validator_hash (minted by reputation multi-validator)
-///   Exactly 1 per agent. Minted on CreateStake, burned when stake drops below
-///   MIN_SELF_STAKE (via decay or explicit unstake to zero).
+///   Minted on CreateStake. Never burned: a stake that decays below
+///   MIN_SELF_STAKE continues with stake_amount 0 (W4-MODFIX2). Each stake
+///   has a unique stake_id (the seed of its CreateStake); an endorsement
+///   names the stake that it backs by this stake_id.
 ///   MUST travel with the StakeUTXO through all state transitions.
 ///
 /// ENDORSEMENT TOKEN:
@@ -655,11 +657,14 @@ MUST:
   5. treasury_amount = decay_amount - collector_fee
   6. Outputs:
      - Continuing StakeUTXO with stake_amount reduced by decay_amount
-       (if remaining > MIN_SELF_STAKE; otherwise UTXO consumed entirely)
+       (if remaining >= MIN_SELF_STAKE; otherwise the StakeUTXO continues
+       with stake_amount 0 and the owner's payee receives the remaining
+       stake: the owner_credential while the agent's record declares it,
+       else the record's controller key)
      - Collector payout UTXO to decay collector's credential
      - Treasury payout UTXO to protocol treasury address
-  7. If stake drops below MIN_SELF_STAKE: stake token is burned,
-     agent reverts to Unverified tier
+  7. The stake token is never burned (W4-MODFIX2). A stake below
+     MIN_SELF_STAKE gives the Unverified tier.
 
 PHASE 1.0 SIMPLIFICATION:
   Decay is processed via Foundation oracle attestation (same signing key

@@ -19,11 +19,12 @@ use reputation_staking/challenge_validation.{
 }
 use reputation_staking/test_helpers.{
   agent_signers, base_tx, key_address, make_identity_ref_input, make_input,
-  make_output, make_output_no_datum, script_address, test_agent_did,
-  test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
-  test_endorsement_policy_id, test_oracle_credential, test_owner_key_hash,
-  test_owner_key_hash_2, test_params, test_refs, test_reputation_policy_id,
-  test_treasury_script_hash, test_tx_hash,
+  make_output, make_output_no_datum, party_record_inputs, script_address,
+  test_agent_did, test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id,
+  test_config, test_endorsement_policy_id, test_oracle_credential,
+  test_owner_key_hash, test_owner_key_hash_2, test_params, test_refs,
+  test_reputation_policy_id, test_stake_id, test_treasury_script_hash,
+  test_tx_hash,
 }
 use reputation_staking/types.{
   CapabilityFalsified, CapabilityVerified, Challenge, Escalated, Inconclusive,
@@ -368,6 +369,7 @@ fn target_stake_input(locks: List<ByteArray>) -> Input {
       last_updated: 500,
       history_points: 0,
       challenge_locks: locks,
+      stake_id: test_stake_id,
     }
   make_input(
     test_tx_hash,
@@ -401,6 +403,7 @@ fn expire_at(datum: ReputationChallengeDatum, current_slot: Int) -> Bool {
     Transaction {
       ..base_tx(current_slot),
       inputs: [locked_target_stake()],
+      reference_inputs: party_record_inputs(),
       outputs: [stake_to_challenger(datum.stake_amount)],
       mint: challenge_token_burn(datum),
     }
@@ -456,6 +459,7 @@ test expire_challenge_without_payment_to_challenger_fails() {
     Transaction {
       ..base_tx(challenge_timeout(test_params(), created_at) + 1),
       inputs: [locked_target_stake()],
+      reference_inputs: party_record_inputs(),
       outputs: [stake_to_challenger(datum.stake_amount - 1)],
       mint: challenge_token_burn(datum),
     }
@@ -468,6 +472,7 @@ test expire_challenge_without_token_burn_fails() {
     Transaction {
       ..base_tx(challenge_timeout(test_params(), created_at) + 1),
       inputs: [locked_target_stake()],
+      reference_inputs: party_record_inputs(),
       outputs: [stake_to_challenger(datum.stake_amount)],
     }
   !validate_expire_challenge(tx, test_config(), test_refs(), test_params(), datum)
@@ -480,6 +485,7 @@ test expire_challenge_without_target_stake_fails() {
   let tx =
     Transaction {
       ..base_tx(challenge_timeout(test_params(), created_at) + 1),
+      reference_inputs: party_record_inputs(),
       outputs: [stake_to_challenger(datum.stake_amount)],
       mint: challenge_token_burn(datum),
     }
@@ -494,6 +500,7 @@ test expire_challenge_paid_in_two_outputs() {
     Transaction {
       ..base_tx(challenge_timeout(test_params(), created_at) + 1),
       inputs: [locked_target_stake()],
+      reference_inputs: party_record_inputs(),
       outputs: [
         stake_to_challenger(datum.stake_amount - 1_000_000),
         stake_to_challenger(1_000_000),
@@ -550,6 +557,7 @@ fn distribute(
     Transaction {
       ..base_tx(5_000),
       inputs: [challenge, ..stake_inputs],
+      reference_inputs: party_record_inputs(),
       outputs,
       mint: challenge_token_burn(datum),
     }

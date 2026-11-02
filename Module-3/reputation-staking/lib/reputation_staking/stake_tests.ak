@@ -21,7 +21,7 @@ use reputation_staking/test_helpers.{
   make_output, make_output_no_datum, make_params_ref_input, script_address,
   test_agent_did, test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id,
   test_config, test_owner_key_hash, test_params, test_refs,
-  test_reputation_policy_id, test_tx_hash,
+  test_reputation_policy_id, test_stake_id, test_tx_hash,
 }
 use reputation_staking/types.{StakeDatum}
 use reputation_staking/utils.{derive_stake_token_name}
@@ -47,6 +47,7 @@ fn stake(
     last_updated,
     history_points: 0,
     challenge_locks: [],
+    stake_id: test_stake_id,
   }
 }
 
@@ -128,7 +129,10 @@ fn stake_mint(agent_did: ByteArray) -> assets.Value {
   assets.from_asset(test_reputation_policy_id, derive_stake_token_name(agent_did), 1)
 }
 
+/// CreateStake of `datum` from the seed input: the new stake_id is the
+/// output reference of the seed.
 fn create(datum: StakeDatum) -> Bool {
+  let datum = StakeDatum { ..datum, stake_id: seed_input().output_reference }
   create_with(seed_input(), datum, stake_output(datum), stake_mint(test_agent_did))
 }
 

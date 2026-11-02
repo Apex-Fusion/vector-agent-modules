@@ -19,7 +19,8 @@ use reputation_staking/test_helpers.{
   make_output_no_datum, script_address, test_agent_did, test_agent_did_2,
   test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_endorsement_policy_id, test_oracle_credential, test_owner_key_hash,
-  test_params, test_refs, test_reputation_policy_id, test_treasury_script_hash,
+  test_params, test_refs, test_reputation_policy_id, test_stake_id,
+  test_treasury_script_hash,
 }
 use reputation_staking/types.{StakeDatum}
 use reputation_staking/utils.{
@@ -41,6 +42,7 @@ fn stake(capabilities: List<ByteArray>, locks: List<ByteArray>) -> StakeDatum {
     last_updated: t0 - 86_400_000,
     history_points: 0,
     challenge_locks: locks,
+    stake_id: test_stake_id,
   }
 }
 

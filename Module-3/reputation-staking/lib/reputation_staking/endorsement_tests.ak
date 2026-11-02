@@ -12,10 +12,11 @@ use reputation_staking/endorsement_validation.{
 }
 use reputation_staking/test_helpers.{
   agent_signers, base_tx, key_address, make_identity_ref_input, make_input,
-  make_output, script_address, test_agent_did, test_agent_did_2,
-  test_ap3x_asset_name, test_ap3x_policy_id, test_config,
+  make_output, script_address, stake_ref_input, test_agent_did,
+  test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
-  test_params, test_refs, test_reputation_policy_id, test_tx_hash,
+  test_params, test_refs, test_reputation_policy_id, test_stake_id,
+  test_tx_hash,
 }
 use reputation_staking/types.{EndorsementDatum, StakeDatum}
 use reputation_staking/utils.{
@@ -37,6 +38,7 @@ fn make_target_stake_ref(target_did: ByteArray, target_key: ByteArray) -> Input 
       last_updated: 500,
       history_points: 0,
       challenge_locks: [],
+      stake_id: test_stake_id,
     }
   let stake_token = derive_stake_token_name(target_did)
   let value =
@@ -73,6 +75,7 @@ test mint_endorsement_happy_path() {
       endorsed_capabilities: ["code_review", "testing"],
       created_at: current_slot,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
 
   let token_name =
@@ -126,6 +129,7 @@ test mint_endorsement_self_endorse_fails() fail {
       endorsed_capabilities: ["code_review"],
       created_at: current_slot,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
 
   let token_name =
@@ -178,6 +182,7 @@ test mint_endorsement_below_minimum_fails() fail {
       endorsed_capabilities: ["code_review"],
       created_at: current_slot,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
 
   let token_name =
@@ -231,6 +236,7 @@ test increase_endorsement_happy_path() {
       endorsed_capabilities: ["code_review"],
       created_at: 1000,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
 
   let output_datum =
@@ -242,6 +248,7 @@ test increase_endorsement_happy_path() {
       endorsed_capabilities: ["code_review"],
       created_at: 1000,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
 
   let token_name =
@@ -297,6 +304,7 @@ test withdraw_endorsement_happy_path() {
       endorsed_capabilities: ["code_review"],
       created_at,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
 
   let token_name =
@@ -316,7 +324,10 @@ test withdraw_endorsement_happy_path() {
       |> fn(t) {
           Transaction {
             ..t,
-            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
+            reference_inputs: [
+              make_identity_ref_input(test_agent_did, 1),
+              stake_ref_input(test_agent_did_2, test_stake_id, []),
+            ],
             outputs: [endorser_return_output],
             mint: assets.from_lovelace(0)
               |> assets.add(test_endorsement_policy_id, token_name, -1),
@@ -345,6 +356,7 @@ test withdraw_endorsement_too_early_fails() fail {
       endorsed_capabilities: ["code_review"],
       created_at,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
 
   let token_name =
@@ -355,7 +367,10 @@ test withdraw_endorsement_too_early_fails() fail {
       |> fn(t) {
           Transaction {
             ..t,
-            reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
+            reference_inputs: [
+              make_identity_ref_input(test_agent_did, 1),
+              stake_ref_input(test_agent_did_2, test_stake_id, []),
+            ],
             mint: assets.from_lovelace(0)
               |> assets.add(test_endorsement_policy_id, token_name, -1),
             extra_signatories: agent_signers(),
@@ -384,6 +399,7 @@ fn mint_endorsement_with(
       endorsed_capabilities: ["code_review", "testing"],
       created_at,
       slashed_by: [],
+      target_stake: test_stake_id,
     }
   let output =
     make_output(

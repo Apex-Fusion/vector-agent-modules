@@ -34,9 +34,9 @@ use reputation_staking/types.{
   endorsement_token_prefix,
 }
 use reputation_staking/utils.{
-  ap3x_paid_to, count_script_inputs, derive_challenge_token_name,
+  ap3x_paid_to, bound_stake, count_script_inputs, derive_challenge_token_name,
   derive_endorsement_token_name, exit_paid, get_ap3x_amount, has_script_input,
-  single_token_change, starts_with, treasury_paid,
+  payee, single_token_change, starts_with, treasury_paid,
 }
 use shared/identity
 
@@ -121,19 +121,27 @@ fn keeps_challenge_value(
 /// challenge token must not be in slashed_by, and the continuing endorsement
 /// adds it to slashed_by.
 ///
+/// The challenge locks the bound stake of the endorsement: the bound stake
+/// (`utils.bound_stake`, the target stake whose stake_id is target_stake) is
+/// a reference input, and its challenge_locks contain the challenge token
+/// name. So a challenge slashes only the endorsements of the stake that it
+/// challenged, and these endorsements cannot leave while it is open.
+///
 /// slash = stake_amount × slash_rate_endorser, remaining = stake_amount − slash,
 /// fee = slash × protocol_fee_rate.
-///   - The challenger receives at least slash − fee AP3X and the treasury at
-///     least fee AP3X (MODULE-3 spec: the challenger receives the endorser
-///     slashes less the protocol fee).
+///   - The challenger's payee receives at least slash − fee AP3X and the
+///     treasury at least fee AP3X (MODULE-3 spec: the challenger receives the
+///     endorser slashes less the protocol fee).
 ///   - remaining >= min_endorsement: one output continues the endorsement at
 ///     the same address with the endorsement token, the same datum except
 ///     stake_amount = remaining and the challenge token name added to
 ///     slashed_by, and at least remaining AP3X.
 ///   - remaining < min_endorsement: the endorsement token is burned and the
-///     endorser receives at least remaining AP3X.
-/// When the challenger and the endorser have the same credential, the outputs
-/// to that credential hold both amounts in total.
+///     endorser's payee receives at least remaining AP3X.
+/// A payee is the stored credential while the agent's record declares it,
+/// else the record's controller key (`utils.payee`; the record is a
+/// reference input). When the two payees are equal, the outputs to that
+/// payee hold both amounts in total.
 fn validate_endorsement_slash(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -210,15 +218,32 @@ fn validate_endorsement_slash(
     } else {
       remaining
     }
+  expect Some(challenger_payee) =
+    payee(
+      cfg,
+      tx,
+      challenge_datum.challenger_did,
+      challenge_datum.challenger_credential,
+    )
   let payouts_valid =
-    if challenge_datum.challenger_credential == endorsement_datum.endorser_credential {
-      ap3x_paid_to(cfg, tx.outputs, challenge_datum.challenger_credential) >= challenger_due + endorser_due
+    if endorser_due <= 0 {
+      ap3x_paid_to(cfg, tx.outputs, challenger_payee) >= challenger_due
     } else {
-      ap3x_paid_to(cfg, tx.outputs, challenge_datum.challenger_credential) >= challenger_due && ap3x_paid_to(
-        cfg,
-        tx.outputs,
-        endorsement_datum.endorser_credential,
-      ) >= endorser_due
+      expect Some(endorser_payee) =
+        payee(
+          cfg,
+          tx,
+          endorsement_datum.endorser_did,
+          endorsement_datum.endorser_credential,
+        )
+      if challenger_payee == endorser_payee {
+        ap3x_paid_to(cfg, tx.outputs, challenger_payee) >= challenger_due + endorser_due
+      } else {
+        and {
+          ap3x_paid_to(cfg, tx.outputs, challenger_payee) >= challenger_due,
+          ap3x_paid_to(cfg, tx.outputs, endorser_payee) >= endorser_due,
+        }
+      }
     }
 
   and {
@@ -239,6 +264,16 @@ fn validate_endorsement_slash(
     list.has(
       endorsement_datum.endorsed_capabilities,
       challenge_datum.challenged_capability,
+    ),
+    // The challenge locks the bound stake of this endorsement
+    list.has(
+      bound_stake(
+        tx.reference_inputs,
+        refs.reputation_policy_id,
+        endorsement_datum.target_did,
+        endorsement_datum.target_stake,
+      ).challenge_locks,
+      challenge_token,
     ),
     output_valid,
     payouts_valid,

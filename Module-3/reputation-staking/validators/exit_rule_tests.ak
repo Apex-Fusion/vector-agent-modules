@@ -16,7 +16,8 @@ use reputation_staking/test_helpers.{
   make_params_ref_input, script_address, test_agent_did, test_agent_did_2,
   test_ap3x_asset_name, test_ap3x_policy_id, test_capabilities, test_config,
   test_endorsement_policy_id, test_owner_key_hash, test_owner_key_hash_2,
-  test_refs, test_refs_token_policy, test_reputation_policy_id, test_tx_hash,
+  test_refs, test_refs_token_policy, test_reputation_policy_id, test_stake_id,
+  test_tx_hash,
 }
 use reputation_staking/types.{
   Challenge, ChallengeSpend, Open, ReputationChallengeDatum, StakeDatum,
@@ -89,6 +90,7 @@ fn locked_target_stake() -> Input {
         last_updated: 500,
         history_points: 0,
         challenge_locks: [challenge_token()],
+        stake_id: test_stake_id,
       },
     ),
   )

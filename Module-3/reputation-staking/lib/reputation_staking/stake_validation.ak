@@ -67,6 +67,8 @@ use shared/identity
 ///      stake_amount AP3X
 ///   6. last_updated = upper bound of the validity range
 ///   7. history_points = 0 and challenge_locks is empty
+///   8. stake_id is the output reference of the spent seed input, so no
+///      other stake can carry it
 pub fn validate_create_stake(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -107,6 +109,8 @@ pub fn validate_create_stake(
         // Rule 7
         output_datum.history_points == 0,
         output_datum.challenge_locks == [],
+        // Rule 8
+        output_datum.stake_id == own_input.output_reference,
       }
     None -> False
   }

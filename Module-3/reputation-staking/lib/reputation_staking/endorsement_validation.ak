@@ -14,21 +14,27 @@
 /// only the endorser's controller signature; the record can have any status,
 /// and the payout goes to a key that the record trusts (`utils.exit_paid`).
 /// Each of these actions has a validity range of at most one hour.
+///
+/// Bound stake: an endorsement backs one stake of the target, the stake
+/// whose stake_id is target_stake (`utils.bound_stake`). Creation reads the
+/// endorsed capabilities from it. A withdrawal needs it as a reference input
+/// without challenge locks. A challenge against that stake adds its lock to
+/// the stake when it opens and removes it when it closes, and at most one
+/// output carries the stake_id, so the transaction cannot show another
+/// version of the stake: no endorsement of a challenged stake can be
+/// withdrawn while the challenge is open.
 
 use aiken/collection/dict
 use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets
-use cardano/transaction.{InlineDatum, Input, Output, Transaction}
+use cardano/transaction.{Output, Transaction}
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
-use reputation_staking/types.{
-  Challenge, EndorsementDatum, EndorsementValidatorDatum, Open, StakeDatum,
-}
+use reputation_staking/types.{EndorsementDatum}
 use reputation_staking/utils.{
-  derive_endorsement_token_name, derive_stake_token_name, exit_paid,
-  get_ap3x_amount, has_credential_signed, is_non_empty, is_subset, opens_with,
-  starts_with,
+  bound_stake, derive_endorsement_token_name, exit_paid, get_ap3x_amount,
+  has_credential_signed, is_non_empty, is_subset, opens_with,
 }
 use shared/identity
 use shared/identity.{Window}
@@ -44,12 +50,14 @@ use shared/identity.{Window}
 ///      the endorser's controller signed, endorser_credential is a declared
 ///      credential of the record, and endorser_credential signed
 ///   2. The target's identity record is Active over the validity range and
-///      lists each endorsed capability; the target has a StakeUTXO
+///      lists each endorsed capability; the bound stake (the target stake
+///      whose stake_id is target_stake) is a reference input
 ///   3. endorser_did != target_did (cannot self-endorse)
 ///   4. Endorsement token asset name = deterministic hash of pair, and the
 ///      transaction mints exactly that one token of the endorsement policy
 ///   5. stake_amount >= MIN_ENDORSEMENT
-///   6. endorsed_capabilities is non-empty and subset of target's staked_capabilities
+///   6. endorsed_capabilities is non-empty and a subset of the staked
+///      capabilities of the bound stake
 ///   7. EndorsementUTXO created at endorsement validator address
 ///   8. The validity range is at most one hour long
 ///   9. created_at is the lower bound of the validity range
@@ -95,15 +103,18 @@ pub fn validate_mint_endorsement(
   let meets_minimum = output_datum.stake_amount >= params.min_endorsement
 
   // Rules 2 and 6: Capabilities non-empty and subset of the staked
-  // capabilities of the target's StakeUTXO (a reference input; the function
-  // fails when there is none)
+  // capabilities of the bound stake (a reference input; the function fails
+  // when there is none)
   let has_capabilities = is_non_empty(output_datum.endorsed_capabilities)
   let capabilities_valid =
-    verify_endorsed_capabilities(
-      tx.reference_inputs,
-      refs,
-      output_datum.target_did,
+    is_subset(
       output_datum.endorsed_capabilities,
+      bound_stake(
+        tx.reference_inputs,
+        refs.reputation_policy_id,
+        output_datum.target_did,
+        output_datum.target_stake,
+      ).staked_capabilities,
     )
 
   // Rule 7: Output is at endorsement validator address
@@ -250,7 +261,11 @@ pub fn validate_increase_endorsement(
 /// MUST:
 ///   1. Endorsement exists (endorsement token present in input)
 ///   2. created_at + ENDORSEMENT_COOLDOWN <= current slot
-///   3. Target agent has no active challenges in the reference inputs
+///   3. The bound stake (`utils.bound_stake`: the target stake whose
+///      stake_id is target_stake) is a reference input and no challenge
+///      locks it (challenge_locks is empty). A challenge against the bound
+///      stake keeps its lock in the stake from its opening to its closing,
+///      so the withdrawal waits until every such challenge is closed
 ///   4. The outputs to the payee hold at least stake_amount AP3X in total.
 ///      The payee is endorser_credential when the endorser's record still
 ///      trusts it, else the controller key of the record
@@ -270,15 +285,6 @@ pub fn validate_withdraw_endorsement(
   // Rule 2: Cooldown elapsed
   let cooldown_met =
     input_datum.created_at + params.endorsement_cooldown <= current_slot
-
-  // Rule 3: No active challenges against target
-  // Phase 1.0: check reference inputs for open challenges
-  let no_active_challenges =
-    verify_no_target_challenges(
-      tx.reference_inputs,
-      refs,
-      input_datum.target_did,
-    )
 
   // Rule 5: Endorsement token is burned in this tx
   let expected_token_name =
@@ -305,96 +311,15 @@ pub fn validate_withdraw_endorsement(
           input_datum.stake_amount,
         ),
         cooldown_met,
-        no_active_challenges,
+        // Rule 3: no open challenge against the bound stake
+        bound_stake(
+          tx.reference_inputs,
+          refs.reputation_policy_id,
+          input_datum.target_did,
+          input_datum.target_stake,
+        ).challenge_locks == [],
         token_burned,
       }
     None -> False
   }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Verify that endorsed capabilities are a subset of the target's staked
-/// capabilities. Reads the target's StakeDatum from the reference input at
-/// the reputation validator that holds the target's stake token; fails when
-/// there is no such reference input (the target has no StakeUTXO).
-fn verify_endorsed_capabilities(
-  reference_inputs: List<Input>,
-  refs: CrossValidatorRefs,
-  target_did: ByteArray,
-  endorsed_capabilities: List<ByteArray>,
-) -> Bool {
-  let expected_token_name = derive_stake_token_name(target_did)
-  expect Some(stake_input) =
-    list.find(
-      reference_inputs,
-      fn(input) {
-        let is_at_reputation =
-          when input.output.address.payment_credential is {
-            Script(hash) -> hash == refs.reputation_policy_id
-            _ -> False
-          }
-        let has_stake_token =
-          assets.quantity_of(
-            input.output.value,
-            refs.reputation_policy_id,
-            expected_token_name,
-          ) == 1
-        is_at_reputation && has_stake_token
-      },
-    )
-  expect InlineDatum(raw_stake) = stake_input.output.datum
-  expect stake_datum: StakeDatum = raw_stake
-  is_subset(endorsed_capabilities, stake_datum.staked_capabilities)
-}
-
-/// Verify that no open challenges exist against the target agent.
-/// F4 fix: Parse as EndorsementValidatorDatum wrapper, only inspect challenge tokens.
-/// The check reads only the reference inputs that the transaction names, so
-/// it does not prove that no challenge is open (see the module README).
-fn verify_no_target_challenges(
-  reference_inputs: List<Input>,
-  refs: CrossValidatorRefs,
-  target_did: ByteArray,
-) -> Bool {
-  !list.any(
-    reference_inputs,
-    fn(input) {
-      let is_at_endorsement =
-        when input.output.address.payment_credential is {
-          Script(hash) -> hash == refs.endorsement_policy_id
-          _ -> False
-        }
-      if is_at_endorsement {
-        // Only inspect inputs with challenge token prefix
-        let has_challenge_token =
-          list.any(
-            assets.flatten(input.output.value),
-            fn(entry) {
-              let (pid, name, _qty) = entry
-              pid == refs.endorsement_policy_id && starts_with(name, types.challenge_token_prefix)
-            },
-          )
-        if has_challenge_token {
-          when input.output.datum is {
-            InlineDatum(raw) -> {
-              expect wrapper: EndorsementValidatorDatum = raw
-              when wrapper is {
-                Challenge(challenge_datum) ->
-                  challenge_datum.target_did == target_did && challenge_datum.state == Open
-                _ -> False
-              }
-            }
-            _ -> False
-          }
-        } else {
-          False
-        }
-      } else {
-        False
-      }
-    },
-  )
 }

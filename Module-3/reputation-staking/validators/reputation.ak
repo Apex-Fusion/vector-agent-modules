@@ -1,7 +1,7 @@
 /// Reputation Validator — Multi-Validator
 ///
 /// Controls self-stake lifecycle and history bonus tokens:
-///   - Minting policy: MintStakeToken, BurnStakeToken, MintHistoryBonus, BurnGenesisBonus
+///   - Minting policy: MintStakeToken, MintHistoryBonus, BurnGenesisBonus
 ///   - Spend validator: CreateStake, IncreaseStake, DecreaseStake,
 ///     UpdateCapabilities, ClaimDecayRefund, SlashStake, LockForChallenge,
 ///     ReleaseChallenge
@@ -11,7 +11,8 @@
 ///
 /// Each mint redeemer accepts exactly its own token set: one token of its
 /// kind, and no other token of the policy. A stake token is minted only
-/// together with the spend of a seed input with CreateStake.
+/// together with the spend of a seed input with CreateStake, and no
+/// redeemer burns it: every spend of a stake continues it.
 
 use aiken/interval.{Finite}
 use aiken/collection/list
@@ -27,11 +28,10 @@ use reputation_staking/decay
 use reputation_staking/params.{ProtocolParams, find_protocol_params}
 use reputation_staking/stake_validation
 use reputation_staking/types.{
-  AuditClaimWon, BurnGenesisBonus, BurnStakeToken, ChallengeWon,
-  ClaimDecayRefund, CreateStake, DecreaseStake, GenesisBonus,
-  HistoryBonusDatum, IncreaseStake, JurorDuty, LockForChallenge,
-  MintHistoryBonus, MintStakeToken, ReleaseChallenge, SlashStake,
-  StakeAction, StakeDatum, StakeMintAction, UpdateCapabilities,
+  AuditClaimWon, BurnGenesisBonus, ChallengeWon, ClaimDecayRefund, CreateStake,
+  DecreaseStake, GenesisBonus, HistoryBonusDatum, IncreaseStake, JurorDuty,
+  LockForChallenge, MintHistoryBonus, MintStakeToken, ReleaseChallenge,
+  SlashStake, StakeAction, StakeDatum, StakeMintAction, UpdateCapabilities,
   genesis_bonus_token_prefix, history_bonus_token_prefix, stake_token_prefix,
 }
 use reputation_staking/utils.{
@@ -250,10 +250,6 @@ validator reputation(cfg: ReputationConfig) {
   mint(redeemer: StakeMintAction, policy_id: PolicyId, tx: Transaction) {
     let own_mint = assets.tokens(tx.mint, policy_id)
 
-    // F2/F1 fix: All mint/burn actions require a script input, ensuring
-    // the spend handler fires and provides real validation.
-    let script_input_exists = has_script_input(tx, policy_id)
-
     when redeemer is {
       MintStakeToken ->
         // P-1: one stake token, minted only with a CreateStake spend, which
@@ -261,13 +257,6 @@ validator reputation(cfg: ReputationConfig) {
         single_token_change(own_mint, stake_token_prefix, 1) && creates_stake(
           tx,
           policy_id,
-        )
-      BurnStakeToken ->
-        // F1 fix: Require script input to prevent orphan burns
-        script_input_exists && single_token_change(
-          own_mint,
-          stake_token_prefix,
-          -1,
         )
       MintHistoryBonus -> {
         // F-NEW-6 fix: Require oracle signature AND source-specific validation
@@ -306,7 +295,7 @@ validator reputation(cfg: ReputationConfig) {
         // Verify the genesis bonus being burned has passed protection period
         let protection_met =
           validate_genesis_burn(tx, policy_id, params, current_slot)
-        script_input_exists && has_valid_burn && protection_met
+        has_script_input(tx, policy_id) && has_valid_burn && protection_met
       }
     }
   }

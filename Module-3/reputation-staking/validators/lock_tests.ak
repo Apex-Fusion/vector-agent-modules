@@ -23,7 +23,7 @@ use reputation_staking/test_helpers.{
   test_config, test_controller_hash, test_endorsement_policy_id,
   test_owner_key_hash, test_owner_key_hash_2, test_refs,
   test_refs_token_policy, test_reputation_policy_id, test_treasury_script_hash,
-  test_tx_hash,
+  test_stake_id, test_tx_hash,
 }
 use reputation_staking/types.{
   BurnChallengeToken, CapabilityFalsified, CapabilityVerified, Challenge,
@@ -73,6 +73,7 @@ fn stake_datum(locks: List<ByteArray>) -> StakeDatum {
     last_updated: 500,
     history_points: 0,
     challenge_locks: locks,
+    stake_id: test_stake_id,
   }
 }
 
@@ -324,6 +325,7 @@ fn close_tx(
       make_params_ref_input(),
       refs_ref_input(),
       make_identity_ref_input(test_agent_did, 1),
+      make_identity_ref_input(test_agent_did_2, 2),
     ],
     outputs,
     mint: assets.from_asset(test_endorsement_policy_id, challenge_token(), -1),

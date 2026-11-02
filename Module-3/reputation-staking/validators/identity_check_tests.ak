@@ -28,7 +28,7 @@ use reputation_staking/test_helpers.{
   test_ap3x_asset_name, test_ap3x_policy_id, test_capabilities, test_config,
   test_controller_hash, test_endorsement_policy_id, test_oracle_credential,
   test_owner_key_hash, test_owner_key_hash_2, test_refs, test_refs_token_policy,
-  test_reputation_policy_id, test_tx_hash,
+  test_reputation_policy_id, test_stake_id, test_tx_hash,
 }
 use reputation_staking/types.{
   Challenge, ChallengeSpend, ChallengeWon, HistoryBonusDatum, MintHistoryBonus,
@@ -166,6 +166,7 @@ fn locked_target_stake() -> Input {
         last_updated: 500,
         history_points: 0,
         challenge_locks: [challenge_token()],
+        stake_id: test_stake_id,
       },
     ),
   )
