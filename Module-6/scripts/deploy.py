@@ -1,11 +1,20 @@
 """
 Module 6: Full Deployment Script (testnet or mainnet)
 
+Deployment order (deploy_common.py): config_holder, config_seal, identity,
+Module-1 with identity_party, the seal, then Module-3, then Module-6 (this
+script). New Foundation operator keys deploy and operate the modules. The
+wallet key (wallets/ or VECTOR_MNEMONIC_FILE) must be one of these keys. Old
+module keys are not reused.
+
 Handles the complete deployment flow:
+  0. Read identity_hash from VECTOR_IDENTITY_HASH (no default). Stop when it
+     is missing or not allowed.
   1. Compute the holder scripts (params/oracle/treasury), owned by the wallet key
   2. Compute the NativeScript refs_token_policy
   3. Choose a seed UTxO and derive the one-shot record token policy
-  4. Apply GovernanceConfig parameter to all validators via `aiken blueprint apply`
+  4. Apply GovernanceConfig (11 fields, identity_hash last) to all validators
+     via `aiken blueprint apply`
   5. Deploy to the chain:
      a. One transaction spends the seed, mints the `params` and `oracle` record
         tokens, and creates the GovernanceParams record (output 0) and the
@@ -16,10 +25,13 @@ Handles the complete deployment flow:
      e. Mint refs NFT and deploy GovernanceCrossRefs datum
   6. Save full deployment state
 
-Resume: the seed, the record token policy and the tx hashes are kept in
-wallets/deploy_state.json. A new run reuses them and skips completed steps.
+Resume: the seed, the record token policy, identity_hash and the tx hashes
+are kept in wallets/deploy_state.json. A new run reuses them and skips
+completed steps. A run with another identity_hash stops.
 
 Usage:
+    Set VECTOR_IDENTITY_HASH (environment or .env) to the script hash of the
+    identity contract, then:
     nix-shell shell.nix --run "python scripts/deploy.py"
 
     For mainnet, set env vars:
@@ -31,6 +43,7 @@ Prerequisites:
     1. Wallet funded (run setup_wallet.py or import_wallet.py first)
     2. Aiken contracts compiled (aiken build in contracts/governance-suggestion)
     3. Holder scripts compiled (aiken build in shared/holder-scripts)
+    4. The identity registry deployed (deployment order above)
 """
 
 import asyncio
@@ -45,16 +58,18 @@ import cbor2
 from dotenv import load_dotenv
 
 from deploy_common import (
-    AGENT_REGISTRY_HASH,
     HOLDER_BLUEPRINT_PATH,
     HOLDER_TAGS,
+    IDENTITY_HASH_ENV,
     ORACLE_TOKEN_NAME,
     PARAMS_TOKEN_NAME,
     UNIT_REDEEMER,
+    DeployInputError,
     apply_holder,
     apply_record_token_policy,
     build_governance_config_cbor,
     find_record_utxo,
+    identity_hash_from_env,
     parse_utxo_ref,
     resume_state_error,
     select_collateral_utxo,
@@ -387,6 +402,14 @@ async def deploy():
     print("Module 6: Self-Improvement Module — Full Deployment")
     print("=" * 60)
 
+    # identity_hash comes from the identity deployment (deploy_common.py)
+    try:
+        identity_hash = identity_hash_from_env()
+    except DeployInputError as e:
+        print(f"ERROR: {e}")
+        return
+    print(f"\n{IDENTITY_HASH_ENV}: {identity_hash}")
+
     # ── Step 0: Load wallet, blueprints and deploy state ─────────────────
 
     mnemonic = None
@@ -420,7 +443,7 @@ async def deploy():
         with open(DEPLOY_STATE_FILE) as f:
             existing_state = json.load(f)
     tx_hashes = existing_state.get("tx_hashes", {})
-    state_error = resume_state_error(existing_state, wallet["vkey_hash"])
+    state_error = resume_state_error(existing_state, wallet["vkey_hash"], identity_hash)
     if state_error:
         print(f"ERROR: {DEPLOY_STATE_FILE}: {state_error}")
         return
@@ -487,6 +510,7 @@ async def deploy():
         params_holder_hash=holders["params"]["hash"],
         treasury_holder_hash=holders["treasury"]["hash"],
         record_token_policy=record_token["policy_id"],
+        identity_hash=identity_hash,
     )
     print(f"  Config CBOR: {len(config_cbor) // 2} bytes")
 
@@ -508,9 +532,10 @@ async def deploy():
     print(f"\n  Proposal validator hash: {proposal_hash}")
     print(f"  Critique validator hash: {critique_hash}")
 
-    # Keep the seed and the record token policy before the first on-chain step
+    # Keep the seed, the record token policy and identity_hash before the
+    # first on-chain step
     save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
-                      proposal_hash, critique_hash, tx_hashes)
+                      proposal_hash, critique_hash, tx_hashes, identity_hash)
 
     # ── Step 5: Deploy to the chain ──────────────────────────────────────
 
@@ -586,7 +611,7 @@ async def deploy():
                 tx_hashes["oracle_utxo"] = tx
                 await asyncio.sleep(TX_WAIT)
             save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
-                              proposal_hash, critique_hash, tx_hashes)
+                              proposal_hash, critique_hash, tx_hashes, identity_hash)
 
         # 5b: Deploy holder reference scripts
         print("\n  5b. Deploying holder reference scripts...")
@@ -666,7 +691,7 @@ async def deploy():
     # ── Step 6: Save deployment state ────────────────────────────────────
 
     save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
-                      proposal_hash, critique_hash, tx_hashes)
+                      proposal_hash, critique_hash, tx_hashes, identity_hash)
 
     print("\n" + "=" * 60)
     print("Deployment complete!")
@@ -675,11 +700,13 @@ async def deploy():
 
 
 def save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_validators,
-                      proposal_hash, critique_hash, tx_hashes):
+                      proposal_hash, critique_hash, tx_hashes, identity_hash):
     """Write wallets/deploy_state.json.
 
     record_token: {"policy_id", "seed", ...} of the one-shot record token
     policy. The holders are owned by the wallet key (holder_owner_vkey_hash).
+    identity_hash: the last GovernanceConfig field, from the identity
+    deployment.
     """
     state = {
         "network": NETWORK,
@@ -701,7 +728,7 @@ def save_deploy_state(wallet, holders, refs_policy_id, record_token, applied_val
         },
         "proposal_validator_hash": proposal_hash,
         "critique_validator_hash": critique_hash,
-        "agent_registry_hash": AGENT_REGISTRY_HASH,
+        "identity_hash": identity_hash,
         "cross_refs_address": script_hash_to_address(holders["oracle"]["hash"]),
         "tx_hashes": tx_hashes,
         "explorer_url": EXPLORER_URL,

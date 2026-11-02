@@ -8,16 +8,39 @@ They do not need pycardano or a chain connection.
 
   - apply_holder: holder script for a tag, owned by a verification key hash
   - apply_record_token_policy: one-shot record token policy for a seed UTxO
-  - build_governance_config_cbor: GovernanceConfig (12 fields)
+  - identity_hash_from_env: the identity_hash input (VECTOR_IDENTITY_HASH)
+  - build_governance_config_cbor: GovernanceConfig (11 fields)
   - select_seed_utxo / select_collateral_utxo / find_record_utxo: read
     pycardano UTxO objects
+
+Deployment order (Part 2 §3.8 and §7 of docs/IDENTITY_REGISTRY.md in
+agents-marketplace):
+
+  1. config_holder.
+  2. config_seal, bound to config_holder and a fixed seed.
+  3. identity, bound to both. Its script hash (= policy ID) is identity_hash.
+  4. Module-1, a new deployment with identity_party.
+  5. The seal: the configuration token with the hash of identity_party.
+  6. Module-3. ReputationConfig embeds identity_hash and the Module-1 hashes
+     of step 4.
+  7. Module-6 (these scripts). GovernanceConfig embeds identity_hash.
+
+Input: the environment variable VECTOR_IDENTITY_HASH, with no default
+(deploy.py also reads it from .env). deploy.py stops when the value is
+missing, is not 28 bytes of hex, is all zero or is the legacy agent registry
+hash.
+
+Operator keys: new Foundation keys deploy the modules and act as their
+operators. The wallet key of deploy.py must be one of these keys. Old module
+keys are not reused.
 """
 
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 import cbor2
 
@@ -31,7 +54,6 @@ RECORD_TOKEN_TITLE = "record_token.record_token.mint"
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-AGENT_REGISTRY_HASH = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
 ZEROED_28 = "00" * 28
 
 # Holder tags (shared/holder-scripts/validators/holder.ak). The CrossRefs NFT
@@ -57,6 +79,63 @@ def _hex_bytes(name: str, value: str, size: Optional[int] = None) -> bytes:
     if size is not None and len(raw) != size:
         raise ValueError(f"{name} must be {size} bytes, got {len(raw)} bytes")
     return raw
+
+
+# ── Deployment input ─────────────────────────────────────────────────────────
+
+DEPLOYMENT_ORDER = (
+    "Deployment order (Part 2 §3.8 and §7 of docs/IDENTITY_REGISTRY.md): "
+    "config_holder, config_seal, identity, Module-1 with identity_party, "
+    "the seal, then Module-3, then Module-6."
+)
+
+# identity_hash is the script hash (= policy ID) of the identity registry
+# contract `identity`. There is no default, because the value exists only
+# after the identity deployment.
+IDENTITY_HASH_ENV = "VECTOR_IDENTITY_HASH"
+
+# The legacy agent registry (policy ID = script hash). It is not allowed as
+# identity_hash.
+LEGACY_REGISTRY_HASH = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
+
+
+class DeployInputError(ValueError):
+    """A value from another deployment is missing or not allowed."""
+
+
+def _identity_hash_problem(value: Optional[str]) -> Optional[str]:
+    """Why `value` is not allowed as identity_hash, or None when it is allowed."""
+    source = "the identity deployment (the script hash of `identity`)"
+    if not value:
+        return f"identity_hash is not set. Set {IDENTITY_HASH_ENV} to the value from {source}."
+    try:
+        raw = bytes.fromhex(value)
+    except ValueError:
+        return f"identity_hash ({IDENTITY_HASH_ENV}) is not hex: {value!r}."
+    if len(raw) != 28:
+        return f"identity_hash ({IDENTITY_HASH_ENV}) must be 28 bytes, got {len(raw)} bytes."
+    if raw == bytes(28):
+        return f"identity_hash ({IDENTITY_HASH_ENV}) is all zero. Set the value from {source}."
+    if raw.hex() == LEGACY_REGISTRY_HASH:
+        return (f"identity_hash ({IDENTITY_HASH_ENV}) is the legacy agent registry hash. "
+                f"Set the value from {source}.")
+    return None
+
+
+def _identity_hash_bytes(value: Optional[str]) -> bytes:
+    """Decode identity_hash. Raises DeployInputError, with the deployment
+    order, when the value is missing or not allowed."""
+    problem = _identity_hash_problem(value)
+    if problem:
+        raise DeployInputError(f"{problem}\n{DEPLOYMENT_ORDER}")
+    return bytes.fromhex(value)
+
+
+def identity_hash_from_env(environ: Mapping[str, str] = os.environ) -> str:
+    """identity_hash as lowercase hex, from VECTOR_IDENTITY_HASH. Raises
+    DeployInputError, with the deployment order, when the value is missing
+    or not allowed."""
+    return _identity_hash_bytes(environ.get(IDENTITY_HASH_ENV, "").strip()).hex()
 
 
 # ── aiken blueprint apply ────────────────────────────────────────────────────
@@ -144,25 +223,34 @@ def build_governance_config_cbor(
     params_holder_hash: str,
     treasury_holder_hash: str,
     record_token_policy: str,
+    identity_hash: str,
 ) -> str:
     """Build GovernanceConfig as Plutus Data CBOR (hex).
 
-    Constructor 0 with 12 fields (all ByteArray). The record token policy is
-    the last field.
+    Constructor 0 with 11 fields (all ByteArray) in the order of the Aiken
+    type (contracts/governance-suggestion/lib/governance_suggestion/types.ak).
+    identity_hash is the last field. When identity_hash is missing, all zero
+    or the legacy agent registry hash, the function raises DeployInputError
+    with the deployment order.
+
+    reputation_validator_hash and jury_pool_hash stay zero, as before: the
+    validators then skip the Module-3 checks that use them. A non-zero value
+    must be the hash of the new Module-3 reputation validator (it embeds
+    identity_hash and the new Module-1 hashes) or of the new Module-1 jury
+    pool. It must never be a hash of the old deployments.
     """
     fields = [
         _hex_bytes("refs_token_policy", refs_token_policy, 28),        # refs_token_policy
         bytes.fromhex(ZEROED_28),               # prediction_validator_hash
-        bytes.fromhex(AGENT_REGISTRY_HASH),     # registry_policy_id
-        bytes.fromhex(AGENT_REGISTRY_HASH),     # registry_script_hash
-        bytes.fromhex(ZEROED_28),               # reputation_validator_hash (Module-3 not deployed)
-        bytes.fromhex(ZEROED_28),               # jury_pool_hash (Phase 1.2)
+        bytes.fromhex(ZEROED_28),               # reputation_validator_hash (zero, see above)
+        bytes.fromhex(ZEROED_28),               # jury_pool_hash (zero, see above)
         _hex_bytes("oracle_holder_hash", oracle_holder_hash, 28),      # governance_oracle_hash
         _hex_bytes("params_holder_hash", params_holder_hash, 28),      # governance_params_hash
         _hex_bytes("treasury_holder_hash", treasury_holder_hash, 28),  # governance_treasury_hash
         bytes.fromhex(ZEROED_28),               # credibility_pool_hash (Phase 1.2)
         bytes.fromhex(ZEROED_28),               # protocol_params_hash
         _hex_bytes("record_token_policy", record_token_policy, 28),    # record_token_policy
+        _identity_hash_bytes(identity_hash),                           # identity_hash
     ]
     # Plutus Data constructor: Tag 121 + 0 = constr(0, fields)
     return cbor2.dumps(cbor2.CBORTag(121, fields)).hex()
@@ -170,23 +258,35 @@ def build_governance_config_cbor(
 
 # ── Deploy state ─────────────────────────────────────────────────────────────
 
-def resume_state_error(state: dict, owner_vkh_hex: str) -> Optional[str]:
-    """Check a saved deploy state before a deploy run with record tokens.
+def resume_state_error(state: dict, owner_vkh_hex: str, identity_hash: str) -> Optional[str]:
+    """Check a saved deploy state before a deploy run.
 
     Returns an error message, or None when the run can continue. A state with
     tx hashes but without record_token_policy is from a deployment before
-    record tokens: a new deployment must not reuse its tx hashes.
+    record tokens. A state with tx hashes but without identity_hash is from a
+    deployment with the legacy agent registry fields. A new deployment must
+    not reuse their tx hashes. A state with another identity_hash belongs to
+    another configuration: its validators differ.
     """
     policy = state.get("record_token_policy")
     if state.get("tx_hashes") and not policy:
         return ("the deploy state belongs to a deployment without record tokens. "
                 "Move it to a different path to start a new deployment.")
+    if state.get("tx_hashes") and not state.get("identity_hash"):
+        return ("the deploy state belongs to a deployment with the legacy agent "
+                "registry fields (no identity_hash). Move it to a different path "
+                "to start a new deployment.")
     if policy and not state.get("record_token_seed"):
         return "the deploy state has record_token_policy but no record_token_seed."
     owner = state.get("holder_owner_vkey_hash")
     if owner and owner != owner_vkh_hex:
         return (f"the deploy state belongs to the holder owner {owner}, "
                 f"not to this wallet ({owner_vkh_hex}).")
+    saved = state.get("identity_hash")
+    if saved and saved != identity_hash:
+        return (f"the deploy state has identity_hash {saved}, but {IDENTITY_HASH_ENV} "
+                f"is {identity_hash}. Use the value of that deployment, or move the "
+                f"state to a different path to start a new deployment.")
     return None
 
 

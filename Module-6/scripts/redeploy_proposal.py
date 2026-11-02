@@ -4,7 +4,8 @@ Module 6: Targeted Redeployment — proposal_mint + proposal_spend + CrossRefs
 After fixing Bug C (token name uses own_ref) and Bug D (activity_tracking
 output policy hash), the proposal_mint and proposal_spend validators changed.
 This script:
-  1. Applies GovernanceConfig to the fresh blueprint
+  1. Applies GovernanceConfig to the fresh blueprint, with the values of
+     deploy_state.json (record token policy and identity_hash included)
   2. Deploys only proposal_mint and proposal_spend as new reference scripts
   3. Burns old CrossRefs NFT and mints a new one with updated hashes
   4. Updates deploy_state.json
@@ -77,16 +78,23 @@ async def redeploy():
     holders = state.get("holders", {})
     refs_policy_id = state.get("refs_token_policy", "")
     record_token_policy = state.get("record_token_policy")
+    identity_hash = state.get("identity_hash")
 
     print(f"\nWallet: {wallet['address']}")
 
-    # GovernanceConfig has 12 fields; the last one is the record token policy
-    # of the deployment. A deploy state without it is from a deployment
-    # before record tokens, and the current validators cannot use it.
+    # GovernanceConfig has 11 fields. The record token policy and
+    # identity_hash of the deployment are the last two. A deploy state
+    # without them is from a deployment before record tokens or with the
+    # legacy agent registry fields, and the current validators cannot use it.
     if not record_token_policy:
         print(f"\n[ERROR] {DEPLOY_STATE_FILE} has no record_token_policy.")
-        print("        The current GovernanceConfig needs the record token policy (12 fields).")
+        print("        The current GovernanceConfig needs the record token policy (11 fields).")
         print("        Run scripts/deploy.py for a new deployment with record tokens.")
+        return
+    if not identity_hash:
+        print(f"\n[ERROR] {DEPLOY_STATE_FILE} has no identity_hash.")
+        print("        The current GovernanceConfig needs identity_hash (11 fields).")
+        print("        Run scripts/deploy.py for a new deployment with identity_hash.")
         return
 
     # Step 1: Re-apply GovernanceConfig to all validators (fresh blueprint)
@@ -97,6 +105,7 @@ async def redeploy():
         params_holder_hash=holders["params"]["hash"],
         treasury_holder_hash=holders["treasury"]["hash"],
         record_token_policy=record_token_policy,
+        identity_hash=identity_hash,
     )
 
     applied_bp = apply_governance_config(config_cbor)

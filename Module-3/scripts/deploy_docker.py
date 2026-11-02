@@ -5,11 +5,26 @@ Module 3: Reputation Staking — Deploy via cardano-cli in Docker
 Deploys Module 3 contracts to Vector testnet using the local cardano-node
 running in a Docker container.
 
+Deployment order (deploy_common.py): config_holder, config_seal, identity,
+Module-1 with identity_party, the seal, then Module-3 (this script), then
+Module-6. New Foundation operator keys deploy and operate the modules. The
+wallet key in FEE_WALLET_DIR must be one of these keys. Old module keys are
+not reused.
+
+Inputs (environment variables, no defaults; deploy_common.DEPLOYMENT_INPUTS):
+    VECTOR_IDENTITY_HASH              script hash of the identity contract
+    VECTOR_MODULE1_CLAIM_HASH         claim validator hash of the new Module-1
+    VECTOR_MODULE1_CHALLENGE_HASH     challenge validator hash of the new Module-1
+    VECTOR_MODULE1_JURY_POOL_HASH     jury pool hash of the new Module-1
+    VECTOR_MODULE1_REFS_TOKEN_POLICY  refs token policy of the new Module-1
+
 Steps:
+  0. Read the inputs. Stop when one is missing or not allowed.
   1. Compute NativeScript refs_token_policy from fee wallet vkey_hash
   2. Compute the params (tag 1) and treasury (tag 3) holders, owned by the
      wallet key, choose a seed UTxO and derive the record token policy
-  3. Build ReputationConfig CBOR (13 fields) and apply to both validators
+  3. Build ReputationConfig CBOR (12 fields, identity_hash last) and apply
+     to both validators
   4. Mint the `params` record token and create the ProtocolParams record
      (output 0) in one transaction that spends the seed
   5. Deploy 2 validator reference scripts (CIP-33)
@@ -17,10 +32,16 @@ Steps:
   7. Save deployment state
 
 Resume: deploy_state.json keeps the seed, the record token policy
-(params_token_policy), the holder hashes, the owner key hash and
-genesis_minting_window. A new run reuses them and skips completed steps.
+(params_token_policy), the holder hashes, the owner key hash,
+genesis_minting_window, identity_hash and the Module-1 values. A new run
+reuses them and skips completed steps. A run with other input values stops.
 
 Usage:
+    export VECTOR_IDENTITY_HASH=<hex>
+    export VECTOR_MODULE1_CLAIM_HASH=<hex>
+    export VECTOR_MODULE1_CHALLENGE_HASH=<hex>
+    export VECTOR_MODULE1_JURY_POOL_HASH=<hex>
+    export VECTOR_MODULE1_REFS_TOKEN_POLICY=<hex>
     python3 scripts/deploy_docker.py
 """
 
@@ -40,14 +61,18 @@ except ImportError:
     sys.exit(1)
 
 from deploy_common import (
+    DEPLOYMENT_INPUTS,
     HOLDER_BLUEPRINT_PATH,
     PARAMS_HOLDER_TAG,
     PARAMS_TOKEN_NAME,
     TREASURY_HOLDER_TAG,
+    DeployInputError,
     apply_holder,
     apply_record_token_policy,
     build_protocol_params_json,
     build_reputation_config_cbor,
+    deployment_inputs_from_env,
+    deployment_inputs_state,
     genesis_minting_end_ms,
     parse_utxo_ref,
     resume_state_error,
@@ -68,15 +93,8 @@ DEPLOY_STATE_FILE = DEPLOY_DIR / "deploy_state.json"
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-AGENT_REGISTRY_HASH = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
 AP3X_POLICY_ID = ""       # Native currency (lovelace) on Vector
 AP3X_ASSET_NAME = ""      # Empty for native currency
-
-# Module 1 contract hashes
-MODULE1_CLAIM_HASH = "6884d7c86a0761da8a61e6a7a346197aa2949fef8030a3eb84944dda"
-MODULE1_CHALLENGE_HASH = "781843681859bcababb90a220ad84604cb324aef4757c6a5c46a96fc"
-MODULE1_JURY_POOL_HASH = "b15af09128457e09b23c79119aa0c8c85d25c9fd96656f2611fdc962"
-MODULE1_REFS_TOKEN_POLICY = "205d5f77ffebf60b764ba4f1873eff3764f3d1d594e5dac477a928f9"
 
 TX_WAIT = 25  # seconds between transactions
 
@@ -271,6 +289,16 @@ def deploy():
     print("Module 3: Reputation Staking — Docker Deployment")
     print("=" * 60)
 
+    # Values of other deployments (deploy_common.DEPLOYMENT_INPUTS)
+    try:
+        inputs = deployment_inputs_from_env()
+    except DeployInputError as e:
+        print(f"  ERROR: {e}")
+        return
+    print("\n--- Inputs ---")
+    for field, (env_name, _, _) in DEPLOYMENT_INPUTS.items():
+        print(f"  {env_name}: {inputs[field]}")
+
     # Load existing state for resume support
     state = {}
     if DEPLOY_STATE_FILE.exists():
@@ -296,7 +324,7 @@ def deploy():
     txin, balance = get_wallet_utxo(wallet_addr)
     print(f"  Best UTXO: {txin} ({balance / 1_000_000:.2f} AP3X)")
 
-    state_error = resume_state_error(state, vkey_hash)
+    state_error = resume_state_error(state, vkey_hash, inputs)
     if state_error:
         print(f"  ERROR: {DEPLOY_STATE_FILE}: {state_error}")
         return
@@ -352,7 +380,8 @@ def deploy():
     genesis_minting_window = state.get("genesis_minting_window") or genesis_minting_end_ms()
     print(f"  genesis_minting_window: {genesis_minting_window} (POSIX ms)")
 
-    # Keep the seed and the record token policy before the first on-chain step
+    # Keep the seed, the record token policy and the inputs before the first
+    # on-chain step
     state.update({
         "holder_owner_vkey_hash": vkey_hash,
         "params_holder_hash": params_holder["hash"],
@@ -362,6 +391,7 @@ def deploy():
         "record_token_seed": seed_ref,
         "params_token_policy": params_token_policy,
         "genesis_minting_window": genesis_minting_window,
+        **deployment_inputs_state(inputs),
     })
     write_state(state)
 
@@ -379,18 +409,17 @@ def deploy():
     print("\n--- Step 3: Apply ReputationConfig ---")
     config_cbor = build_reputation_config_cbor(
         refs_token_policy=refs_policy_id,
-        registry_policy_id=AGENT_REGISTRY_HASH,
-        registry_script_hash=AGENT_REGISTRY_HASH,
-        audit_claim_validator_hash=MODULE1_CLAIM_HASH,
-        audit_challenge_validator_hash=MODULE1_CHALLENGE_HASH,
-        audit_jury_pool_hash=MODULE1_JURY_POOL_HASH,
-        audit_refs_token_policy=MODULE1_REFS_TOKEN_POLICY,
+        audit_claim_validator_hash=inputs["audit_claim_validator_hash"],
+        audit_challenge_validator_hash=inputs["audit_challenge_validator_hash"],
+        audit_jury_pool_hash=inputs["audit_jury_pool_hash"],
+        audit_refs_token_policy=inputs["audit_refs_token_policy"],
         params_script_hash=params_holder["hash"],
         treasury_script_hash=treasury_holder["hash"],
         ap3x_policy_id=AP3X_POLICY_ID,
         ap3x_asset_name=AP3X_ASSET_NAME,
         oracle_credential=vkey_hash,
         params_token_policy=params_token_policy,
+        identity_hash=inputs["identity_hash"],
     )
     print(f"  Config CBOR: {len(config_cbor) // 2} bytes")
 
@@ -670,6 +699,7 @@ def deploy():
     print(f"  Refs token policy:     {refs_policy_id}")
     print(f"  Params token policy:   {params_token_policy}")
     print(f"  Params holder:         {params_holder['hash']}")
+    print(f"  Identity hash:         {inputs['identity_hash']}")
     for name, tx in tx_hashes.items():
         print(f"  {name}: {tx}")
 
@@ -687,10 +717,8 @@ def save_state(state, tx_hashes, applied_validators, reputation_hash,
         "reputation_address": reputation_addr,
         "endorsement_address": endorsement_addr,
         "params_holder_address": params_addr,
-        "agent_registry_hash": AGENT_REGISTRY_HASH,
         "ap3x_policy_id": AP3X_POLICY_ID,
         "ap3x_asset_name": AP3X_ASSET_NAME,
-        "module1_refs_token_policy": MODULE1_REFS_TOKEN_POLICY,
         "validators": {
             title: {"hash": info["hash"]}
             for title, info in applied_validators.items()
