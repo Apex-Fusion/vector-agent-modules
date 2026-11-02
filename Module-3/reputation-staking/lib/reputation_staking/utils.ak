@@ -2,23 +2,29 @@
 ///
 /// Credential checks and byte helpers delegate to the shared library
 /// (shared/). Token name derivation and AP3X helpers remain Module 3–specific.
-/// Identity registry checks are in shared/identity.
+/// Identity registry checks are in shared/identity; the exit and opening
+/// rules of Module 3 (`exit_paid`, `opens_with`) use them.
 ///
 /// Validation code imports these helpers from this single place.
 
 use aiken/builtin
+use aiken/collection/dict.{Dict}
 use aiken/collection/list
-use cardano/address.{Credential, Script, VerificationKey}
+use aiken/crypto.{blake2b_224}
+use cardano/address.{Address, Credential, Script, VerificationKey}
 use cardano/assets
-use cardano/transaction.{Input, OutputReference, Transaction}
+use cardano/transaction.{Input, Output, OutputReference, Transaction}
+use reputation_staking/config.{ReputationConfig}
 use reputation_staking/types.{
   challenge_token_prefix, endorsement_token_prefix, history_bonus_token_prefix,
   stake_token_prefix,
 }
 use shared/bytearray as shared_bytearray
 use shared/credential as shared_credential
+use shared/identity.{Window}
 use shared/token_naming
 use shared/utxo
+use vector_identity.{controller_signed, find_record}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Credential / signature checks
@@ -39,6 +45,64 @@ pub fn has_key_signed(tx: Transaction, key_hash: ByteArray) -> Bool {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Identity rules of positions (Part 2 §7, Module-3 row)
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// An action by agent `id` that opens a position with the payout credential
+/// `credential`: the record of `id` is Active over `w`, it lists each of
+/// `capabilities`, its controller signed the transaction, and `credential`
+/// is a declared credential of the record (`identity.declared_credential`:
+/// the controller key or a listed key with the transaction purpose).
+pub fn opens_with(
+  tx: Transaction,
+  identity_hash: ByteArray,
+  id: ByteArray,
+  w: Window,
+  capabilities: List<ByteArray>,
+  credential: Credential,
+) -> Bool {
+  when identity.active_record(tx.reference_inputs, identity_hash, id, w) is {
+    Some(record) -> and {
+        identity.lists_capabilities(record, capabilities),
+        controller_signed(record, tx),
+        identity.declared_credential(record, credential),
+      }
+    None -> False
+  }
+}
+
+/// An exit of a position of agent `id` that returns `amount` AP3X to its
+/// owner at the owner's request (rule D-exit):
+///   - The record of `id` is a reference input (`find_record`, any status,
+///     also a tombstone) and its controller signed the transaction.
+///   - The outputs to the payee hold at least `amount` AP3X in total. The
+///     payee is `stored` (the credential of the position) when the record
+///     still trusts it (`identity.declared_credential`). Else the payee is
+///     the controller key of the record. So after a controller change, a
+///     recovery or a key removal, the funds go to a key that the record
+///     trusts now.
+pub fn exit_paid(
+  tx: Transaction,
+  cfg: ReputationConfig,
+  id: ByteArray,
+  stored: Credential,
+  amount: Int,
+) -> Bool {
+  when find_record(tx.reference_inputs, cfg.identity_hash, id) is {
+    Some(record) -> {
+      let payee =
+        if identity.declared_credential(record, stored) {
+          stored
+        } else {
+          VerificationKey(blake2b_224(record.controller))
+        }
+      controller_signed(record, tx) && ap3x_paid_to(cfg, tx.outputs, payee) >= amount
+    }
+    None -> False
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // ByteArray helpers (delegates to shared/bytearray)
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -55,6 +119,86 @@ pub fn is_subset(subset: List<ByteArray>, superset: List<ByteArray>) -> Bool {
 /// Check if a ByteArray starts with a given prefix.
 pub fn starts_with(data: ByteArray, prefix: ByteArray) -> Bool {
   shared_bytearray.starts_with(data, prefix)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Addresses, tokens and payouts
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The exact address of a script: payment credential `Script(hash)` and no
+/// stake credential (the address that the deployment uses).
+pub fn exact_address(hash: ByteArray) -> Address {
+  Address { payment_credential: Script(hash), stake_credential: None }
+}
+
+/// True when the value holds exactly one token of `policy` in total: `name`
+/// with quantity 1.
+pub fn holds_single_token(
+  value: assets.Value,
+  policy: ByteArray,
+  name: ByteArray,
+) -> Bool {
+  dict.to_pairs(assets.tokens(value, policy)) == [Pair(name, 1)]
+}
+
+/// True when `tokens` (the tokens of one policy) is exactly one token whose
+/// name starts with `prefix`, with quantity `quantity`. A mint redeemer uses
+/// it so that the transaction mints or burns no other token of the policy.
+pub fn single_token_change(
+  tokens: Dict<ByteArray, Int>,
+  prefix: ByteArray,
+  quantity: Int,
+) -> Bool {
+  when dict.to_pairs(tokens) is {
+    [Pair(name, q)] -> q == quantity && starts_with(name, prefix)
+    _ -> False
+  }
+}
+
+/// True when the transaction mints or burns no challenge token (a token of
+/// `endorsement_policy` whose name starts with the challenge prefix).
+pub fn no_challenge_change(
+  tx: Transaction,
+  endorsement_policy: ByteArray,
+) -> Bool {
+  list.all(
+    dict.keys(assets.tokens(tx.mint, endorsement_policy)),
+    fn(name) { !starts_with(name, challenge_token_prefix) },
+  )
+}
+
+/// The AP3X that the outputs to `credential` hold in total. Payout checks
+/// add up all outputs to the payee.
+pub fn ap3x_paid_to(
+  cfg: ReputationConfig,
+  outputs: List<Output>,
+  credential: Credential,
+) -> Int {
+  list.foldl(
+    outputs,
+    0,
+    fn(output, total) {
+      if output.address.payment_credential == credential {
+        total + get_ap3x_amount(
+          output.value,
+          cfg.ap3x_policy_id,
+          cfg.ap3x_asset_name,
+        )
+      } else {
+        total
+      }
+    },
+  )
+}
+
+/// True when the outputs at the protocol treasury hold at least `amount` AP3X
+/// in total (always true for an amount of zero or less).
+pub fn treasury_paid(
+  cfg: ReputationConfig,
+  outputs: List<Output>,
+  amount: Int,
+) -> Bool {
+  amount <= 0 || ap3x_paid_to(cfg, outputs, Script(cfg.treasury_script_hash)) >= amount
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

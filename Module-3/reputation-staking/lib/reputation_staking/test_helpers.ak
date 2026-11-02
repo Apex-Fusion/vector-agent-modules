@@ -11,6 +11,7 @@ use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use shared/identity_fixtures
 use shared/record_auth
+use vector_identity/types as identity_types
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test constants
@@ -60,11 +61,16 @@ pub const test_agent_did: ByteArray = "agent_did_001"
 
 pub const test_agent_did_2: ByteArray = "agent_did_002"
 
+/// The owner key hash of test_agent_did: the hash of the listed transaction
+/// key `identity_fixtures.ed_key(1)` of its test record (a declared
+/// credential, not the controller key).
 pub const test_owner_key_hash: ByteArray =
-  #"aabb000000000000000000000000000000000000000000000000000000000009"
+  #"e1f283c8b88cc8a7c3c2686da4a56240a12dfd92717298155572dc83"
 
+/// The owner key hash of test_agent_did_2: the hash of the listed
+/// transaction key `identity_fixtures.ed_key(2)` of its test record.
 pub const test_owner_key_hash_2: ByteArray =
-  #"aabb00000000000000000000000000000000000000000000000000000000000a"
+  #"80230b45a9b6111656d73e1219966373ea23254337a9eb492a3daa57"
 
 pub const test_tx_hash: ByteArray =
   #"0000000000000000000000000000000000000000000000000000000000000000"
@@ -195,12 +201,28 @@ pub fn test_controller_hash(n: Int) -> ByteArray {
 }
 
 /// The authentic identity record of `agent_did` (Active, controller key `n`,
-/// the test capabilities, created_at 0) as a reference input.
+/// the test capabilities, created_at 0) as a reference input. It lists
+/// `identity_fixtures.ed_key(n)` with the transaction purpose, so the owner
+/// key of the agent (test_owner_key_hash for n = 1, test_owner_key_hash_2
+/// for n = 2) is a declared credential.
 pub fn make_identity_ref_input(agent_did: ByteArray, n: Int) -> Input {
-  identity_fixtures.record_input(
-    agent_did,
+  identity_fixtures.record_input(agent_did, test_record(n))
+}
+
+/// The Active test record with controller key `n`, the test capabilities and
+/// the listed transaction key `identity_fixtures.ed_key(n)`.
+pub fn test_record(n: Int) -> identity_types.IdentityDatum {
+  identity_fixtures.with_transaction_key(
     identity_fixtures.record(n, test_capabilities),
+    n,
   )
+}
+
+test owner_key_hashes_are_listed_transaction_keys() {
+  and {
+    test_owner_key_hash == identity_fixtures.ed_key_hash(1),
+    test_owner_key_hash_2 == identity_fixtures.ed_key_hash(2),
+  }
 }
 
 /// The signatures of the owner key and of the record controller of

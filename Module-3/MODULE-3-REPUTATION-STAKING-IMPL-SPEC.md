@@ -139,17 +139,25 @@ DECAY (inactive agents lose reputation):
 pub type StakeDatum {
   /// DID of the staking agent (policy_id from registry NFT)
   agent_did: ByteArray,
-  /// Payment credential of the agent owner
+  /// Payment credential of the agent owner (at creation: a declared
+  /// credential of the agent's identity record)
   owner_credential: Credential,
   /// Total AP3X self-staked (in DFM)
   stake_amount: Int,
   /// Capabilities this stake backs (must match registry capabilities)
   staked_capabilities: List<ByteArray>,
-  /// Slot when stake was created or last modified
+  /// POSIX ms of the last owner action: the upper bound of its validity
+  /// range (at most one hour). The cooldown compares it with the lower bound
+  /// of a later transaction (wave 4).
   last_updated: Int,
   /// Accumulated history bonus points (from winning challenges, cross-module bonuses)
   /// Updated only when this UTXO is consumed and re-created (e.g., IncreaseStake, AddHistoryBonus)
   history_points: Int,
+  /// Challenge token names of the open challenges against this stake (wave
+  /// 4). A challenge adds its name when it opens and removes it when it
+  /// closes. While the list is not empty, the stake cannot decrease, change
+  /// its capabilities or decay.
+  challenge_locks: List<ByteArray>,
 }
 
 /// DESIGN NOTE on activity tracking for decay:
@@ -183,6 +191,13 @@ pub type StakeAction {
   UpdateCapabilities { new_capabilities: List<ByteArray> }
   /// Process decay on an inactive agent's stake (callable by anyone)
   ClaimDecayRefund
+  /// Slash the stake after CapabilityFalsified and remove the challenge lock
+  SlashStake { challenge_ref: OutputReference }
+  /// Add the lock of a challenge that opens in the same transaction (wave 4)
+  LockForChallenge
+  /// Remove the lock of a challenge that closes without CapabilityFalsified
+  /// (wave 4)
+  ReleaseChallenge { challenge_ref: OutputReference }
 }
 ```
 
@@ -225,7 +240,8 @@ pub type StakeAction {
 pub type EndorsementDatum {
   /// DID of the endorsing agent
   endorser_did: ByteArray,
-  /// Payment credential of endorser
+  /// Payment credential of endorser (at creation: a declared credential of
+  /// the endorser's identity record)
   endorser_credential: Credential,
   /// DID of the agent being endorsed
   target_did: ByteArray,
@@ -235,6 +251,9 @@ pub type EndorsementDatum {
   endorsed_capabilities: List<ByteArray>,
   /// Slot when endorsement was created
   created_at: Int,
+  /// Challenge token names of the resolved challenges that slashed this
+  /// endorsement; a challenge slashes an endorsement at most once (wave 4)
+  slashed_by: List<ByteArray>,
 }
 
 pub type EndorsementAction {
@@ -287,8 +306,11 @@ pub type ReputationChallengeDatum {
 pub type RepChallengeState {
   /// Awaiting resolution
   Open
-  /// Escalated to Module 1 Adversarial Auditing
-  Escalated { audit_claim_ref: OutputReference }
+  /// Escalated to Module 1 Adversarial Auditing. audit_claim_token is the
+  /// name of the Module 1 claim token that the escalation transaction mints
+  /// (wave 4). The output reference of that claim cannot be stored: it holds
+  /// the id of the escalation transaction.
+  Escalated { audit_claim_token: ByteArray }
   /// Resolved — capability verified or falsified
   Resolved { outcome: RepChallengeOutcome }
 }
@@ -486,16 +508,20 @@ Tiers are computed, not stored. Any contract can derive tier from the reputation
 ```
 MUST:
   1. Agent has active DID in Agent Registry (verified via reference input)
-  2. No existing StakeUTXO for this agent_did (first-time stake)
+  2. No existing StakeUTXO for this agent_did (first-time stake): the spent
+     seed input holds no reputation token, the transaction mints exactly one
+     reputation token (the stake token of agent_did), and the new StakeUTXO
+     holds exactly that reputation token (wave 4, R4 P-1)
   3. stake_amount >= MIN_SELF_STAKE (initially 10 AP3X — matches registration deposit)
   4. staked_capabilities is non-empty and is a subset of registry capabilities
      (verified: reference input of agent's registry UTXO, check capabilities list)
-  5. Output StakeUTXO at reputation validator address contains:
-     - Inline datum with correct fields
+  5. Output StakeUTXO at the exact reputation validator address contains:
+     - Inline datum with correct fields (challenge_locks empty)
      - Value includes stake_amount AP3X + min UTXO ADA
      - Stake tracking token (minted in same tx)
-  6. last_active = current slot
-  7. Transaction signed by owner_credential
+  6. last_updated = upper bound of the validity range (at most one hour)
+  7. Transaction signed by owner_credential, which is a declared credential
+     of the agent's record
 ```
 
 ### 6.2 Increase/Decrease Stake
@@ -503,21 +529,25 @@ MUST:
 ```
 IncreaseStake MUST:
   1. Existing StakeUTXO consumed (with stake token)
-  2. Continuing output with same agent_did, increased stake_amount
+  2. Continuing output with same agent_did, increased stake_amount, same
+     challenge_locks
   3. Value difference matches the increase
-  4. last_updated = current slot
+  4. last_updated = upper bound of the validity range (at most one hour)
   5. Transaction signed by owner_credential
 
 DecreaseStake MUST:
   1. Existing StakeUTXO consumed (with stake token)
   2. new_amount = stake_amount - decrease_amount
   3. new_amount >= MIN_SELF_STAKE (cannot unstake below minimum)
-  4. COOLDOWN: last_updated + STAKE_COOLDOWN <= current slot
-     (prevents rapid stake-then-unstake manipulation)
-  5. No active challenges against this agent (cannot unstake while challenged)
-  6. Continuing output with decreased stake_amount
-  7. Difference returned to owner_credential
-  8. Transaction signed by owner_credential
+  4. COOLDOWN: last_updated + STAKE_COOLDOWN <= lower bound of the validity
+     range (prevents rapid stake-then-unstake manipulation)
+  5. No active challenges against this agent: challenge_locks is empty (the
+     lock is in the stake datum, so the spender cannot hide it)
+  6. Continuing output with decreased stake_amount;
+     last_updated = upper bound of the validity range
+  7. Difference paid to owner_credential while the agent's record trusts it,
+     else to the record's controller key (outputs to the payee added up)
+  8. Transaction signed by the controller of the agent's record
 ```
 
 ### 6.3 Create Endorsement (`MintEndorsementToken`)
@@ -578,9 +608,10 @@ MUST:
   2. created_at + ENDORSEMENT_COOLDOWN <= current slot
      (prevents flash-endorse-then-withdraw manipulation)
   3. Target agent has no active challenges (cannot withdraw during dispute)
-  4. Stake returned to endorser_credential
+  4. Stake paid to endorser_credential while the endorser's record trusts
+     it, else to the record's controller key (outputs to the payee added up)
   5. Endorsement token burned
-  6. Transaction signed by endorser_credential
+  6. Transaction signed by the controller of the endorser's record
 ```
 
 ### 6.5 Update Capabilities (`UpdateCapabilities`)
@@ -591,11 +622,14 @@ MUST:
   2. new_capabilities is non-empty
   3. new_capabilities is a subset of agent's registry capabilities
      (verified via reference input to Agent Registry UTXO)
-  4. COOLDOWN: last_updated + STAKE_COOLDOWN <= current slot
-  5. No active challenges against capabilities being REMOVED
-     (cannot drop a capability while it's being challenged)
-  6. Continuing output with updated staked_capabilities, same stake_amount
-  7. last_updated = current slot
+  4. COOLDOWN: last_updated + STAKE_COOLDOWN <= lower bound of the validity
+     range
+  5. No active challenges against this stake: challenge_locks is empty.
+     Removing a capability could escape a challenge, and adding one would
+     lower the slash (stake / number of capabilities)
+  6. Continuing output with updated staked_capabilities, same stake_amount,
+     and at least stake_amount AP3X
+  7. last_updated = upper bound of the validity range
   8. Transaction signed by owner_credential
 
 NOTE: Adding new capabilities costs nothing extra (just a datum update).
@@ -668,15 +702,22 @@ IMPLEMENTATION NOTE:
 
 ```
 MUST:
-  1. Challenger has active DID in Agent Registry
-  2. Target agent has active DID AND active StakeUTXO
+  1. Challenger has active DID in Agent Registry; challenger_credential is a
+     declared credential of its record
+  2. Target agent has a StakeUTXO, and the transaction spends it at the
+     exact reputation address (LockForChallenge adds the challenge token
+     name to its challenge_locks). The target's identity record is not read
+     (wave 4, D-dodge): its status and record capabilities do not matter
   3. challenger_did != target_did (cannot self-challenge)
-  4. challenged_capability is in target's staked_capabilities list
+  4. challenged_capability is in target's staked_capabilities list, and
+     target_credential is the stake's owner_credential
   5. stake_amount >= MIN_CHALLENGE_STAKE (initially 25 AP3X)
   6. evidence_hash is exactly 32 bytes
   7. No existing open challenge from this challenger against this target
-     for the same capability (one challenge per capability per pair)
-  8. ChallengeUTXO created with state = Open
+     for the same capability (one challenge per capability per pair; the
+     stake refuses a second lock with the same name)
+  8. ChallengeUTXO created with state = Open; the transaction mints exactly
+     its challenge token
   9. Transaction signed by challenger_credential
 ```
 
@@ -723,8 +764,13 @@ MUST:
      - claim_hash = blake2b_256(challenge evidence + counter-evidence)
      - claim_type = "reputation_challenge"
      - stake = forwarded from both parties' stakes
-  5. ChallengeUTXO updated: state = Escalated { audit_claim_ref }
-  6. Resolution handled entirely by Module 1 system
+  5. The transaction mints exactly one Module 1 claim token, held by the
+     claim output; ChallengeUTXO updated: state = Escalated
+     { audit_claim_token } with the name of that token (wave 4, R4 P-2)
+  6. Resolution handled entirely by Module 1 system. ResolveEscalation reads
+     the Module 1 challenge at the exact Module 1 challenge address with
+     exactly one Module 1 challenge token and claim_token ==
+     audit_claim_token
   7. Module 1 verdict maps back:
      - ClaimerWins (target wins) → CapabilityVerified
      - AuditorWins (challenger wins) → CapabilityFalsified
@@ -732,7 +778,12 @@ MUST:
 
 IF NEITHER PARTY ESCALATES:
   Foundation oracle resolves directly (Phase 1.0)
-  or challenge expires as Inconclusive (stakes returned minus fees)
+  or, after the challenge timeout, ExpireChallenge returns the challenge
+  stake to the challenger (no fee)
+
+EVERY CLOSING PATH (WithdrawChallenge, ExpireChallenge, DistributeOutcome)
+spends the target's StakeUTXO and removes the lock of the challenge
+(ReleaseChallenge, or SlashStake for CapabilityFalsified).
 ```
 
 ### 6.11 Resolve Challenge
@@ -758,8 +809,12 @@ Phase 1.1+ — Escalation to Module 1:
 SLASHING (CapabilityFalsified):
   Target agent: loses stake proportional to challenged capability
     slash_amount = self_stake × (1 / num_staked_capabilities)
+    (SlashStake on the locked StakeUTXO in the DistributeOutcome tx)
   Endorsers of that capability: lose 50% of their endorsement stake
-  Challenger receives: target_slash + endorser_slashes - protocol_fee (5%)
+    (SlashEndorsement; one slash per challenge and endorsement)
+  Challenger receives: the AP3X that the challenge holds (its stake, less a
+    DefaultJudgment fee that left it) + target_slash - protocol_fee (5% of
+    target_slash); each endorser slash pays slash - fee separately
   Protocol treasury receives: protocol_fee
 
 REWARD (CapabilityVerified):
@@ -767,6 +822,12 @@ REWARD (CapabilityVerified):
   Target agent: receives challenger's stake minus protocol_fee
   Endorsers: no change (vindicated)
   history_bonus += challenger_stake × HISTORY_MULTIPLIER
+
+INCONCLUSIVE:
+  Challenger: receives its stake minus half of protocol_fee
+  Protocol treasury: receives that half
+  Target agent: its stake keeps all its AP3X (the challenge does not hold
+  the target's stake, so the target pays nothing)
 ```
 
 ---

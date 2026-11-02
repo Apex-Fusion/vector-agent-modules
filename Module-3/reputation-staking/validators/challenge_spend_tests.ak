@@ -3,6 +3,10 @@
 /// Each test builds a full transaction and calls the spend handler of the
 /// endorsement validator for a challenge output. Times are POSIX
 /// milliseconds; the test parameters use the deployment values.
+///
+/// The paths that close a challenge (WithdrawChallenge, ExpireChallenge)
+/// also spend the target's StakeUTXO, which removes the lock of the
+/// challenge (W4 item 1).
 
 use aiken/interval
 use cardano/address.{VerificationKey}
@@ -16,14 +20,16 @@ use reputation_staking/test_helpers.{
   test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_controller_hash, test_endorsement_policy_id, test_owner_key_hash,
   test_owner_key_hash_2, test_params, test_refs, test_refs_token_policy,
-  test_tx_hash,
+  test_reputation_policy_id, test_tx_hash,
 }
 use reputation_staking/types.{
   CapabilityFalsified, Challenge, ChallengeSpend, DefaultJudgment,
   ExpireChallenge, Open, ReputationChallengeDatum, Resolved,
-  RespondToChallenge, WithdrawChallenge,
+  RespondToChallenge, StakeDatum, WithdrawChallenge,
 }
-use reputation_staking/utils.{derive_challenge_token_name}
+use reputation_staking/utils.{
+  derive_challenge_token_name, derive_stake_token_name,
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -108,6 +114,33 @@ fn ap3x_to(key: ByteArray, amount: Int) -> Output {
     key_address(key),
     assets.from_lovelace(2_000_000)
       |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, amount),
+  )
+}
+
+/// The target's StakeUTXO with the lock of the test challenge.
+fn locked_target_stake() -> Input {
+  make_input(
+    test_tx_hash,
+    50,
+    make_output(
+      script_address(test_reputation_policy_id),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 20_000_000)
+        |> assets.add(
+            test_reputation_policy_id,
+            derive_stake_token_name(test_agent_did_2),
+            1,
+          ),
+      StakeDatum {
+        agent_did: test_agent_did_2,
+        owner_credential: VerificationKey(test_owner_key_hash_2),
+        stake_amount: 20_000_000,
+        staked_capabilities: ["code_review", "testing"],
+        last_updated: 500,
+        history_points: 0,
+        challenge_locks: [challenge_token()],
+      },
+    ),
   )
 }
 
@@ -270,6 +303,7 @@ fn withdraw_tx(validity_range: interval.Interval) -> Transaction {
     )
   Transaction {
     ..tx,
+    inputs: [locked_target_stake(), ..tx.inputs],
     reference_inputs: [
       make_identity_ref_input(test_agent_did, 1),
       ..tx.reference_inputs
@@ -299,13 +333,16 @@ test withdraw_challenge_with_upper_bound_after_deadline_fails() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 fn expire_tx(current_slot: Int) -> Transaction {
-  Transaction {
-    ..challenge_tx(
+  let tx =
+    challenge_tx(
       responded(5_000),
       current_slot,
       [ap3x_to(test_owner_key_hash, challenge_stake)],
       [],
-    ),
+    )
+  Transaction {
+    ..tx,
+    inputs: [locked_target_stake(), ..tx.inputs],
     mint: assets.from_asset(test_endorsement_policy_id, challenge_token(), -1),
   }
 }
@@ -318,4 +355,18 @@ test expire_responded_challenge_after_timeout() {
 test expire_responded_challenge_before_timeout_fails() {
   let tx = expire_tx(challenge_timeout(test_params(), created_at))
   !spend(responded(5_000), ExpireChallenge, tx)
+}
+
+/// W4 item 1: the withdrawal also spends the target's StakeUTXO, so that the
+/// lock of the challenge goes. Before, the stake was not an input.
+test withdraw_challenge_without_target_stake_fails() {
+  let tx = withdraw_tx(interval.between(created_at + 1_000, created_at + 2_000))
+  !spend(
+    open_challenge(),
+    WithdrawChallenge,
+    Transaction {
+      ..tx,
+      inputs: [challenge_input(open_challenge())],
+    },
+  )
 }

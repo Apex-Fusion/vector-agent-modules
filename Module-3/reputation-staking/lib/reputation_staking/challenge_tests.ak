@@ -4,15 +4,18 @@
 /// values: challenge_response_deadline = 43_200_000 (12 h),
 /// escalation_window = 21_600_000 (6 h), activity_window = 180 epochs of
 /// 14_400_000 ms (30 days).
+///
+/// Every path that opens or closes a challenge spends the target's
+/// StakeUTXO (W4 item 1: the lock of the challenge is in the stake datum).
 
 use aiken/interval
-use cardano/address.{VerificationKey}
+use cardano/address.{Address, VerificationKey}
 use cardano/assets
-use cardano/transaction.{Transaction}
+use cardano/transaction.{Input, Output, OutputReference, Transaction}
 use reputation_staking/challenge_validation.{
-  challenge_timeout, validate_default_judgment, validate_expire_challenge,
-  validate_mint_challenge, validate_respond_to_challenge,
-  validate_resolve_challenge,
+  challenge_timeout, validate_default_judgment, validate_distribute_outcome,
+  validate_expire_challenge, validate_mint_challenge,
+  validate_respond_to_challenge, validate_resolve_challenge,
 }
 use reputation_staking/test_helpers.{
   agent_signers, base_tx, key_address, make_identity_ref_input, make_input,
@@ -20,11 +23,11 @@ use reputation_staking/test_helpers.{
   test_agent_did_2, test_ap3x_asset_name, test_ap3x_policy_id, test_config,
   test_endorsement_policy_id, test_oracle_credential, test_owner_key_hash,
   test_owner_key_hash_2, test_params, test_refs, test_reputation_policy_id,
-  test_tx_hash,
+  test_treasury_script_hash, test_tx_hash,
 }
 use reputation_staking/types.{
   CapabilityFalsified, CapabilityVerified, Challenge, Escalated, Inconclusive,
-  Open, ReputationChallengeDatum, Resolved, StakeDatum,
+  Open, RepChallengeOutcome, ReputationChallengeDatum, Resolved, StakeDatum,
 }
 use reputation_staking/utils.{
   derive_challenge_token_name, derive_stake_token_name,
@@ -341,18 +344,63 @@ fn challenge_token_burn(datum: ReputationChallengeDatum) -> assets.Value {
   )
 }
 
-fn stake_to_challenger(amount: Int) -> transaction.Output {
+fn stake_to_challenger(amount: Int) -> Output {
+  ap3x_to(key_address(test_owner_key_hash), amount)
+}
+
+fn ap3x_to(address: Address, amount: Int) -> Output {
   make_output_no_datum(
-    key_address(test_owner_key_hash),
+    address,
     assets.from_lovelace(2_000_000)
       |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, amount),
   )
+}
+
+/// The target's StakeUTXO (test_agent_did_2, owner key 2) as a spent input:
+/// 20 AP3X, two capabilities, with `locks`.
+fn target_stake_input(locks: List<ByteArray>) -> Input {
+  let stake_datum =
+    StakeDatum {
+      agent_did: test_agent_did_2,
+      owner_credential: VerificationKey(test_owner_key_hash_2),
+      stake_amount: 20_000_000,
+      staked_capabilities: ["code_review", "testing"],
+      last_updated: 500,
+      history_points: 0,
+      challenge_locks: locks,
+    }
+  make_input(
+    test_tx_hash,
+    50,
+    make_output(
+      script_address(test_reputation_policy_id),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 20_000_000)
+        |> assets.add(
+            test_reputation_policy_id,
+            derive_stake_token_name(test_agent_did_2),
+            1,
+          ),
+      stake_datum,
+    ),
+  )
+}
+
+/// The challenge token of the test challenges.
+fn base_challenge_token() -> ByteArray {
+  derive_challenge_token_name(test_agent_did, test_agent_did_2, "code_review")
+}
+
+/// The target's StakeUTXO with the lock of the test challenge.
+fn locked_target_stake() -> Input {
+  target_stake_input([base_challenge_token()])
 }
 
 fn expire_at(datum: ReputationChallengeDatum, current_slot: Int) -> Bool {
   let tx =
     Transaction {
       ..base_tx(current_slot),
+      inputs: [locked_target_stake()],
       outputs: [stake_to_challenger(datum.stake_amount)],
       mint: challenge_token_burn(datum),
     }
@@ -376,12 +424,7 @@ test expire_escalated_challenge_after_timeout() {
   let datum =
     ReputationChallengeDatum {
       ..responded_challenge(),
-      state: Escalated {
-        audit_claim_ref: transaction.OutputReference {
-          transaction_id: #"0000000000000000000000000000000000000000000000000000000000000001",
-          output_index: 0,
-        },
-      },
+      state: Escalated { audit_claim_token: "claim_token_1" },
     }
   expire_at(datum, challenge_timeout(test_params(), created_at) + 1)
 }
@@ -412,6 +455,7 @@ test expire_challenge_without_payment_to_challenger_fails() {
   let tx =
     Transaction {
       ..base_tx(challenge_timeout(test_params(), created_at) + 1),
+      inputs: [locked_target_stake()],
       outputs: [stake_to_challenger(datum.stake_amount - 1)],
       mint: challenge_token_burn(datum),
     }
@@ -423,9 +467,231 @@ test expire_challenge_without_token_burn_fails() {
   let tx =
     Transaction {
       ..base_tx(challenge_timeout(test_params(), created_at) + 1),
+      inputs: [locked_target_stake()],
       outputs: [stake_to_challenger(datum.stake_amount)],
     }
   !validate_expire_challenge(tx, test_config(), test_refs(), test_params(), datum)
+}
+
+/// W4 item 1: closing a challenge spends the target's StakeUTXO, so that the
+/// lock of the challenge goes. Before, the stake was not an input.
+test expire_challenge_without_target_stake_fails() {
+  let datum = responded_challenge()
+  let tx =
+    Transaction {
+      ..base_tx(challenge_timeout(test_params(), created_at) + 1),
+      outputs: [stake_to_challenger(datum.stake_amount)],
+      mint: challenge_token_burn(datum),
+    }
+  !validate_expire_challenge(tx, test_config(), test_refs(), test_params(), datum)
+}
+
+/// The payout can be split over two outputs to the challenger (the check adds
+/// up the outputs to the payee).
+test expire_challenge_paid_in_two_outputs() {
+  let datum = responded_challenge()
+  let tx =
+    Transaction {
+      ..base_tx(challenge_timeout(test_params(), created_at) + 1),
+      inputs: [locked_target_stake()],
+      outputs: [
+        stake_to_challenger(datum.stake_amount - 1_000_000),
+        stake_to_challenger(1_000_000),
+      ],
+      mint: challenge_token_burn(datum),
+    }
+  validate_expire_challenge(tx, test_config(), test_refs(), test_params(), datum)
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// DistributeOutcome tests (W4 items 3 and 4)
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn challenge_ref() -> OutputReference {
+  OutputReference { transaction_id: test_tx_hash, output_index: 70 }
+}
+
+/// The resolved challenge as the spent input, holding `held` AP3X and its
+/// challenge token.
+fn resolved_input(datum: ReputationChallengeDatum, held: Int) -> Input {
+  Input {
+    output_reference: challenge_ref(),
+    output: make_output(
+      script_address(test_endorsement_policy_id),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, held)
+        |> assets.add(test_endorsement_policy_id, base_challenge_token(), 1),
+      Challenge(datum),
+    ),
+  }
+}
+
+fn resolved_as(outcome: RepChallengeOutcome) -> ReputationChallengeDatum {
+  ReputationChallengeDatum {
+    ..base_challenge_datum(),
+    state: Resolved { outcome },
+  }
+}
+
+fn to_treasury(amount: Int) -> Output {
+  ap3x_to(script_address(test_treasury_script_hash), amount)
+}
+
+/// DistributeOutcome of `datum` (the challenge holds `held` AP3X) with the
+/// spent inputs `stake_inputs` besides the challenge, and `outputs`.
+fn distribute(
+  datum: ReputationChallengeDatum,
+  held: Int,
+  stake_inputs: List<Input>,
+  outputs: List<Output>,
+) -> Bool {
+  let challenge = resolved_input(datum, held)
+  let tx =
+    Transaction {
+      ..base_tx(5_000),
+      inputs: [challenge, ..stake_inputs],
+      outputs,
+      mint: challenge_token_burn(datum),
+    }
+  validate_distribute_outcome(
+    tx,
+    test_config(),
+    test_refs(),
+    test_params(),
+    challenge,
+    datum,
+  )
+}
+
+/// W4 item 3: an Inconclusive outcome pays the challenger its stake less its
+/// half of the protocol fee (25 AP3X × 5% / 2 = 0.625 AP3X), and the treasury
+/// that half. The payouts add up to the 25 AP3X that the challenge holds.
+/// Before, the treasury needed the whole fee as well, so the payouts were
+/// more than the challenge held.
+test distribute_inconclusive_pays_from_challenge_stake() {
+  distribute(
+    resolved_as(Inconclusive),
+    25_000_000,
+    [locked_target_stake()],
+    [stake_to_challenger(24_375_000), to_treasury(625_000)],
+  )
+}
+
+test distribute_inconclusive_underpaying_challenger_fails() {
+  !distribute(
+    resolved_as(Inconclusive),
+    25_000_000,
+    [locked_target_stake()],
+    [stake_to_challenger(24_374_999), to_treasury(625_000)],
+  )
+}
+
+test distribute_inconclusive_underpaying_treasury_fails() {
+  !distribute(
+    resolved_as(Inconclusive),
+    25_000_000,
+    [locked_target_stake()],
+    [stake_to_challenger(24_375_000), to_treasury(624_999)],
+  )
+}
+
+/// W4 item 1: every outcome spends the target's StakeUTXO (the lock goes).
+test distribute_inconclusive_without_target_stake_fails() fail {
+  distribute(
+    resolved_as(Inconclusive),
+    25_000_000,
+    [],
+    [stake_to_challenger(24_375_000), to_treasury(625_000)],
+  )
+}
+
+test distribute_verified_without_target_stake_fails() fail {
+  distribute(
+    resolved_as(CapabilityVerified),
+    25_000_000,
+    [],
+    [
+      ap3x_to(key_address(test_owner_key_hash_2), 23_750_000),
+      to_treasury(1_250_000),
+    ],
+  )
+}
+
+test distribute_verified_with_target_stake() {
+  distribute(
+    resolved_as(CapabilityVerified),
+    25_000_000,
+    [locked_target_stake()],
+    [
+      ap3x_to(key_address(test_owner_key_hash_2), 23_750_000),
+      to_treasury(1_250_000),
+    ],
+  )
+}
+
+/// Falsified: the target's stake of 20 AP3X with two capabilities loses
+/// 10 AP3X; the fee is 0.5 AP3X. The challenger receives what the challenge
+/// holds plus 9.5 AP3X.
+test distribute_falsified_pays_challenge_and_slash() {
+  distribute(
+    resolved_as(CapabilityFalsified),
+    25_000_000,
+    [locked_target_stake()],
+    [stake_to_challenger(34_500_000), to_treasury(500_000)],
+  )
+}
+
+test distribute_falsified_underpaying_challenger_fails() {
+  !distribute(
+    resolved_as(CapabilityFalsified),
+    25_000_000,
+    [locked_target_stake()],
+    [stake_to_challenger(34_499_999), to_treasury(500_000)],
+  )
+}
+
+/// W4 item 4: after DefaultJudgment the challenge holds its stake less the
+/// default judgment fee (25 AP3X × 1% = 0.25 AP3X). The settlement pays the
+/// challenger the 24.75 AP3X that the challenge holds plus the slash less
+/// the fee. Before, the challenger needed the full 25 AP3X, which the
+/// challenge and the slash did not hold.
+test distribute_falsified_after_default_judgment() {
+  distribute(
+    resolved_as(CapabilityFalsified),
+    24_750_000,
+    [locked_target_stake()],
+    [stake_to_challenger(34_250_000), to_treasury(500_000)],
+  )
+}
+
+/// W4 item 4: the target's stake is a spent input. A Falsified settlement
+/// without it cannot slash the stake.
+test distribute_falsified_without_target_stake_fails() fail {
+  distribute(
+    resolved_as(CapabilityFalsified),
+    25_000_000,
+    [],
+    [stake_to_challenger(34_500_000), to_treasury(500_000)],
+  )
+}
+
+/// The stake input must be at the exact reputation address.
+test distribute_falsified_with_stake_at_other_address_fails() fail {
+  let stake = locked_target_stake()
+  let moved =
+    Input {
+      ..stake,
+      output: Output {
+        ..stake.output,
+        address: key_address(test_owner_key_hash_2),
+      },
+    }
+  distribute(
+    resolved_as(CapabilityFalsified),
+    25_000_000,
+    [moved],
+    [stake_to_challenger(34_500_000), to_treasury(500_000)],
+  )
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -436,31 +702,9 @@ test expire_challenge_without_token_burn_fails() {
 /// created_at 0, so it is older than min_agent_age (24 h).
 const challenge_time: Int = 1_700_000_000_000
 
-fn target_stake_ref() -> transaction.Input {
-  let stake_datum =
-    StakeDatum {
-      agent_did: test_agent_did_2,
-      owner_credential: VerificationKey(test_owner_key_hash_2),
-      stake_amount: 20_000_000,
-      staked_capabilities: ["code_review", "testing"],
-      last_updated: 500,
-      history_points: 0,
-    }
-  make_input(
-    test_tx_hash,
-    50,
-    make_output(
-      script_address(test_reputation_policy_id),
-      assets.from_lovelace(2_000_000)
-        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 20_000_000)
-        |> assets.add(
-            test_reputation_policy_id,
-            derive_stake_token_name(test_agent_did_2),
-            1,
-          ),
-      stake_datum,
-    ),
-  )
+/// The target's StakeUTXO, spent with LockForChallenge (no lock yet).
+fn target_stake_ref() -> Input {
+  target_stake_input([])
 }
 
 /// A new challenge with the given created_at, in a transaction with the
@@ -490,13 +734,15 @@ fn mint_challenge_with(
     Transaction {
       ..base_tx(0),
       validity_range,
-      reference_inputs: [
-        make_identity_ref_input(test_agent_did, 1),
-        make_identity_ref_input(test_agent_did_2, 2),
-        target_stake_ref(),
-      ],
+      inputs: [target_stake_ref()],
+      reference_inputs: [make_identity_ref_input(test_agent_did, 1)],
       outputs: [output],
       extra_signatories: agent_signers(),
+      mint: assets.from_asset(
+        test_endorsement_policy_id,
+        base_challenge_token(),
+        1,
+      ),
     }
   validate_mint_challenge(tx, test_config(), test_refs(), test_params(), output_datum, output)
 }

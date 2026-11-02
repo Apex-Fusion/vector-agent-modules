@@ -14,7 +14,8 @@ use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{StakeDatum}
 use reputation_staking/utils.{
-  derive_stake_token_name, get_ap3x_amount, has_key_signed,
+  derive_stake_token_name, exact_address, get_ap3x_amount, has_key_signed,
+  no_challenge_change,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -62,9 +63,13 @@ pub fn calculate_collector_fee(decay_amount: Int, collector_fee_rate: Int) -> In
 ///   5. treasury_amount = decay_amount - collector_fee
 ///   6. Outputs:
 ///      - Continuing StakeUTXO with reduced stake (if above MIN_SELF_STAKE)
+///        at the exact reputation address, without challenge locks
 ///      - Collector payout
 ///      - Treasury payout
 ///   7. If stake drops below MIN_SELF_STAKE: stake token burned
+///   8. No challenge locks the stake (challenge_locks is empty), and the
+///      transaction opens or closes no challenge. Decay cannot lower the
+///      stake that an open challenge can slash
 pub fn validate_claim_decay_refund(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -113,7 +118,14 @@ pub fn validate_claim_decay_refund(
       )
     }
 
-  oracle_signed && positive_decay && valid_inactive_epochs && outputs_valid
+  and {
+    oracle_signed,
+    positive_decay,
+    valid_inactive_epochs,
+    input_datum.challenge_locks == [],
+    no_challenge_change(tx, refs.endorsement_policy_id),
+    outputs_valid,
+  }
 }
 
 /// Validate decay when stake continues (remaining > MIN_SELF_STAKE).
@@ -128,16 +140,11 @@ fn validate_decay_continuing(
 ) -> Bool {
   let stake_token = derive_stake_token_name(input_datum.agent_did)
 
-  // Continuing StakeUTXO with reduced stake
+  // Continuing StakeUTXO with reduced stake, at the exact reputation address
   let stake_continues =
     list.any(
       tx.outputs,
       fn(output) {
-        let is_at_reputation =
-          when output.address.payment_credential is {
-            Script(hash) -> hash == refs.reputation_policy_id
-            _ -> False
-          }
         let has_token =
           assets.quantity_of(output.value, refs.reputation_policy_id, stake_token) == 1
         let ap3x =
@@ -146,10 +153,10 @@ fn validate_decay_continuing(
             cfg.ap3x_policy_id,
             cfg.ap3x_asset_name,
           )
-        if is_at_reputation && has_token {
+        if output.address == exact_address(refs.reputation_policy_id) && has_token {
           expect InlineDatum(raw_out) = output.datum
           expect out_datum: StakeDatum = raw_out
-          out_datum.agent_did == input_datum.agent_did && out_datum.owner_credential == input_datum.owner_credential && out_datum.stake_amount == remaining_stake && ap3x >= remaining_stake
+          out_datum.agent_did == input_datum.agent_did && out_datum.owner_credential == input_datum.owner_credential && out_datum.stake_amount == remaining_stake && out_datum.challenge_locks == [] && ap3x >= remaining_stake
         } else {
           False
         }

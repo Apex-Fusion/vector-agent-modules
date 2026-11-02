@@ -9,16 +9,23 @@
 ////   UpdateCapabilities, MintEndorsementToken, IncreaseEndorsement,
 ////   MintChallengeToken) need the acting agent's record with effective
 ////   status Active, its controller's signature, and each staked capability
-////   in the record. The target of an endorsement or a challenge needs
-////   effective status Active and the capabilities in its record.
+////   in the record. An opening also needs its payout credential to be a
+////   declared credential of the record (rule D-exit). The target of an
+////   endorsement needs effective status Active and the capabilities in its
+////   record. The target of a challenge is not read: its StakeUTXO decides
+////   (rule D-dodge).
 //// - Exits (DecreaseStake, WithdrawEndorsement) need only the controller's
-////   signature; the record can have any status.
+////   signature; the record can have any status. The payout goes to the
+////   stored credential while the record trusts it, else to the controller
+////   key (rule D-exit; a tombstone lists no keys).
 //// - Every action that reads an identity record has a validity range of at
 ////   most one hour.
 ////
-//// test_agent_did has controller 1 and test_agent_did_2 has controller 2.
+//// test_agent_did has controller 1 and lists the transaction key 1 (the
+//// owner key test_owner_key_hash); test_agent_did_2 has controller 2 and
+//// lists the transaction key 2.
 
-use aiken/interval
+use aiken/interval.{Finite}
 use cardano/address.{Script, VerificationKey}
 use cardano/assets
 use cardano/transaction.{Input, Output, Transaction, ValidityRange}
@@ -53,7 +60,7 @@ use shared/identity_fixtures.{
   accountable_until, agent_id, created_at, record, record_input,
   record_input_at_other_script, record_input_with_fake_token,
   record_input_with_stake, retired, revoked, subagent, suspended, unaccountable,
-  with_subagent_epoch,
+  with_subagent_epoch, with_transaction_key,
 }
 use vector_identity/types.{IdentityDatum} as identity_types
 
@@ -84,12 +91,14 @@ fn open_range() -> ValidityRange {
   interval.after(t0)
 }
 
+/// The acting agent's record: controller 1, the test capabilities and the
+/// listed transaction key 1 (the owner key).
 fn agent_record() -> IdentityDatum {
-  record(1, test_capabilities)
+  with_transaction_key(record(1, test_capabilities), 1)
 }
 
 fn target_record() -> IdentityDatum {
-  record(2, test_capabilities)
+  with_transaction_key(record(2, test_capabilities), 2)
 }
 
 fn agent_ref(r: IdentityDatum) -> Input {
@@ -194,6 +203,15 @@ fn tx_with(
   }
 }
 
+/// The upper bound of a validity range (0 when it is not finite). An owner
+/// action records it in last_updated (W4 item 2).
+fn hi_of(validity_range: ValidityRange) -> Int {
+  when validity_range.upper_bound.bound_type is {
+    Finite(hi) -> hi
+    _ -> 0
+  }
+}
+
 fn ap3x_to(key: ByteArray, amount: Int) -> Output {
   make_output_no_datum(
     key_address(key),
@@ -216,6 +234,7 @@ fn stake_datum(
     staked_capabilities: capabilities,
     last_updated,
     history_points: 0,
+    challenge_locks: [],
   }
 }
 
@@ -237,8 +256,9 @@ fn stake_output(datum: StakeDatum) -> Output {
   )
 }
 
-/// The StakeUTXO of test_agent_did_2 (owner key 2, the test capabilities).
-fn target_stake_ref() -> Input {
+/// The StakeUTXO of test_agent_did_2 (owner key 2, the test capabilities)
+/// with the challenge locks `locks`.
+fn target_stake_with(locks: List<ByteArray>) -> Input {
   let datum =
     StakeDatum {
       agent_did: test_agent_did_2,
@@ -247,6 +267,7 @@ fn target_stake_ref() -> Input {
       staked_capabilities: test_capabilities,
       last_updated: 500,
       history_points: 0,
+      challenge_locks: locks,
     }
   make_input(
     test_tx_hash,
@@ -265,22 +286,61 @@ fn target_stake_ref() -> Input {
   )
 }
 
+/// The StakeUTXO of test_agent_did_2 without locks (a reference input of an
+/// endorsement, or the spent input of a new challenge).
+fn target_stake_ref() -> Input {
+  target_stake_with([])
+}
+
 fn create_stake(
   refs: List<Input>,
   signers: List<ByteArray>,
   validity_range: ValidityRange,
   capabilities: List<ByteArray>,
 ) -> Bool {
-  let datum = stake_datum(10_000_000, capabilities, t0)
+  create_stake_with(
+    refs,
+    signers,
+    validity_range,
+    stake_datum(10_000_000, capabilities, hi_of(validity_range)),
+  )
+}
+
+/// CreateStake of `datum`: the transaction spends a seed input at the
+/// reputation address and mints the stake token.
+fn create_stake_with(
+  refs: List<Input>,
+  signers: List<ByteArray>,
+  validity_range: ValidityRange,
+  datum: StakeDatum,
+) -> Bool {
   let output = stake_output(datum)
+  let seed =
+    make_input(
+      test_tx_hash,
+      9,
+      make_output(
+        script_address(test_reputation_policy_id),
+        assets.from_lovelace(2_000_000),
+        datum,
+      ),
+    )
   validate_create_stake(
-    tx_with(refs, signers, validity_range, [output]),
+    Transaction {
+      ..tx_with(refs, signers, validity_range, [output]),
+      inputs: [seed],
+      mint: assets.from_asset(
+        test_reputation_policy_id,
+        derive_stake_token_name(test_agent_did),
+        1,
+      ),
+    },
     test_config(),
     test_refs(),
     test_params(),
+    seed,
     datum,
     output,
-    t0,
   )
 }
 
@@ -291,7 +351,7 @@ fn increase_stake(
   capabilities: List<ByteArray>,
 ) -> Bool {
   let input = stake_datum(10_000_000, capabilities, 1_000)
-  let datum = stake_datum(20_000_000, capabilities, t0)
+  let datum = stake_datum(20_000_000, capabilities, hi_of(validity_range))
   let output = stake_output(datum)
   validate_increase_stake(
     tx_with(refs, signers, validity_range, [output]),
@@ -300,7 +360,6 @@ fn increase_stake(
     input,
     datum,
     output,
-    t0,
   )
 }
 
@@ -316,7 +375,7 @@ fn update_capabilities(
     StakeDatum {
       ..input,
       staked_capabilities: new_capabilities,
-      last_updated: t0,
+      last_updated: hi_of(validity_range),
     }
   let output = stake_output(datum)
   validate_update_capabilities(
@@ -328,7 +387,6 @@ fn update_capabilities(
     datum,
     output,
     new_capabilities,
-    t0,
   )
 }
 
@@ -337,16 +395,26 @@ fn decrease_stake(
   signers: List<ByteArray>,
   validity_range: ValidityRange,
 ) -> Bool {
+  decrease_stake_paying(refs, signers, validity_range, test_owner_key_hash)
+}
+
+/// DecreaseStake of 5 AP3X that pays the key `payee`.
+fn decrease_stake_paying(
+  refs: List<Input>,
+  signers: List<ByteArray>,
+  validity_range: ValidityRange,
+  payee: ByteArray,
+) -> Bool {
   let input = stake_datum(20_000_000, ["code_review"], t0 - 86_400_000)
-  let datum = StakeDatum { ..input, stake_amount: 15_000_000, last_updated: t0 }
+  let datum =
+    StakeDatum {
+      ..input,
+      stake_amount: 15_000_000,
+      last_updated: hi_of(validity_range),
+    }
   let output = stake_output(datum)
   validate_decrease_stake(
-    tx_with(
-      refs,
-      signers,
-      validity_range,
-      [output, ap3x_to(test_owner_key_hash, 5_000_000)],
-    ),
+    tx_with(refs, signers, validity_range, [output, ap3x_to(payee, 5_000_000)]),
     test_config(),
     test_refs(),
     test_params(),
@@ -354,7 +422,6 @@ fn decrease_stake(
     datum,
     output,
     5_000_000,
-    t0,
   )
 }
 
@@ -372,6 +439,7 @@ fn endorsement_datum(
     stake_amount: amount,
     endorsed_capabilities: capabilities,
     created_at: created,
+    slashed_by: [],
   }
 }
 
@@ -402,7 +470,10 @@ fn mint_endorsement(
   let datum = endorsement_datum(capabilities, 5_000_000, t0)
   let output = endorsement_output(datum)
   validate_mint_endorsement(
-    tx_with([target_stake_ref(), ..refs], signers, validity_range, [output]),
+    Transaction {
+      ..tx_with([target_stake_ref(), ..refs], signers, validity_range, [output]),
+      mint: assets.from_asset(test_endorsement_policy_id, endorsement_token(), 1),
+    },
     test_config(),
     test_refs(),
     test_params(),
@@ -435,16 +506,26 @@ fn withdraw_endorsement(
   signers: List<ByteArray>,
   validity_range: ValidityRange,
 ) -> Bool {
+  withdraw_endorsement_paying(
+    refs,
+    signers,
+    validity_range,
+    test_owner_key_hash,
+  )
+}
+
+/// WithdrawEndorsement of 5 AP3X that pays the key `payee`.
+fn withdraw_endorsement_paying(
+  refs: List<Input>,
+  signers: List<ByteArray>,
+  validity_range: ValidityRange,
+  payee: ByteArray,
+) -> Bool {
   // The endorsement cooldown (48 h) ended at t0.
   let input = endorsement_datum(["code_review"], 5_000_000, t0 - 172_800_000)
   let tx =
     Transaction {
-      ..tx_with(
-        refs,
-        signers,
-        validity_range,
-        [ap3x_to(test_owner_key_hash, 5_000_000)],
-      ),
+      ..tx_with(refs, signers, validity_range, [ap3x_to(payee, 5_000_000)]),
       mint: assets.from_asset(
         test_endorsement_policy_id,
         endorsement_token(),
@@ -488,7 +569,29 @@ fn challenge_token(capability: ByteArray) -> ByteArray {
   derive_challenge_token_name(test_agent_did, test_agent_did_2, capability)
 }
 
+/// A new challenge of test_agent_did against test_agent_did_2. The
+/// transaction spends the target's StakeUTXO and mints the challenge token.
+/// `refs` are the reference inputs: the challenger's record (the target's
+/// record is not read).
 fn mint_challenge_with(
+  refs: List<Input>,
+  signers: List<ByteArray>,
+  validity_range: ValidityRange,
+  capability: ByteArray,
+  target_credential: address.Credential,
+) -> Bool {
+  mint_challenge_spending(
+    [target_stake_ref()],
+    refs,
+    signers,
+    validity_range,
+    capability,
+    target_credential,
+  )
+}
+
+fn mint_challenge_spending(
+  inputs: List<Input>,
   refs: List<Input>,
   signers: List<ByteArray>,
   validity_range: ValidityRange,
@@ -509,7 +612,15 @@ fn mint_challenge_with(
       Challenge(datum),
     )
   validate_mint_challenge(
-    tx_with([target_stake_ref(), ..refs], signers, validity_range, [output]),
+    Transaction {
+      ..tx_with(refs, signers, validity_range, [output]),
+      inputs,
+      mint: assets.from_asset(
+        test_endorsement_policy_id,
+        challenge_token(capability),
+        1,
+      ),
+    },
     test_config(),
     test_refs(),
     test_params(),
@@ -923,12 +1034,29 @@ test decrease_stake_unaccountable_agent() {
   )
 }
 
+/// A revoked record is a tombstone without listed keys, so it trusts only its
+/// controller key: the exit pays the controller key (rule D-exit).
 test decrease_stake_revoked_agent() {
-  decrease_stake(agent_as(revoked(agent_record())), controller_only(), range())
+  decrease_stake_paying(
+    agent_as(revoked(agent_record())),
+    controller_only(),
+    range(),
+    test_controller_hash(1),
+  )
 }
 
 test decrease_stake_retired_agent() {
-  decrease_stake(agent_as(retired(agent_record())), controller_only(), range())
+  decrease_stake_paying(
+    agent_as(retired(agent_record())),
+    controller_only(),
+    range(),
+    test_controller_hash(1),
+  )
+}
+
+/// The tombstone no longer trusts the owner key, so a payout to it fails.
+test decrease_stake_revoked_agent_paying_dropped_key_fails() {
+  !decrease_stake(agent_as(revoked(agent_record())), controller_only(), range())
 }
 
 /// An exit reads no ancestor: a subagent exits without its parent's record,
@@ -1298,16 +1426,27 @@ test withdraw_endorsement_unaccountable_agent() {
   )
 }
 
+/// A tombstone trusts only the controller key: the exit pays it.
 test withdraw_endorsement_revoked_agent() {
-  withdraw_endorsement(
+  withdraw_endorsement_paying(
     agent_as(revoked(agent_record())),
     controller_only(),
     range(),
+    test_controller_hash(1),
   )
 }
 
 test withdraw_endorsement_retired_agent() {
-  withdraw_endorsement(
+  withdraw_endorsement_paying(
+    agent_as(retired(agent_record())),
+    controller_only(),
+    range(),
+    test_controller_hash(1),
+  )
+}
+
+test withdraw_endorsement_retired_agent_paying_dropped_key_fails() {
+  !withdraw_endorsement(
     agent_as(retired(agent_record())),
     controller_only(),
     range(),
@@ -1364,8 +1503,8 @@ test withdraw_endorsement_open_range_fails() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// MintChallengeToken (challenger acts and is old enough; the target is Active
-// and lists the challenged capability)
+// MintChallengeToken (challenger acts and is old enough; the target's
+// StakeUTXO decides, its identity record is not read: rules D-dodge, R5-8)
 // ──────────────────────────────────────────────────────────────────────────────
 
 test mint_challenge_active_agents() {
@@ -1410,41 +1549,103 @@ test mint_challenge_retired_challenger_fails() {
   !mint_challenge(agent_as(retired(agent_record())), signers(), range())
 }
 
-test mint_challenge_suspended_target_fails() {
-  !mint_challenge(
+/// R5-8 / D-dodge: a target that suspended itself can still be challenged
+/// while its stake lists the capability.
+test mint_challenge_suspended_target_allowed() {
+  mint_challenge(
     target_as(suspended(target_record(), t0 + 1)),
     signers(),
     range(),
   )
 }
 
-test mint_challenge_unaccountable_target_fails() {
-  !mint_challenge(target_as(unaccountable(target_record())), signers(), range())
+test mint_challenge_unaccountable_target_allowed() {
+  mint_challenge(target_as(unaccountable(target_record())), signers(), range())
 }
 
-test mint_challenge_revoked_target_fails() {
-  !mint_challenge(
-    target_as(ended(target_record(), revoked(target_record()))),
+test mint_challenge_revoked_target_allowed() {
+  mint_challenge(target_as(revoked(target_record())), signers(), range())
+}
+
+test mint_challenge_retired_target_allowed() {
+  mint_challenge(target_as(retired(target_record())), signers(), range())
+}
+
+/// R5-8 / D-dodge: the target's stake backs "code_review", but the target
+/// removed it from its record. The stake decides, so the challenge passes.
+test mint_challenge_capability_not_in_target_record_allowed() {
+  mint_challenge(target_as(record(2, ["testing"])), signers(), range())
+}
+
+/// The target's record is not read, so it need not be a reference input.
+test mint_challenge_without_target_record_allowed() {
+  mint_challenge([agent_ref(agent_record())], signers(), range())
+}
+
+/// D-dodge: the stake does not list the challenged capability, although the
+/// target's record lists it.
+test mint_challenge_stake_without_capability_fails() {
+  !mint_challenge_spending(
+    [target_stake_ref()],
+    both(),
     signers(),
     range(),
+    "translation",
+    VerificationKey(test_owner_key_hash_2),
   )
 }
 
-test mint_challenge_retired_target_fails() {
-  !mint_challenge(
-    target_as(ended(target_record(), retired(target_record()))),
+/// The target's StakeUTXO is a spent input (it takes the lock of the
+/// challenge). Without it, the challenge fails.
+test mint_challenge_without_target_stake_fails() fail {
+  mint_challenge_spending(
+    [],
+    both(),
     signers(),
     range(),
+    "code_review",
+    VerificationKey(test_owner_key_hash_2),
   )
 }
 
-/// The target's stake backs "code_review", but its record does not list it.
-test mint_challenge_capability_not_in_target_record_fails() {
-  !mint_challenge(target_as(record(2, ["testing"])), signers(), range())
+/// A reference input is not enough: the stake must be spent, so that it
+/// takes the lock.
+test mint_challenge_with_target_stake_as_reference_input_fails() fail {
+  mint_challenge_spending(
+    [],
+    [target_stake_ref(), ..both()],
+    signers(),
+    range(),
+    "code_review",
+    VerificationKey(test_owner_key_hash_2),
+  )
 }
 
-test mint_challenge_without_target_record_fails() {
-  !mint_challenge([agent_ref(agent_record())], signers(), range())
+/// The stake of another agent does not count.
+test mint_challenge_with_stake_of_other_agent_fails() fail {
+  let stake = target_stake_ref()
+  let other =
+    Input {
+      ..stake,
+      output: Output {
+        ..stake.output,
+        value: assets.from_lovelace(2_000_000)
+          |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 20_000_000)
+          |> assets.add(
+              test_reputation_policy_id,
+              derive_stake_token_name(test_agent_did),
+              1,
+            ),
+      },
+    }
+  mint_challenge_spending(
+    [other],
+    both(),
+    signers(),
+    range(),
+    "code_review",
+    VerificationKey(test_owner_key_hash_2),
+  )
 }
 
 test mint_challenge_without_controller_signature_fails() {
@@ -1495,8 +1696,9 @@ test mint_challenge_record_with_fake_token_fails() {
   )
 }
 
-test mint_challenge_target_record_with_fake_token_fails() {
-  !mint_challenge(
+/// The target's record is not read, so a fake record does not matter.
+test mint_challenge_target_record_with_fake_token_allowed() {
+  mint_challenge(
     [
       agent_ref(agent_record()),
       record_input_with_fake_token(test_agent_did_2, target_record()),
@@ -1542,21 +1744,37 @@ test mint_challenge_subagent_without_parent_record_fails() fail {
 // DistributeOutcome (CapabilityVerified): no history bonus needed
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// The verified outcome pays the target and the treasury without a history
-/// bonus mint, so a target that is not Active (or does not sign) cannot hold
-/// the challenge stake.
-test distribute_verified_without_history_bonus() {
+/// DistributeOutcome of a CapabilityVerified challenge that pays `target`
+/// to the target's owner key and 1.25 AP3X to the treasury. The transaction
+/// spends the challenge (25 AP3X) and the target's locked StakeUTXO.
+fn distribute_verified(target: Int) -> Bool {
   let datum =
     ReputationChallengeDatum {
       ..challenge_datum("code_review", VerificationKey(test_owner_key_hash_2)),
       state: Resolved { outcome: CapabilityVerified },
     }
-  // protocol_fee_rate = 500 bp: fee = 1_250_000, target reward = 23_750_000
+  let challenge =
+    make_input(
+      test_tx_hash,
+      70,
+      make_output(
+        script_address(test_endorsement_policy_id),
+        assets.from_lovelace(2_000_000)
+          |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 25_000_000)
+          |> assets.add(
+              test_endorsement_policy_id,
+              challenge_token("code_review"),
+              1,
+            ),
+        Challenge(datum),
+      ),
+    )
   let tx =
     Transaction {
       ..base_tx(t0),
+      inputs: [challenge, target_stake_with([challenge_token("code_review")])],
       outputs: [
-        ap3x_to(test_owner_key_hash_2, 23_750_000),
+        ap3x_to(test_owner_key_hash_2, target),
         make_output_no_datum(
           script_address(test_treasury_script_hash),
           assets.from_lovelace(2_000_000)
@@ -1574,40 +1792,21 @@ test distribute_verified_without_history_bonus() {
     test_config(),
     test_refs(),
     test_params(),
+    challenge,
     datum,
   )
 }
 
+/// The verified outcome pays the target and the treasury without a history
+/// bonus mint, so a target that is not Active (or does not sign) cannot hold
+/// the challenge stake.
+test distribute_verified_without_history_bonus() {
+  // protocol_fee_rate = 500 bp: fee = 1_250_000, target reward = 23_750_000
+  distribute_verified(23_750_000)
+}
+
 test distribute_verified_underpaying_target_fails() {
-  let datum =
-    ReputationChallengeDatum {
-      ..challenge_datum("code_review", VerificationKey(test_owner_key_hash_2)),
-      state: Resolved { outcome: CapabilityVerified },
-    }
-  let tx =
-    Transaction {
-      ..base_tx(t0),
-      outputs: [
-        ap3x_to(test_owner_key_hash_2, 23_749_999),
-        make_output_no_datum(
-          script_address(test_treasury_script_hash),
-          assets.from_lovelace(2_000_000)
-            |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 1_250_000),
-        ),
-      ],
-      mint: assets.from_asset(
-        test_endorsement_policy_id,
-        challenge_token("code_review"),
-        -1,
-      ),
-    }
-  !validate_distribute_outcome(
-    tx,
-    test_config(),
-    test_refs(),
-    test_params(),
-    datum,
-  )
+  !distribute_verified(23_749_999)
 }
 
 /// A script credential with the hash of the stake owner's key is not the

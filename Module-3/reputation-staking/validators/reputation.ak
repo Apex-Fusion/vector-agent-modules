@@ -2,16 +2,25 @@
 ///
 /// Controls self-stake lifecycle and history bonus tokens:
 ///   - Minting policy: MintStakeToken, BurnStakeToken, MintHistoryBonus, BurnGenesisBonus
-///   - Spend validator: CreateStake, IncreaseStake, DecreaseStake, UpdateCapabilities, ClaimDecayRefund
+///   - Spend validator: CreateStake, IncreaseStake, DecreaseStake,
+///     UpdateCapabilities, ClaimDecayRefund, SlashStake, LockForChallenge,
+///     ReleaseChallenge
 ///
 /// Because both handlers share the same script hash:
 ///   policy_id == script_hash == payment_credential of the reputation address
+///
+/// Each mint redeemer accepts exactly its own token set: one token of its
+/// kind, and no other token of the policy. A stake token is minted only
+/// together with the spend of a seed input with CreateStake.
 
 use aiken/interval.{Finite}
 use aiken/collection/list
+use aiken/collection/pairs
 use cardano/address.{Script}
 use cardano/assets.{PolicyId}
-use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
+use cardano/transaction.{
+  InlineDatum, Input, Output, OutputReference, Spend, Transaction,
+}
 use reputation_staking/challenge_validation
 use reputation_staking/config.{ReputationConfig, get_cross_refs}
 use reputation_staking/decay
@@ -20,14 +29,14 @@ use reputation_staking/stake_validation
 use reputation_staking/types.{
   AuditClaimWon, BurnGenesisBonus, BurnStakeToken, ChallengeWon,
   ClaimDecayRefund, CreateStake, DecreaseStake, GenesisBonus,
-  HistoryBonusDatum, IncreaseStake, JurorDuty,
-  MintHistoryBonus, MintStakeToken, SlashStake,
+  HistoryBonusDatum, IncreaseStake, JurorDuty, LockForChallenge,
+  MintHistoryBonus, MintStakeToken, ReleaseChallenge, SlashStake,
   StakeAction, StakeDatum, StakeMintAction, UpdateCapabilities,
   genesis_bonus_token_prefix, history_bonus_token_prefix, stake_token_prefix,
 }
 use reputation_staking/utils.{
-  count_script_inputs, derive_stake_token_name, has_key_signed, has_script_input,
-  starts_with,
+  count_script_inputs, derive_stake_token_name, exact_address, has_key_signed,
+  has_script_input, single_token_change, starts_with,
 }
 use shared/identity
 
@@ -35,24 +44,24 @@ use shared/identity
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Find the continuing output at the reputation validator for a given agent.
+/// Find the continuing output at the exact reputation address for a given
+/// agent: it holds the agent's stake token. Every StakeUTXO stays at the
+/// exact address, so that a challenge can find it (Part 2 §7, Module-3 row).
 fn find_continuing_output(
   tx: Transaction,
   reputation_policy_id: PolicyId,
   agent_did: ByteArray,
 ) -> Option<Output> {
   let stake_token = derive_stake_token_name(agent_did)
+  let address = exact_address(reputation_policy_id)
   list.find(
     tx.outputs,
     fn(output) {
-      let is_at_reputation =
-        when output.address.payment_credential is {
-          Script(hash) -> hash == reputation_policy_id
-          _ -> False
-        }
-      let has_token =
-        assets.quantity_of(output.value, reputation_policy_id, stake_token) == 1
-      is_at_reputation && has_token
+      output.address == address && assets.quantity_of(
+        output.value,
+        reputation_policy_id,
+        stake_token,
+      ) == 1
     },
   )
 }
@@ -65,12 +74,27 @@ fn get_validity_lower_bound(tx: Transaction) -> Option<Int> {
   }
 }
 
-/// Derive own script hash from the spent UTXO's address.
-fn resolve_own_hash(own_ref: OutputReference, tx: Transaction) -> ByteArray {
+/// The input that the transaction spends at `own_ref`.
+fn find_own_input(own_ref: OutputReference, tx: Transaction) -> Input {
   expect Some(own_input) =
     list.find(tx.inputs, fn(i) { i.output_reference == own_ref })
-  expect Script(hash) = own_input.output.address.payment_credential
-  hash
+  own_input
+}
+
+/// True when the transaction spends an input at the reputation script with
+/// the redeemer CreateStake. The spend handler then checks the new stake and
+/// the name of the minted stake token.
+fn creates_stake(tx: Transaction, policy_id: PolicyId) -> Bool {
+  let create: Data = CreateStake
+  list.any(
+    tx.inputs,
+    fn(input) {
+      input.output.address.payment_credential == Script(policy_id) && pairs.get_first(
+        tx.redeemers,
+        Spend(input.output_reference),
+      ) == Some(create)
+    },
+  )
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -221,8 +245,10 @@ fn validate_genesis_burn(
 
 validator reputation(cfg: ReputationConfig) {
   /// Minting policy: controls stake token and history bonus token lifecycle.
+  /// Each redeemer accepts exactly one token of its kind and no other token
+  /// of the policy.
   mint(redeemer: StakeMintAction, policy_id: PolicyId, tx: Transaction) {
-    let flat_mint = assets.flatten(tx.mint)
+    let own_mint = assets.tokens(tx.mint, policy_id)
 
     // F2/F1 fix: All mint/burn actions require a script input, ensuring
     // the spend handler fires and provides real validation.
@@ -230,22 +256,18 @@ validator reputation(cfg: ReputationConfig) {
 
     when redeemer is {
       MintStakeToken ->
-        // F2 fix: Require script input so spend handler (CreateStake) must fire
-        script_input_exists && list.any(
-          flat_mint,
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == policy_id && starts_with(name,stake_token_prefix) && qty == 1
-          },
+        // P-1: one stake token, minted only with a CreateStake spend, which
+        // checks its name against the new stake datum
+        single_token_change(own_mint, stake_token_prefix, 1) && creates_stake(
+          tx,
+          policy_id,
         )
       BurnStakeToken ->
         // F1 fix: Require script input to prevent orphan burns
-        script_input_exists && list.any(
-          flat_mint,
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == policy_id && starts_with(name,stake_token_prefix) && qty == -1
-          },
+        script_input_exists && single_token_change(
+          own_mint,
+          stake_token_prefix,
+          -1,
         )
       MintHistoryBonus -> {
         // F-NEW-6 fix: Require oracle signature AND source-specific validation
@@ -258,13 +280,7 @@ validator reputation(cfg: ReputationConfig) {
         let refs = get_cross_refs(cfg, tx.reference_inputs)
         let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
         let has_valid_token =
-          list.any(
-            flat_mint,
-            fn(entry) {
-              let (pid, name, qty) = entry
-              pid == policy_id && starts_with(name, history_bonus_token_prefix) && qty == 1
-            },
-          )
+          single_token_change(own_mint, history_bonus_token_prefix, 1)
         // History bonus is minted during DistributeOutcome, which spends an
         // endorsement UTXO (not a reputation UTXO). Check endorsement script
         // input instead of reputation script input.
@@ -286,13 +302,7 @@ validator reputation(cfg: ReputationConfig) {
           )
         expect Some(current_slot) = get_validity_lower_bound(tx)
         let has_valid_burn =
-          list.any(
-            flat_mint,
-            fn(entry) {
-              let (pid, name, qty) = entry
-              pid == policy_id && starts_with(name, genesis_bonus_token_prefix) && qty == -1
-            },
-          )
+          single_token_change(own_mint, genesis_bonus_token_prefix, -1)
         // Verify the genesis bonus being burned has passed protection period
         let protection_met =
           validate_genesis_burn(tx, policy_id, params, current_slot)
@@ -316,11 +326,9 @@ validator reputation(cfg: ReputationConfig) {
         cfg.params_token_policy,
       )
 
-    // Derive current slot from validity range lower bound
-    expect Some(current_slot) = get_validity_lower_bound(tx)
-
     // Derive own script hash at runtime (no circular dependency)
-    let own_hash = resolve_own_hash(own_utxo, tx)
+    let own_input = find_own_input(own_utxo, tx)
+    expect Script(own_hash) = own_input.output.address.payment_credential
 
     // Look up cross-validator refs from authenticated reference input
     let refs = get_cross_refs(cfg, tx.reference_inputs)
@@ -328,45 +336,44 @@ validator reputation(cfg: ReputationConfig) {
     // F5 fix: Prevent double satisfaction — only one script input allowed
     expect count_script_inputs(tx, own_hash) == 1
 
-    when redeemer is {
-      CreateStake -> {
+    // The continuing StakeUTXO of this agent and its datum
+    let continuing =
+      fn() {
         expect Some(output) =
           find_continuing_output(tx, own_hash, stake_datum.agent_did)
         expect InlineDatum(raw) = output.datum
         expect out_datum: StakeDatum = raw
+        (output, out_datum)
+      }
+
+    when redeemer is {
+      CreateStake -> {
+        let (output, out_datum) = continuing()
         stake_validation.validate_create_stake(
-          tx, cfg, refs, params, out_datum, output, current_slot,
+          tx, cfg, refs, params, own_input, out_datum, output,
         )
       }
       IncreaseStake -> {
-        expect Some(output) =
-          find_continuing_output(tx, own_hash, stake_datum.agent_did)
-        expect InlineDatum(raw) = output.datum
-        expect out_datum: StakeDatum = raw
+        let (output, out_datum) = continuing()
         stake_validation.validate_increase_stake(
-          tx, cfg, refs, stake_datum, out_datum, output, current_slot,
+          tx, cfg, refs, stake_datum, out_datum, output,
         )
       }
       DecreaseStake { amount } -> {
-        expect Some(output) =
-          find_continuing_output(tx, own_hash, stake_datum.agent_did)
-        expect InlineDatum(raw) = output.datum
-        expect out_datum: StakeDatum = raw
+        let (output, out_datum) = continuing()
         stake_validation.validate_decrease_stake(
-          tx, cfg, refs, params, stake_datum, out_datum, output, amount, current_slot,
+          tx, cfg, refs, params, stake_datum, out_datum, output, amount,
         )
       }
       UpdateCapabilities { new_capabilities } -> {
-        expect Some(output) =
-          find_continuing_output(tx, own_hash, stake_datum.agent_did)
-        expect InlineDatum(raw) = output.datum
-        expect out_datum: StakeDatum = raw
+        let (output, out_datum) = continuing()
         stake_validation.validate_update_capabilities(
           tx, cfg, refs, params, stake_datum, out_datum, output, new_capabilities,
-          current_slot,
         )
       }
       ClaimDecayRefund -> {
+        // Derive current slot from validity range lower bound
+        expect Some(current_slot) = get_validity_lower_bound(tx)
         // F6 fix: Calculate inactive_epochs from on-chain data instead of hardcoding
         // F-NEW-2 fix: Guard against division by zero
         expect params.epoch_length > 0
@@ -383,13 +390,21 @@ validator reputation(cfg: ReputationConfig) {
         // F-A2 fix: Permissionless stake slashing after CapabilityFalsified.
         // The challenge UTxO is in tx.inputs (consumed by DistributeOutcome
         // on the endorsement validator in the same transaction).
-        expect Some(output) =
-          find_continuing_output(tx, own_hash, stake_datum.agent_did)
-        expect InlineDatum(raw) = output.datum
-        expect out_datum: StakeDatum = raw
+        let (output, out_datum) = continuing()
         stake_validation.validate_slash_stake(
-          tx, cfg, refs, stake_datum, out_datum, output,
-          challenge_ref, current_slot,
+          tx, cfg, refs, stake_datum, out_datum, output, challenge_ref,
+        )
+      }
+      LockForChallenge -> {
+        let (output, out_datum) = continuing()
+        stake_validation.validate_lock_for_challenge(
+          tx, refs, own_input, stake_datum, out_datum, output,
+        )
+      }
+      ReleaseChallenge { challenge_ref } -> {
+        let (output, out_datum) = continuing()
+        stake_validation.validate_release_challenge(
+          tx, refs, own_input, stake_datum, out_datum, output, challenge_ref,
         )
       }
     }

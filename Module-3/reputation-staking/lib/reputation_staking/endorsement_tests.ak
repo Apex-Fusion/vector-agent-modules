@@ -1,4 +1,7 @@
 /// Tests for endorsement validation logic.
+///
+/// A new endorsement mints exactly its endorsement token (W4 item 7) and
+/// starts with an empty slashed_by (R4 P-3).
 
 use aiken/interval
 use cardano/address.{VerificationKey}
@@ -33,6 +36,7 @@ fn make_target_stake_ref(target_did: ByteArray, target_key: ByteArray) -> Input 
       staked_capabilities: ["code_review", "testing", "deployment"],
       last_updated: 500,
       history_points: 0,
+      challenge_locks: [],
     }
   let stake_token = derive_stake_token_name(target_did)
   let value =
@@ -68,6 +72,7 @@ test mint_endorsement_happy_path() {
       stake_amount: endorsement_amount,
       endorsed_capabilities: ["code_review", "testing"],
       created_at: current_slot,
+      slashed_by: [],
     }
 
   let token_name =
@@ -97,6 +102,7 @@ test mint_endorsement_happy_path() {
             reference_inputs: [endorser_reg, target_reg, target_stake],
             outputs: [output],
             extra_signatories: agent_signers(),
+            mint: assets.from_asset(test_endorsement_policy_id, token_name, 1),
           }
         }
 
@@ -119,6 +125,7 @@ test mint_endorsement_self_endorse_fails() fail {
       stake_amount: 5_000_000,
       endorsed_capabilities: ["code_review"],
       created_at: current_slot,
+      slashed_by: [],
     }
 
   let token_name =
@@ -146,6 +153,7 @@ test mint_endorsement_self_endorse_fails() fail {
             reference_inputs: [agent_reg, agent_stake],
             outputs: [output],
             extra_signatories: agent_signers(),
+            mint: assets.from_asset(test_endorsement_policy_id, token_name, 1),
           }
         }
 
@@ -169,6 +177,7 @@ test mint_endorsement_below_minimum_fails() fail {
       stake_amount: endorsement_amount,
       endorsed_capabilities: ["code_review"],
       created_at: current_slot,
+      slashed_by: [],
     }
 
   let token_name =
@@ -197,6 +206,7 @@ test mint_endorsement_below_minimum_fails() fail {
             reference_inputs: [endorser_reg, target_reg, target_stake],
             outputs: [output],
             extra_signatories: agent_signers(),
+            mint: assets.from_asset(test_endorsement_policy_id, token_name, 1),
           }
         }
 
@@ -220,6 +230,7 @@ test increase_endorsement_happy_path() {
       stake_amount: 5_000_000,
       endorsed_capabilities: ["code_review"],
       created_at: 1000,
+      slashed_by: [],
     }
 
   let output_datum =
@@ -230,6 +241,7 @@ test increase_endorsement_happy_path() {
       stake_amount: 10_000_000,
       endorsed_capabilities: ["code_review"],
       created_at: 1000,
+      slashed_by: [],
     }
 
   let token_name =
@@ -284,6 +296,7 @@ test withdraw_endorsement_happy_path() {
       stake_amount: 5_000_000,
       endorsed_capabilities: ["code_review"],
       created_at,
+      slashed_by: [],
     }
 
   let token_name =
@@ -331,6 +344,7 @@ test withdraw_endorsement_too_early_fails() fail {
       stake_amount: 5_000_000,
       endorsed_capabilities: ["code_review"],
       created_at,
+      slashed_by: [],
     }
 
   let token_name =
@@ -369,6 +383,7 @@ fn mint_endorsement_with(
       stake_amount: 5_000_000,
       endorsed_capabilities: ["code_review", "testing"],
       created_at,
+      slashed_by: [],
     }
   let output =
     make_output(
@@ -393,6 +408,11 @@ fn mint_endorsement_with(
       ],
       outputs: [output],
       extra_signatories: agent_signers(),
+      mint: assets.from_asset(
+        test_endorsement_policy_id,
+        derive_endorsement_token_name(test_agent_did, test_agent_did_2),
+        1,
+      ),
     }
   validate_mint_endorsement(tx, test_config(), test_refs(), test_params(), output_datum, output)
 }

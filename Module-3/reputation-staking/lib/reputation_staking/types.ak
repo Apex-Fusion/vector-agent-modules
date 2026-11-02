@@ -3,7 +3,7 @@
 /// Defines all datum and redeemer types for the reputation and endorsement
 /// multi-validators. See MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md Sections 4.1–4.5.
 
-use cardano/address.{Credential}
+use cardano/address.{Address, Credential}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{OutputReference}
 
@@ -13,21 +13,35 @@ use cardano/transaction.{OutputReference}
 
 /// An agent's self-stake backing their claimed capabilities.
 /// One StakeUTXO per agent. Updated via IncreaseStake/DecreaseStake.
+///
+/// Field order (deployment and off-chain encoders): agent_did,
+/// owner_credential, stake_amount, staked_capabilities, last_updated,
+/// history_points, challenge_locks.
 pub type StakeDatum {
   /// Identity registry identifier of the staking agent (did:vector, the
   /// asset name of its record token)
   agent_did: ByteArray,
-  /// Payment credential of the agent owner
+  /// Payment credential of the agent owner. At creation it is a declared
+  /// credential of the agent's record (the controller key or a listed key
+  /// with the transaction purpose).
   owner_credential: Credential,
   /// Total AP3X self-staked (in DFM — smallest unit)
   stake_amount: Int,
   /// Capabilities this stake backs (must match registry capabilities)
   staked_capabilities: List<ByteArray>,
-  /// POSIX ms when the stake was created or last modified (lower bound of the
-  /// validity range)
+  /// POSIX ms of the last change by the owner (CreateStake, IncreaseStake,
+  /// DecreaseStake, UpdateCapabilities): the upper bound of the validity
+  /// range of that transaction, which is at most one hour long. The
+  /// cooldown compares it with the lower bound of a later transaction.
   last_updated: Int,
   /// Accumulated history bonus points (from winning challenges, cross-module bonuses)
   history_points: Int,
+  /// The asset names of the challenge tokens of the open challenges against
+  /// this stake. A challenge adds its token name when it opens
+  /// (LockForChallenge) and removes it when it closes (ReleaseChallenge or
+  /// SlashStake). While the list is not empty, the stake cannot decrease,
+  /// change its capabilities or decay. It is empty at creation.
+  challenge_locks: List<ByteArray>,
 }
 
 /// Redeemer for the reputation validator spend handler.
@@ -42,8 +56,17 @@ pub type StakeAction {
   UpdateCapabilities { new_capabilities: List<ByteArray> }
   /// Process decay on an inactive agent's stake (callable by anyone)
   ClaimDecayRefund
-  /// Slash stake after a capability is falsified (permissionless — outcome is deterministic)
+  /// Slash stake after a capability is falsified (permissionless — outcome
+  /// is deterministic). It also removes the lock of that challenge.
   SlashStake { challenge_ref: OutputReference }
+  /// Add the lock of a challenge that opens against this stake in the same
+  /// transaction (the transaction mints the challenge token). Permissionless:
+  /// the endorsement policy checks the challenge.
+  LockForChallenge
+  /// Remove the lock of a challenge that closes in the same transaction
+  /// without the outcome CapabilityFalsified (the transaction burns the
+  /// challenge token). Permissionless.
+  ReleaseChallenge { challenge_ref: OutputReference }
 }
 
 /// Redeemer for the reputation validator mint handler.
@@ -64,10 +87,15 @@ pub type StakeMintAction {
 
 /// An endorsement: Agent B stakes AP3X vouching for Agent A's capabilities.
 /// One EndorsementUTXO per endorser-endorsee pair.
+///
+/// Field order (deployment and off-chain encoders): endorser_did,
+/// endorser_credential, target_did, stake_amount, endorsed_capabilities,
+/// created_at, slashed_by.
 pub type EndorsementDatum {
   /// DID of the endorsing agent
   endorser_did: ByteArray,
-  /// Payment credential of endorser
+  /// Payment credential of endorser. At creation it is a declared credential
+  /// of the endorser's record.
   endorser_credential: Credential,
   /// DID of the agent being endorsed
   target_did: ByteArray,
@@ -78,6 +106,10 @@ pub type EndorsementDatum {
   /// POSIX ms when the endorsement was created (lower bound of a validity
   /// range of at most one hour)
   created_at: Int,
+  /// The asset names of the challenge tokens of the resolved challenges that
+  /// slashed this endorsement. A challenge slashes an endorsement at most
+  /// once. It is empty at creation.
+  slashed_by: List<ByteArray>,
 }
 
 /// Redeemer for endorsement spend actions.
@@ -111,7 +143,8 @@ pub type EndorsementMintAction {
 pub type ReputationChallengeDatum {
   /// DID of the challenger
   challenger_did: ByteArray,
-  /// Payment credential of challenger
+  /// Payment credential of challenger. At creation it is a declared
+  /// credential of the challenger's record.
   challenger_credential: Credential,
   /// DID of the agent being challenged
   target_did: ByteArray,
@@ -141,8 +174,12 @@ pub type ReputationChallengeDatum {
 pub type RepChallengeState {
   /// Awaiting resolution
   Open
-  /// Escalated to Module 1 Adversarial Auditing
-  Escalated { audit_claim_ref: OutputReference }
+  /// Escalated to Module 1 Adversarial Auditing. `audit_claim_token` is the
+  /// asset name of the Module 1 claim token that the escalation transaction
+  /// minted (policy audit_claim_validator_hash). The output reference of
+  /// that claim cannot be stored here: it contains the id of the escalation
+  /// transaction, and a datum cannot hold the id of its own transaction.
+  Escalated { audit_claim_token: ByteArray }
   /// Resolved — capability verified or falsified
   Resolved { outcome: RepChallengeOutcome }
 }
@@ -180,7 +217,8 @@ pub type RepChallengeAction {
   DistributeOutcome
   /// Close a challenge that nobody resolved before the challenge timeout
   /// (see challenge_validation.challenge_timeout). The challenger receives
-  /// the challenge stake; the target's stake is not touched.
+  /// the challenge stake; the target's stake keeps its AP3X (the transaction
+  /// only removes the lock of the challenge).
   ExpireChallenge
 }
 
@@ -335,7 +373,8 @@ pub type AuditChallengeDatum {
   claim_token: ByteArray,
 }
 
-/// Mirror of Module 1 ChallengeState.
+/// Mirror of Module 1 ChallengeState. The field order of AuditResolved
+/// follows Module 1 `Resolved { verdict, refund_to }`.
 pub type AuditChallengeState {
   /// Awaiting Foundation oracle resolution
   PendingOracle
@@ -343,8 +382,9 @@ pub type AuditChallengeState {
   PendingJury
   /// Jury selected, awaiting votes
   AuditVoting { selected_jurors: List<PolicyId> }
-  /// Resolved — verdict rendered
-  AuditResolved { verdict: AuditVerdict }
+  /// Resolved — verdict rendered. `refund_to` is the address that Module 1
+  /// records for the refund; Module 3 does not read it.
+  AuditResolved { verdict: AuditVerdict, refund_to: Address }
 }
 
 /// Mirror of Module 1 Verdict.

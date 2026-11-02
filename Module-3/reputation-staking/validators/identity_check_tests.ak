@@ -2,13 +2,17 @@
 //// `docs/IDENTITY_REGISTRY.md` in agents-marketplace, Module-3 row):
 ////
 //// - WithdrawChallenge (an exit): the controller of the challenger's record
-////   signs; the record can have any status.
+////   signs; the record can have any status. The payout goes to
+////   challenger_credential while the record trusts it, else to the
+////   controller key (rule D-exit). The withdrawal spends the target's
+////   StakeUTXO, which removes the lock of the challenge.
 //// - MintHistoryBonus (extends a position): the bonus agent's record has
 ////   effective status Active and its controller signs.
 ////
 //// Each test builds a full transaction and calls the handler of the
 //// validator. Both actions read an identity record, so the validity range
-//// is at most one hour long. test_agent_did has controller 1.
+//// is at most one hour long. test_agent_did has controller 1 and lists the
+//// transaction key 1 (the owner key).
 
 use aiken/interval
 use cardano/address.{VerificationKey}
@@ -28,15 +32,16 @@ use reputation_staking/test_helpers.{
 }
 use reputation_staking/types.{
   Challenge, ChallengeSpend, ChallengeWon, HistoryBonusDatum, MintHistoryBonus,
-  Open, ReputationChallengeDatum, WithdrawChallenge,
+  Open, ReputationChallengeDatum, StakeDatum, WithdrawChallenge,
 }
 use reputation_staking/utils.{
   derive_challenge_token_name, derive_history_bonus_token_name,
+  derive_stake_token_name,
 }
 use shared/identity_fixtures.{
   agent_id, record, record_input, record_input_at_other_script,
   record_input_with_fake_token, record_input_with_stake, retired, revoked,
-  subagent, suspended, unaccountable, with_subagent_epoch,
+  subagent, suspended, unaccountable, with_subagent_epoch, with_transaction_key,
 }
 use vector_identity/types.{IdentityDatum} as identity_types
 
@@ -65,8 +70,10 @@ fn open_range() -> ValidityRange {
   interval.after(t0)
 }
 
+/// The challenger's record: controller 1, the test capabilities and the
+/// listed transaction key 1 (the owner key).
 fn agent_record() -> IdentityDatum {
-  record(1, test_capabilities)
+  with_transaction_key(record(1, test_capabilities), 1)
 }
 
 fn agent_ref(r: IdentityDatum) -> Input {
@@ -137,12 +144,57 @@ fn challenge_token() -> ByteArray {
   derive_challenge_token_name(test_agent_did, test_agent_did_2, "code_review")
 }
 
+/// The target's StakeUTXO with the lock of the test challenge.
+fn locked_target_stake() -> Input {
+  make_input(
+    test_tx_hash,
+    50,
+    make_output(
+      script_address(test_reputation_policy_id),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 20_000_000)
+        |> assets.add(
+            test_reputation_policy_id,
+            derive_stake_token_name(test_agent_did_2),
+            1,
+          ),
+      StakeDatum {
+        agent_did: test_agent_did_2,
+        owner_credential: VerificationKey(test_owner_key_hash_2),
+        stake_amount: 20_000_000,
+        staked_capabilities: test_capabilities,
+        last_updated: 500,
+        history_points: 0,
+        challenge_locks: [challenge_token()],
+      },
+    ),
+  )
+}
+
 /// A challenge withdrawal by the challenger with the given identity
-/// reference inputs, signers and validity range.
+/// reference inputs, signers and validity range. The owner key receives the
+/// challenge stake.
 fn withdraw_challenge(
   refs: List<Input>,
   signers: List<ByteArray>,
   validity_range: ValidityRange,
+) -> Bool {
+  withdraw_challenge_paying(
+    refs,
+    signers,
+    validity_range,
+    open_challenge(),
+    test_owner_key_hash,
+  )
+}
+
+/// A withdrawal of `datum` that pays the challenge stake to the key `payee`.
+fn withdraw_challenge_paying(
+  refs: List<Input>,
+  signers: List<ByteArray>,
+  validity_range: ValidityRange,
+  datum: ReputationChallengeDatum,
+  payee: ByteArray,
 ) -> Bool {
   let challenge_input =
     Input {
@@ -156,22 +208,22 @@ fn withdraw_challenge(
               challenge_stake,
             )
           |> assets.add(test_endorsement_policy_id, challenge_token(), 1),
-        Challenge(open_challenge()),
+        Challenge(datum),
       ),
     }
   let tx =
     Transaction {
       ..base_tx(t0),
       validity_range,
-      inputs: [challenge_input],
+      inputs: [challenge_input, locked_target_stake()],
       reference_inputs: [make_params_ref_input(), refs_ref_input(), ..refs],
-      outputs: [ap3x_to(test_owner_key_hash, challenge_stake)],
+      outputs: [ap3x_to(payee, challenge_stake)],
       mint: assets.from_asset(test_endorsement_policy_id, challenge_token(), -1),
       extra_signatories: signers,
     }
   endorsement.endorsement.spend(
     test_config(),
-    Some(Challenge(open_challenge())),
+    Some(Challenge(datum)),
     ChallengeSpend(WithdrawChallenge),
     challenge_ref(),
     tx,
@@ -279,19 +331,24 @@ test withdraw_challenge_unaccountable_agent() {
   )
 }
 
+/// A tombstone lists no keys: the exit pays the controller key (D-exit).
 test withdraw_challenge_revoked_agent() {
-  withdraw_challenge(
+  withdraw_challenge_paying(
     [agent_ref(revoked(agent_record()))],
     [test_controller_hash(1)],
     range(),
+    open_challenge(),
+    test_controller_hash(1),
   )
 }
 
 test withdraw_challenge_retired_agent() {
-  withdraw_challenge(
+  withdraw_challenge_paying(
     [agent_ref(retired(agent_record()))],
     [test_controller_hash(1)],
     range(),
+    open_challenge(),
+    test_controller_hash(1),
   )
 }
 
