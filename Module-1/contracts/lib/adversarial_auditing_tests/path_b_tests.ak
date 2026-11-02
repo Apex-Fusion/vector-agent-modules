@@ -23,12 +23,15 @@ use cardano/transaction.{InlineDatum, NoDatum, Output, OutputReference}
 use adversarial_auditing/types.{
   AuditingConfig, ClaimDatum, Open, JurorDatum,
 }
+use adversarial_auditing_tests/identity_fixtures.{
+  config_holder, config_policy, placeholder_verdict_policy,
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // CONSTANTS (Path B — NO ap3x policy / asset name)
 // ══════════════════════════════════════════════════════════════════════
 
-const registry_policy_id: ByteArray =
+const identity_hash: ByteArray =
   #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
 
 const oracle_vkh: ByteArray =
@@ -63,9 +66,12 @@ const zero_hash: ByteArray =
 /// Those two fields must be dropped from types.ak for this to compile.
 fn pb_config() -> AuditingConfig {
   AuditingConfig {
-    registry_policy_id,
+    identity_hash,
     oracle_vkh,
     refs_token_policy: refs_policy,
+    config_policy,
+    config_holder,
+    verdict_policy: placeholder_verdict_policy(),
   }
 }
 
@@ -129,11 +135,20 @@ fn seed_ref() -> OutputReference {
 test path_b_auditing_config_has_no_ap3x_fields() {
   let cfg = pb_config()
   let AuditingConfig {
-    registry_policy_id: rp,
+    identity_hash: ih,
     oracle_vkh: ov,
     refs_token_policy: rt,
+    config_policy: cp,
+    config_holder: ch,
+    verdict_policy: _,
   } = cfg
-  rp == registry_policy_id && ov == oracle_vkh && rt == refs_policy
+  and {
+    ih == identity_hash,
+    ov == oracle_vkh,
+    rt == refs_policy,
+    cp == config_policy,
+    ch == config_holder,
+  }
 }
 
 /// (2) OpenChallenge / SubmitClaim stake accounting: the stake UTxO carries

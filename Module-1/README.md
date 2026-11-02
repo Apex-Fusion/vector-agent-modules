@@ -40,19 +40,26 @@ Register DID → Register as juror (bond AP3X)
 
 ## Contracts
 
-Three Aiken (Plutus V3) multi-validators — 4,047 lines total:
+Four Aiken (Plutus V3) multi-validators:
 
-| Validator | LOC | Purpose |
-|-----------|-----|---------|
-| `challenge.ak` | 1,793 | Challenge lifecycle, jury resolution, commit-reveal |
-| `claim.ak` | 503 | Claim submission, withdrawal, state transitions |
-| `jury_pool.ak` | 850 | Juror registration, PRNG selection, voting, rewards |
+| Validator | Purpose |
+|-----------|---------|
+| `challenge.ak` | Challenge lifecycle, jury resolution, commit-reveal; each resolution that the verdict policy turns into a verdict mints one verdict token |
+| `claim.ak` | Claim submission, withdrawal, state transitions |
+| `jury_pool.ak` | Juror registration, PRNG selection, voting, rewards |
+| `identity_party.ak` | Module-1 as a party of identity records: verdict tokens, Consent and verdict applications (identity registry, Part 2 §3.8) |
 
-**Tests:** 232/232 Aiken unit tests passing  
+Claim submission, challenge opening and juror registration need an identity
+registry record with effective status Active and a declared key that is the
+record's controller or a listed transaction key. The identity library
+`vector_identity` is vendored; see [VENDORED.md](VENDORED.md).
+
+**Tests:** `scripts/test-contracts.sh` (vendored-library checksum check, its self-test, then `aiken check`). Test map: [contracts/tests/identity-party.md](contracts/tests/identity-party.md)  
 **Testnet:** 13/13 lifecycle steps confirmed (v13 full Path B normal-verdict path); escape-hatch paths (TimeoutResolve + ResetStaleActiveCase) confirmed on-chain (v12)  
-**Mainnet:** v14 deployed to Vector mainnet 2026-04-16 (Phase 0 + Phase 1 complete; unseeded)
+**Mainnet:** v14 deployed to Vector mainnet 2026-04-16 (Phase 0 + Phase 1 complete; unseeded). The identity registry version is not deployed.
 
 ```bash
+scripts/test-contracts.sh   # checksum check + aiken check
 cd contracts/
 aiken check    # Compile + run all tests
 aiken build    # Compile only

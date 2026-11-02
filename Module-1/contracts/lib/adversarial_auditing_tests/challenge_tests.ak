@@ -30,6 +30,9 @@ use adversarial_auditing/utils.{
   challenge_token_name, claim_token_name, compute_selection_seed,
   select_jurors_prng, sort_dids,
 }
+use adversarial_auditing_tests/identity_fixtures.{
+  auditing_config, placeholder_verdict_policy,
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // TEST CONSTANTS (mirrors claim_tests)
@@ -43,12 +46,6 @@ const challenge_validator_hash: ByteArray =
 
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-
-const registry_policy_id: ByteArray =
-  #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
-
-const registry_script_hash: ByteArray =
-  #"e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
 
 const params_script_hash: ByteArray =
   #"f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
@@ -86,7 +83,7 @@ const valid_reasoning_hash: ByteArray =
 
 fn test_config() -> AuditingConfig {
   AuditingConfig {
-    registry_policy_id,
+    ..auditing_config(placeholder_verdict_policy()),
     oracle_vkh,
     refs_token_policy: #"9999999999999999999999999999999999999999999999999999999999",
   }
@@ -183,6 +180,7 @@ fn open_challenge_datum() -> ChallengeDatum {
     resolution_deadline: 5_400_000,
     eligible_jurors: [],
     state: PendingOracle,
+    claim_token: claim_tok_name(),
   }
 }
 

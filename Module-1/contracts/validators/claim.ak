@@ -15,14 +15,22 @@
 ///   - count_script_inputs == 1 (double-satisfaction prevention)
 ///   - Inline datums only (CIP-32)
 ///   - Token lifecycle: minted on SubmitClaim, burned on withdrawal/forfeit
-///   - DID verified via Agent Registry reference input (CIP-31)
+///   - Claimer identity checked in the identity registry (Part 2 §7):
+///     effective status Active and a declared credential that is the
+///     record's controller or a listed transaction key
 
 use aiken/cbor
 use aiken/collection/dict
 use aiken/collection/list
-use cardano/address.{Script}
+use aiken/crypto.{blake2b_224}
+use aiken/interval
+use cardano/address.{Credential, Script}
 use cardano/assets.{PolicyId}
-use cardano/transaction.{InlineDatum, OutputReference, Transaction}
+use cardano/transaction.{
+  InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
+  placeholder,
+}
+use adversarial_auditing/identity_checks.{identity_ok}
 use adversarial_auditing/params.{ProtocolParams, challenge_window_valid}
 use adversarial_auditing/types.{
   AuditingConfig, Challenged, ChallengeDatum, ClaimAction, ClaimDatum,
@@ -33,7 +41,16 @@ use adversarial_auditing/utils.{
   challenge_token_name, claim_token_name, count_script_inputs,
   credential_signed, exactly_one_burned, exactly_one_minted, find_input,
   find_output_at_script, get_cross_refs, is_valid_hash, outputs_at_script,
-  tx_contains_slot, tx_started_after, verify_active_did,
+  tx_contains_slot, tx_started_after,
+}
+use vector_identity/types.{
+  Active, ControllerSet, Hold, IdentityDatum, Revoked, Suspended,
+} as vi
+use adversarial_auditing_tests/identity_fixtures.{
+  agent_a, agent_b, auditing_config, auth_key_a, claim_hash, controller_a,
+  hash_32, key_address, key_credential, largest_record, lo, out_ref,
+  placeholder_verdict_policy, protocol_params, record_a, record_input,
+  script_address, stranger_key, tx_key_a, window_range,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -173,9 +190,16 @@ fn validate_submit_claim(
             _ -> False
           }
 
-        // Claimer must have active DID in the Agent Registry.
+        // Claimer identity: record found, effective status Active over the
+        // transaction window (at most one hour), and the declared credential
+        // is the controller or a listed key with the transaction purpose.
         let has_active_did =
-          verify_active_did(config, clm_d.claimer_did, tx.reference_inputs)
+          identity_ok(
+            config.identity_hash,
+            clm_d.claimer_did,
+            clm_d.claimer_credential,
+            tx,
+          )
 
         // Stake must meet minimum.
         let stake_ok = clm_d.stake_amount >= params.min_claim_stake
@@ -492,4 +516,206 @@ fn validate_forfeit_claim(
     token_burned,
     challenge_resolving,
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SUBMIT CLAIM — IDENTITY CHECKS (Part 2 §7, Module-1 row)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Full SubmitClaim transactions with the claimer's identity record as a
+// reference input. Each negative test changes one thing.
+
+fn s_seed() -> Input {
+  Input {
+    output_reference: out_ref(0x5c, 0),
+    output: Output {
+      address: key_address(blake2b_224(tx_key_a)),
+      value: assets.from_lovelace(200_000_000),
+      datum: NoDatum,
+      reference_script: None,
+    },
+  }
+}
+
+fn s_claim_datum(credential: Credential) -> ClaimDatum {
+  ClaimDatum {
+    claimer_did: agent_a,
+    claimer_credential: credential,
+    claim_hash: hash_32,
+    claim_type: "data_indexing",
+    storage_uri: "ipfs://claim",
+    stake_amount: 100_000_000,
+    submitted_at: lo + 1,
+    challenge_window: 3_600_000,
+    state: Open,
+  }
+}
+
+fn s_record(record: IdentityDatum) -> Input {
+  record_input(out_ref(0xa0, 0), agent_a, record)
+}
+
+fn s_submit_tx(
+  datum: ClaimDatum,
+  signer: ByteArray,
+  refs: List<Input>,
+) -> Transaction {
+  let name = claim_token_name(s_seed().output_reference)
+  Transaction {
+    ..placeholder,
+    inputs: [s_seed()],
+    reference_inputs: refs,
+    outputs: [
+      Output {
+        address: script_address(claim_hash),
+        value: assets.from_lovelace(datum.stake_amount)
+          |> assets.add(claim_hash, name, 1),
+        datum: InlineDatum(datum),
+        reference_script: None,
+      },
+    ],
+    mint: assets.from_asset(claim_hash, name, 1),
+    extra_signatories: [signer],
+    validity_range: window_range(),
+  }
+}
+
+fn s_submit(tx: Transaction) -> Bool {
+  validate_submit_claim(
+    auditing_config(placeholder_verdict_policy()),
+    protocol_params(),
+    claim_hash,
+    tx,
+  )
+}
+
+/// SubmitClaim by agent A with the declared key `key`.
+fn s_submit_with_key(key: ByteArray, refs: List<Input>) -> Transaction {
+  s_submit_tx(s_claim_datum(key_credential(key)), blake2b_224(key), refs)
+}
+
+test submit_claim_with_listed_transaction_key() {
+  s_submit(s_submit_with_key(tx_key_a, [s_record(record_a(Active))]))
+}
+
+test submit_claim_with_controller_key() {
+  s_submit(s_submit_with_key(controller_a, [s_record(record_a(Active))]))
+}
+
+test submit_claim_fails_without_record() {
+  !s_submit(s_submit_with_key(tx_key_a, []))
+}
+
+test submit_claim_fails_with_legacy_registry_token() {
+  let legacy =
+    Input {
+      output_reference: out_ref(0x1e, 0),
+      output: Output {
+        address: script_address(
+          #"be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01",
+        ),
+        value: assets.from_lovelace(2_000_000)
+          |> assets.add(
+              #"be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01",
+              agent_a,
+              1,
+            ),
+        datum: NoDatum,
+        reference_script: None,
+      },
+    }
+  !s_submit(s_submit_with_key(tx_key_a, [legacy]))
+}
+
+test submit_claim_fails_with_record_of_other_agent() {
+  !s_submit(
+    s_submit_with_key(
+      tx_key_a,
+      [record_input(out_ref(0xa0, 0), agent_b, record_a(Active))],
+    ),
+  )
+}
+
+test submit_claim_fails_when_suspended() {
+  let record =
+    IdentityDatum {
+      ..record_a(Active),
+      status: Suspended {
+        holds: [Hold { by: ControllerSet, reason: 6, since: lo, until: lo + 1 }],
+      },
+    }
+  !s_submit(s_submit_with_key(tx_key_a, [s_record(record)]))
+}
+
+test submit_claim_fails_when_unaccountable() {
+  let record = IdentityDatum { ..record_a(Active), parties: [] }
+  !s_submit(s_submit_with_key(tx_key_a, [s_record(record)]))
+}
+
+test submit_claim_fails_when_revoked() {
+  let record =
+    IdentityDatum {
+      ..record_a(Active),
+      status: Revoked {
+        by: ControllerSet,
+        reason: 5,
+        at: lo - 1,
+        invalid_from: None,
+        successor: None,
+      },
+    }
+  !s_submit(s_submit_with_key(controller_a, [s_record(record)]))
+}
+
+test submit_claim_fails_with_unlisted_key() {
+  !s_submit(s_submit_with_key(stranger_key, [s_record(record_a(Active))]))
+}
+
+test submit_claim_fails_with_key_without_transaction_purpose() {
+  !s_submit(s_submit_with_key(auth_key_a, [s_record(record_a(Active))]))
+}
+
+test submit_claim_fails_with_range_over_one_hour() fail {
+  s_submit(
+    Transaction {
+      ..s_submit_with_key(tx_key_a, [s_record(record_a(Active))]),
+      validity_range: interval.between(lo, lo + 3_600_001),
+    },
+  )
+}
+
+test submit_claim_fails_with_unbounded_range() fail {
+  s_submit(
+    Transaction {
+      ..s_submit_with_key(tx_key_a, [s_record(record_a(Active))]),
+      validity_range: interval.after(lo),
+    },
+  )
+}
+
+// Benchmarks: constants are built at compile time, so the execution units
+// are the cost of validate_submit_claim only.
+
+const bench_config: AuditingConfig =
+  auditing_config(placeholder_verdict_policy())
+
+const bench_params: ProtocolParams = protocol_params()
+
+const bench_submit_tx: Transaction =
+  s_submit_with_key(tx_key_a, [s_record(record_a(Active))])
+
+const bench_submit_largest_tx: Transaction =
+  s_submit_with_key(tx_key_a, [s_record(largest_record(Active))])
+
+test bench_submit_claim() {
+  validate_submit_claim(bench_config, bench_params, claim_hash, bench_submit_tx)
+}
+
+test bench_submit_claim_largest_record() {
+  validate_submit_claim(
+    bench_config,
+    bench_params,
+    claim_hash,
+    bench_submit_largest_tx,
+  )
 }

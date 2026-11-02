@@ -23,13 +23,20 @@
 ///   - Token lifecycle: minted on OpenChallenge, burned on resolution
 ///   - Auditor DID != Claimer DID (anti-self-audit, spec §4.3)
 ///   - Auditor stake >= Claim stake (economic deterrent)
+///   - Auditor identity checked in the identity registry (Part 2 §7)
+///   - The challenge names the claim token of its claim (claim_token)
+///   - Each resolution that the verdict policy turns into a verdict mints one
+///     verdict token of identity_party (M1 from the configuration record)
 
 use aiken/collection/dict
+use aiken/crypto.{blake2b_224}
 use aiken/collection/list
 use aiken/interval
 use cardano/address.{Address, Credential, Script, VerificationKey}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{InlineDatum, Input, NoDatum, Output, OutputReference, Transaction, placeholder}
+use adversarial_auditing/identity_checks.{identity_ok}
+use adversarial_auditing/identity_party.{resolution_verdict_ok}
 use adversarial_auditing/params.{
   ProtocolParams, compute_jury_fee, supermajority_threshold,
 }
@@ -38,14 +45,23 @@ use adversarial_auditing/types.{
   ClaimDatum, ClaimerWins, CleanupResolved, CrossValidatorRefs, Inconclusive,
   JurorDatum, Open, OracleResolve, OpenChallenge, PendingJury, PendingOracle,
   Resolved, ResolveJury, SubmitEvidence, TimeoutResolve, TransitionToVoting,
-  Verdict, Voting,
+  Verdict, VerdictPolicy, VerdictSuspend, Voting,
 }
 use adversarial_auditing/utils.{
   challenge_token_name, claim_token_name, count_script_inputs,
   credential_signed, exactly_one_burned, exactly_one_minted, find_input,
   find_output_at_script, get_cross_refs, is_valid_hash, outputs_at_script,
   select_jurors_prng, sort_dids, tx_contains_slot, tx_ends_before,
-  tx_started_after, verify_active_did, vkh_signed,
+  tx_started_after, vkh_signed,
+}
+use vector_identity/types.{Active, IdentityDatum, Party} as vi
+use adversarial_auditing_tests/identity_fixtures.{
+  accountable_key_party, agent_b, agent_record, auditing_config, base_verdict,
+  challenge_datum, challenge_input, challenge_ref, challenge_token, claim_token,
+  controller_b, cross_refs, ed25519_key, hash_32, juror_dids,
+  jury_resolution_tx, key_credential, oracle_resolution_tx, out_ref,
+  placeholder_verdict_policy, protocol_params, record_input,
+  revoke_verdict_policy, stranger_key, tx_key_a, verdict,
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -210,12 +226,20 @@ fn validate_open_challenge(
           assets.quantity_of(chal_output.value, policy_id, token_name) == 1
 
         // Find the claim being challenged from tx inputs (consumed in same tx).
+        // The claim input must hold the claim token named in the challenge
+        // datum, so the challenge is bound to a real claim.
         let claim_check =
           when list.find(tx.inputs, fn(i) { i.output_reference == ch.claim_ref }) is {
             Some(claim_inp) ->
               when claim_inp.output.datum is {
                 InlineDatum(raw_claim) -> {
                   expect claim: ClaimDatum = raw_claim
+                  let claim_token_bound =
+                    assets.quantity_of(
+                      claim_inp.output.value,
+                      refs.claim_validator_hash,
+                      ch.claim_token,
+                    ) == 1
                   let no_self_audit = ch.auditor_did != claim.claimer_did
                   // Challenge must be within the challenge window.
                   let within_window =
@@ -227,6 +251,7 @@ fn validate_open_challenge(
                   let ap3x_locked =
                     assets.lovelace_of(chal_output.value) == ch.stake_amount
                   and {
+                    claim_token_bound,
                     no_self_audit,
                     within_window,
                     stake_sufficient,
@@ -238,9 +263,16 @@ fn validate_open_challenge(
             None -> False
           }
 
-        // Auditor has active DID.
+        // Auditor identity: record found, effective status Active over the
+        // transaction window (at most one hour), and the declared credential
+        // is the controller or a listed key with the transaction purpose.
         let auditor_did_ok =
-          verify_active_did(config, ch.auditor_did, tx.reference_inputs)
+          identity_ok(
+            config.identity_hash,
+            ch.auditor_did,
+            ch.auditor_credential,
+            tx,
+          )
 
         // Evidence hash is 32 bytes.
         let evidence_hash_ok = is_valid_hash(ch.evidence_hash)
@@ -359,6 +391,7 @@ fn validate_submit_evidence(
               updated.challenged_at == ch.challenged_at,
               updated.resolution_deadline == ch.resolution_deadline,
               updated.eligible_jurors == ch.eligible_jurors,
+              updated.claim_token == ch.claim_token,
               // State MUST be immutable — prevents auditor from transitioning
               // PendingOracle→PendingJury (or any other state) via SubmitEvidence.
               updated.state == ch.state,
@@ -441,6 +474,10 @@ fn validate_oracle_resolve(
       ch.stake_amount,
     )
 
+  // Identity verdict: when the verdict policy turns the outcome into a
+  // verdict, the transaction mints exactly one verdict token of M1.
+  let verdict_minted = resolution_verdict_ok(config, verdict, tx)
+
   and {
     oracle_signed,
     state_ok,
@@ -448,6 +485,7 @@ fn validate_oracle_resolve(
     challenge_token_burned,
     claim_token_burned,
     distribution_ok,
+    verdict_minted,
   }
 }
 
@@ -575,6 +613,7 @@ fn validate_resolve_jury(
                       updated.challenged_at == ch.challenged_at,
                       updated.resolution_deadline == ch.resolution_deadline,
                       updated.eligible_jurors == ch.eligible_jurors,
+                      updated.claim_token == ch.claim_token,
                       // Challenge token preserved in output.
                       assets.quantity_of(
                         out.value,
@@ -629,6 +668,10 @@ fn validate_resolve_jury(
   // Phase 1.1: No oracle signature needed — votes are authenticated on-chain
   // via commit-reveal. ResolveJury is fully permissionless.
 
+  // Identity verdict: when the verdict policy turns the tally into a
+  // verdict, the transaction mints exactly one verdict token of M1.
+  let verdict_minted = resolution_verdict_ok(config, verdict, tx)
+
   and {
     votes_not_empty,
     votes_complete,
@@ -638,6 +681,7 @@ fn validate_resolve_jury(
     claim_burned,
     distribution_ok,
     single_challenge_output,
+    verdict_minted,
   }
 }
 
@@ -794,6 +838,7 @@ fn validate_transition_to_voting(
               updated.challenged_at == ch.challenged_at,
               updated.resolution_deadline == ch.resolution_deadline,
               updated.eligible_jurors == ch.eligible_jurors,
+              updated.claim_token == ch.claim_token,
               // Challenge token preserved in output.
               assets.quantity_of(
                 out.value,
@@ -1149,9 +1194,6 @@ const t_challenge_validator_hash: ByteArray =
 const t_jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-const t_registry_policy_id: ByteArray =
-  #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
-
 const t_refs_token_policy: ByteArray =
   #"9999999999999999999999999999999999999999999999999999999999"
 
@@ -1163,9 +1205,6 @@ const t_claimer_vkh: ByteArray =
 
 const t_claimer_did: ByteArray =
   #"2222222222222222222222222222222222222222222222222222222222"
-
-const t_auditor_vkh: ByteArray =
-  #"3333333333333333333333333333333333333333333333333333333333333333"
 
 const t_auditor_did: ByteArray =
   #"4444444444444444444444444444444444444444444444444444444444"
@@ -1183,10 +1222,26 @@ const t_valid_evidence_hash: ByteArray =
 
 fn t_config() -> AuditingConfig {
   AuditingConfig {
-    registry_policy_id: t_registry_policy_id,
+    ..auditing_config(placeholder_verdict_policy()),
     oracle_vkh: t_oracle_vkh,
     refs_token_policy: t_refs_token_policy,
   }
+}
+
+/// Key hash of the auditor's controller key (the declared credential).
+fn t_auditor_vkh() -> ByteArray {
+  blake2b_224(controller_b)
+}
+
+/// The auditor's identity record: Active, with an Accountable key party
+/// that covers the test times (which start at 0).
+fn t_auditor_record() -> IdentityDatum {
+  agent_record(
+    controller_b,
+    [],
+    [Party { ..accountable_key_party(), not_before: 0 }],
+    Active,
+  )
 }
 
 fn t_params_oracle() -> ProtocolParams {
@@ -1261,24 +1316,9 @@ fn t_refs_input() -> Input {
   }
 }
 
-/// Registry reference input for auditor DID verification
-fn t_auditor_registry_input() -> Input {
-  Input {
-    output_reference: OutputReference {
-      transaction_id: #"ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00ff00",
-      output_index: 0,
-    },
-    output: Output {
-      address: Address {
-        payment_credential: Script(#"e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"),
-        stake_credential: None,
-      },
-      value: assets.from_lovelace(2_000_000)
-        |> assets.add(t_registry_policy_id, t_auditor_did, 1),
-      datum: NoDatum,
-      reference_script: None,
-    },
-  }
+/// Identity record of the auditor (reference input for the identity check)
+fn t_auditor_record_input() -> Input {
+  record_input(out_ref(0xff, 0), t_auditor_did, t_auditor_record())
 }
 
 /// Open claim datum that the auditor is challenging
@@ -1319,7 +1359,7 @@ fn t_seed_input() -> Input {
     output_reference: t_seed_ref(),
     output: Output {
       address: Address {
-        payment_credential: VerificationKey(t_auditor_vkh),
+        payment_credential: VerificationKey(t_auditor_vkh()),
         stake_credential: None,
       },
       value: assets.from_lovelace(50_000_000),
@@ -1334,7 +1374,7 @@ fn t_challenge_datum() -> ChallengeDatum {
   ChallengeDatum {
     claim_ref: t_claim_ref(),
     auditor_did: t_auditor_did,
-    auditor_credential: VerificationKey(t_auditor_vkh),
+    auditor_credential: VerificationKey(t_auditor_vkh()),
     stake_amount: 100_000_000,
     evidence_hash: t_valid_evidence_hash,
     evidence_uri: "ipfs://QmEvidence",
@@ -1342,6 +1382,7 @@ fn t_challenge_datum() -> ChallengeDatum {
     resolution_deadline: 5_400_000,
     eligible_jurors: [],
     state: PendingOracle,
+    claim_token: claim_token_name(t_seed_ref()),
   }
 }
 
@@ -1379,11 +1420,11 @@ fn t_base_open_challenge_tx() -> Transaction {
   Transaction {
     ..placeholder,
     inputs: [t_seed_input(), t_claim_input()],
-    reference_inputs: [t_refs_input(), t_auditor_registry_input()],
+    reference_inputs: [t_refs_input(), t_auditor_record_input()],
     outputs: [t_challenge_output(), t_claim_continuing_output()],
     mint: assets.zero
       |> assets.add(t_challenge_validator_hash, t_chl_token_name(), 1),
-    extra_signatories: [t_auditor_vkh],
+    extra_signatories: [t_auditor_vkh()],
     validity_range: interval.between(1500, 3000),
   }
 }
@@ -1594,16 +1635,15 @@ test test_voc_fail_ap3x_mismatch() fail {
   validate_open_challenge(config, params, t_challenge_validator_hash, tx)
 }
 
-// ── CHECK 8: auditor_did_ok — DID verified in registry ──────────────
+// ── CHECK 8: auditor_did_ok — identity record of the auditor ────────
 
-test test_voc_fail_no_registry_ref() fail {
+test test_voc_fail_no_identity_record() fail {
   let config = t_config()
   let params = t_params_oracle()
-  // Remove auditor registry reference input
+  // Remove the auditor's identity record reference input
   let tx = Transaction {
     ..t_base_open_challenge_tx(),
     reference_inputs: [t_refs_input()],
-    // Only refs UTxO, no registry
   }
   validate_open_challenge(config, params, t_challenge_validator_hash, tx)
 }
@@ -1770,4 +1810,377 @@ test test_voc_fail_claim_not_in_inputs() fail {
     inputs: [t_seed_input()],
   }
   validate_open_challenge(config, params, t_challenge_validator_hash, tx)
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// OPEN CHALLENGE — IDENTITY CHECKS AND CLAIM BINDING
+// ══════════════════════════════════════════════════════════════════════
+
+/// The base OpenChallenge with another auditor record, declared key and
+/// signer.
+fn t_open_with_auditor(
+  record: IdentityDatum,
+  key: ByteArray,
+) -> Transaction {
+  let datum =
+    ChallengeDatum {
+      ..t_challenge_datum(),
+      auditor_credential: key_credential(key),
+    }
+  Transaction {
+    ..t_base_open_challenge_tx(),
+    reference_inputs: [
+      t_refs_input(),
+      record_input(out_ref(0xff, 0), t_auditor_did, record),
+    ],
+    outputs: [
+      Output { ..t_challenge_output(), datum: InlineDatum(datum) },
+      t_claim_continuing_output(),
+    ],
+    extra_signatories: [blake2b_224(key)],
+  }
+}
+
+fn t_open(tx: Transaction) -> Bool {
+  validate_open_challenge(t_config(), t_params_oracle(), t_challenge_validator_hash, tx)
+}
+
+test test_voc_identity_listed_transaction_key() {
+  let record = vi.IdentityDatum { ..t_auditor_record(), keys: [ed25519_key(tx_key_a, 8)] }
+  t_open(t_open_with_auditor(record, tx_key_a))
+}
+
+test test_voc_identity_fails_with_unlisted_key() {
+  !t_open(t_open_with_auditor(t_auditor_record(), stranger_key))
+}
+
+test test_voc_identity_fails_with_key_without_transaction_purpose() {
+  let record = vi.IdentityDatum { ..t_auditor_record(), keys: [ed25519_key(tx_key_a, 3)] }
+  !t_open(t_open_with_auditor(record, tx_key_a))
+}
+
+test test_voc_identity_fails_when_auditor_suspended() {
+  let record =
+    vi.IdentityDatum {
+      ..t_auditor_record(),
+      status: vi.Suspended {
+        holds: [
+          vi.Hold { by: vi.ControllerSet, reason: 6, since: 0, until: 3001 },
+        ],
+      },
+    }
+  !t_open(t_open_with_auditor(record, controller_b))
+}
+
+test test_voc_identity_fails_when_auditor_unaccountable() {
+  let record = vi.IdentityDatum { ..t_auditor_record(), parties: [] }
+  !t_open(t_open_with_auditor(record, controller_b))
+}
+
+test test_voc_identity_fails_when_auditor_retired() {
+  let record =
+    vi.IdentityDatum {
+      ..t_auditor_record(),
+      status: vi.Retired { at: 1000, successor: None },
+    }
+  !t_open(t_open_with_auditor(record, controller_b))
+}
+
+test test_voc_identity_fails_with_legacy_registry_token() {
+  let legacy_hash = #"be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
+  let legacy =
+    Input {
+      output_reference: out_ref(0xfe, 0),
+      output: Output {
+        address: Address {
+          payment_credential: Script(legacy_hash),
+          stake_credential: None,
+        },
+        value: assets.from_lovelace(2_000_000)
+          |> assets.add(legacy_hash, t_auditor_did, 1),
+        datum: NoDatum,
+        reference_script: None,
+      },
+    }
+  !t_open(
+    Transaction {
+      ..t_base_open_challenge_tx(),
+      reference_inputs: [t_refs_input(), legacy],
+    },
+  )
+}
+
+test test_voc_identity_range_of_one_hour() {
+  t_open(
+    Transaction {
+      ..t_base_open_challenge_tx(),
+      validity_range: interval.between(0, 3_600_000),
+    },
+  )
+}
+
+test test_voc_identity_fails_with_range_over_one_hour() fail {
+  // The range ends before the claim window ends (3_601_000), so only the
+  // one-hour rule fails.
+  t_open(
+    Transaction {
+      ..t_base_open_challenge_tx(),
+      validity_range: interval.between(0, 3_600_001),
+    },
+  )
+}
+
+test test_voc_fail_claim_token_not_bound() {
+  let datum = ChallengeDatum { ..t_challenge_datum(), claim_token: "other" }
+  !t_open(
+    Transaction {
+      ..t_base_open_challenge_tx(),
+      outputs: [
+        Output { ..t_challenge_output(), datum: InlineDatum(datum) },
+        t_claim_continuing_output(),
+      ],
+    },
+  )
+}
+
+test test_voc_fail_claim_input_without_token() {
+  let claim = t_claim_input()
+  let tokenless =
+    Input {
+      ..claim,
+      output: Output { ..claim.output, value: t_make_ap3x(100_000_000) },
+    }
+  !t_open(
+    Transaction {
+      ..t_base_open_challenge_tx(),
+      inputs: [t_seed_input(), tokenless],
+    },
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// RESOLUTIONS — VERDICT MINT (Part 2 §3.8)
+// ══════════════════════════════════════════════════════════════════════
+
+fn r_oracle(policy: VerdictPolicy, outcome: Verdict, tx: Transaction) -> Bool {
+  validate_oracle_resolve(
+    auditing_config(policy),
+    cross_refs(),
+    challenge_datum(PendingOracle),
+    challenge_ref(),
+    tx,
+    outcome,
+    hash_32,
+  )
+}
+
+fn r_jury(policy: VerdictPolicy, tx: Transaction) -> Bool {
+  validate_resolve_jury(
+    auditing_config(policy),
+    cross_refs(),
+    protocol_params(),
+    challenge_datum(Voting { selected_jurors: juror_dids() }),
+    challenge_ref(),
+    tx,
+  )
+}
+
+/// `tx` without the verdict token in its mint.
+fn r_without_verdict_mint(tx: Transaction) -> Transaction {
+  Transaction {
+    ..tx,
+    mint: assets.from_asset(identity_fixtures.claim_hash, claim_token, -1)
+      |> assets.add(identity_fixtures.challenge_hash, challenge_token, -1),
+  }
+}
+
+test test_vor_auditor_wins_with_verdict_mint() {
+  r_oracle(
+    placeholder_verdict_policy(),
+    AuditorWins,
+    oracle_resolution_tx(AuditorWins, base_verdict()),
+  )
+}
+
+test test_vor_fail_auditor_wins_without_verdict_mint() {
+  !r_oracle(
+    placeholder_verdict_policy(),
+    AuditorWins,
+    r_without_verdict_mint(oracle_resolution_tx(AuditorWins, base_verdict())),
+  )
+}
+
+test test_vor_fail_without_configuration_record() fail {
+  let tx = oracle_resolution_tx(AuditorWins, base_verdict())
+  r_oracle(
+    placeholder_verdict_policy(),
+    AuditorWins,
+    Transaction { ..tx, reference_inputs: list.take(tx.reference_inputs, 1) },
+  )
+}
+
+test test_vor_claimer_wins_without_rule_needs_no_mint() {
+  r_oracle(
+    placeholder_verdict_policy(),
+    ClaimerWins,
+    r_without_verdict_mint(oracle_resolution_tx(ClaimerWins, base_verdict())),
+  )
+}
+
+test test_vor_fail_claimer_wins_with_rule_without_mint() {
+  !r_oracle(
+    revoke_verdict_policy(),
+    ClaimerWins,
+    r_without_verdict_mint(
+      oracle_resolution_tx(
+        ClaimerWins,
+        verdict(agent_b, VerdictSuspend, 86_400_000),
+      ),
+    ),
+  )
+}
+
+test test_vrj_auditor_wins_with_verdict_mint() {
+  r_jury(
+    placeholder_verdict_policy(),
+    jury_resolution_tx(AuditorWins, base_verdict()),
+  )
+}
+
+// Benchmarks: constants are built at compile time, so the execution units
+// are the cost of the resolution check only.
+
+const bench_config: AuditingConfig =
+  auditing_config(placeholder_verdict_policy())
+
+const bench_params: ProtocolParams = protocol_params()
+
+const bench_refs: CrossValidatorRefs = cross_refs()
+
+const bench_voting: ChallengeDatum =
+  challenge_datum(Voting { selected_jurors: juror_dids() })
+
+const bench_pending: ChallengeDatum = challenge_datum(PendingOracle)
+
+const bench_jury_tx: Transaction =
+  jury_resolution_tx(AuditorWins, base_verdict())
+
+const bench_oracle_tx: Transaction =
+  oracle_resolution_tx(AuditorWins, base_verdict())
+
+test bench_resolve_jury_with_verdict_mint() {
+  validate_resolve_jury(
+    bench_config,
+    bench_refs,
+    bench_params,
+    bench_voting,
+    challenge_ref(),
+    bench_jury_tx,
+  )
+}
+
+test bench_oracle_resolve_with_verdict_mint() {
+  validate_oracle_resolve(
+    bench_config,
+    bench_refs,
+    bench_pending,
+    challenge_ref(),
+    bench_oracle_tx,
+    AuditorWins,
+    hash_32,
+  )
+}
+
+test test_vrj_fail_auditor_wins_without_verdict_mint() {
+  let tx = jury_resolution_tx(AuditorWins, base_verdict())
+  !r_jury(
+    placeholder_verdict_policy(),
+    Transaction {
+      ..tx,
+      mint: assets.from_asset(identity_fixtures.claim_hash, claim_token, -1),
+    },
+  )
+}
+
+test test_vrj_claimer_wins_without_rule_needs_no_mint() {
+  let tx = jury_resolution_tx(ClaimerWins, base_verdict())
+  r_jury(
+    placeholder_verdict_policy(),
+    Transaction {
+      ..tx,
+      outputs: list.take(tx.outputs, 3),
+      mint: assets.from_asset(identity_fixtures.claim_hash, claim_token, -1),
+    },
+  )
+}
+
+test test_vrj_fail_when_claim_token_changes() {
+  let tx = jury_resolution_tx(AuditorWins, base_verdict())
+  expect [challenge_output, ..rest] = tx.outputs
+  expect InlineDatum(data) = challenge_output.datum
+  expect datum: ChallengeDatum = data
+  let changed =
+    Output {
+      ..challenge_output,
+      datum: InlineDatum(ChallengeDatum { ..datum, claim_token: "other" }),
+    }
+  !r_jury(
+    placeholder_verdict_policy(),
+    Transaction { ..tx, outputs: [changed, ..rest] },
+  )
+}
+
+test test_vse_fail_when_claim_token_changes() {
+  let datum = challenge_datum(PendingOracle)
+  let continuing =
+    Output {
+      ..challenge_input(datum).output,
+      datum: InlineDatum(
+        ChallengeDatum {
+          ..datum,
+          evidence_hash: hash_32,
+          evidence_uri: "ipfs://more",
+          claim_token: "other",
+        },
+      ),
+    }
+  let tx =
+    Transaction {
+      ..placeholder,
+      inputs: [challenge_input(datum)],
+      outputs: [continuing],
+      extra_signatories: [blake2b_224(controller_b)],
+    }
+  and {
+    validate_submit_evidence(
+      t_config(),
+      cross_refs(),
+      datum,
+      Transaction {
+        ..tx,
+        outputs: [
+          Output {
+            ..continuing,
+            datum: InlineDatum(
+              ChallengeDatum {
+                ..datum,
+                evidence_hash: hash_32,
+                evidence_uri: "ipfs://more",
+              },
+            ),
+          },
+        ],
+      },
+      hash_32,
+      "ipfs://more",
+    ),
+    !validate_submit_evidence(
+      t_config(),
+      cross_refs(),
+      datum,
+      tx,
+      hash_32,
+      "ipfs://more",
+    ),
+  }
 }

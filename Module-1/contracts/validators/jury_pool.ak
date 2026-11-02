@@ -37,11 +37,16 @@
 
 use aiken/collection/dict
 use aiken/collection/list
-use cardano/address.{Script}
+use aiken/interval
+use cardano/address.{Credential, Script}
 use cardano/assets.{PolicyId}
-use cardano/transaction.{InlineDatum, Input, OutputReference, Transaction}
+use cardano/transaction.{
+  InlineDatum, Input, NoDatum, Output, OutputReference, Transaction,
+  placeholder,
+}
+use adversarial_auditing/identity_checks.{identity_ok}
 use adversarial_auditing/params.{ProtocolParams, juror_fee_share}
-use aiken/crypto
+use aiken/crypto.{blake2b_224}
 use aiken/primitive/bytearray
 use adversarial_auditing/params.{compute_slash_amount}
 use adversarial_auditing/types.{
@@ -55,9 +60,18 @@ use adversarial_auditing/utils.{
   count_script_inputs, credential_signed,
   exactly_one_burned, exactly_one_minted, find_input, find_output_at_script,
   get_cross_refs, is_valid_hash, juror_token_name, outputs_at_script,
-  tx_ends_before, tx_started_after, verify_active_did, vkh_signed,
+  tx_ends_before, tx_started_after, vkh_signed,
 }
 use adversarial_auditing/reset.{check_reset_stale_active_case_with_refs}
+use vector_identity/types.{
+  Active, ControllerSet, Hold, IdentityDatum, Suspended,
+} as vi
+use adversarial_auditing_tests/identity_fixtures.{
+  agent_a, auditing_config, auth_key_a, controller_a, jury_pool_hash,
+  key_address, key_credential, lo, out_ref, placeholder_verdict_policy,
+  protocol_params, record_a, record_input, script_address, stranger_key,
+  tx_key_a, window_range,
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // MULTI-VALIDATOR
@@ -213,8 +227,16 @@ fn validate_register_juror(
         expect InlineDatum(raw) = out.datum
         expect juror: JurorDatum = raw
 
+        // Juror identity: record found, effective status Active over the
+        // transaction window (at most one hour), and the declared credential
+        // is the controller or a listed key with the transaction purpose.
         let has_did =
-          verify_active_did(config, juror.juror_did, tx.reference_inputs)
+          identity_ok(
+            config.identity_hash,
+            juror.juror_did,
+            juror.juror_credential,
+            tx,
+          )
 
         let bond_ok = juror.bond_amount >= params.min_juror_bond
 
@@ -871,3 +893,141 @@ fn validate_distribute_rewards(
 // the exact code the spend handler dispatches to. See that module for
 // preconditions and continuing-output requirements.
 
+// ══════════════════════════════════════════════════════════════════════
+// REGISTER JUROR — IDENTITY CHECKS (Part 2 §7, Module-1 row)
+// ══════════════════════════════════════════════════════════════════════
+//
+// Full RegisterJuror transactions with the juror's identity record as a
+// reference input. Each negative test changes one thing.
+
+fn r_seed() -> Input {
+  Input {
+    output_reference: out_ref(0x5d, 0),
+    output: Output {
+      address: key_address(blake2b_224(tx_key_a)),
+      value: assets.from_lovelace(100_000_000),
+      datum: NoDatum,
+      reference_script: None,
+    },
+  }
+}
+
+fn r_juror_datum(credential: Credential) -> JurorDatum {
+  JurorDatum {
+    juror_did: agent_a,
+    juror_credential: credential,
+    bond_amount: 25_000_000,
+    cases_resolved: 0,
+    majority_votes: 0,
+    registered_at: lo,
+    active_case: None,
+    vote_commitment: None,
+    revealed_verdict: None,
+  }
+}
+
+fn r_record(record: IdentityDatum) -> Input {
+  record_input(out_ref(0xa0, 0), agent_a, record)
+}
+
+/// RegisterJuror by agent A with the declared key `key`.
+fn r_register_tx(key: ByteArray, refs: List<Input>) -> Transaction {
+  let name = juror_token_name(r_seed().output_reference)
+  let datum = r_juror_datum(key_credential(key))
+  Transaction {
+    ..placeholder,
+    inputs: [r_seed()],
+    reference_inputs: refs,
+    outputs: [
+      Output {
+        address: script_address(jury_pool_hash),
+        value: assets.from_lovelace(datum.bond_amount)
+          |> assets.add(jury_pool_hash, name, 1),
+        datum: InlineDatum(datum),
+        reference_script: None,
+      },
+    ],
+    mint: assets.from_asset(jury_pool_hash, name, 1),
+    extra_signatories: [blake2b_224(key)],
+    validity_range: window_range(),
+  }
+}
+
+fn r_register(tx: Transaction) -> Bool {
+  validate_register_juror(
+    auditing_config(placeholder_verdict_policy()),
+    protocol_params(),
+    jury_pool_hash,
+    tx,
+  )
+}
+
+test register_juror_with_listed_transaction_key() {
+  r_register(r_register_tx(tx_key_a, [r_record(record_a(Active))]))
+}
+
+test register_juror_with_controller_key() {
+  r_register(r_register_tx(controller_a, [r_record(record_a(Active))]))
+}
+
+test register_juror_fails_without_record() {
+  !r_register(r_register_tx(tx_key_a, []))
+}
+
+test register_juror_fails_with_legacy_registry_token() {
+  let legacy_hash = #"be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
+  let legacy =
+    Input {
+      output_reference: out_ref(0x1e, 0),
+      output: Output {
+        address: script_address(legacy_hash),
+        value: assets.from_lovelace(2_000_000)
+          |> assets.add(legacy_hash, agent_a, 1),
+        datum: NoDatum,
+        reference_script: None,
+      },
+    }
+  !r_register(r_register_tx(tx_key_a, [legacy]))
+}
+
+test register_juror_fails_when_suspended() {
+  let record =
+    IdentityDatum {
+      ..record_a(Active),
+      status: Suspended {
+        holds: [Hold { by: ControllerSet, reason: 6, since: lo, until: lo + 1 }],
+      },
+    }
+  !r_register(r_register_tx(tx_key_a, [r_record(record)]))
+}
+
+test register_juror_fails_when_unaccountable() {
+  let record = IdentityDatum { ..record_a(Active), parties: [] }
+  !r_register(r_register_tx(tx_key_a, [r_record(record)]))
+}
+
+test register_juror_fails_with_unlisted_key() {
+  !r_register(r_register_tx(stranger_key, [r_record(record_a(Active))]))
+}
+
+test register_juror_fails_with_key_without_transaction_purpose() {
+  !r_register(r_register_tx(auth_key_a, [r_record(record_a(Active))]))
+}
+
+test register_juror_fails_with_range_over_one_hour() fail {
+  r_register(
+    Transaction {
+      ..r_register_tx(tx_key_a, [r_record(record_a(Active))]),
+      validity_range: interval.between(lo, lo + 3_600_001),
+    },
+  )
+}
+
+test register_juror_fails_with_unbounded_range() fail {
+  r_register(
+    Transaction {
+      ..r_register_tx(tx_key_a, [r_record(record_a(Active))]),
+      validity_range: interval.before(lo),
+    },
+  )
+}
