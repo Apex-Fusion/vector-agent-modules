@@ -6,6 +6,43 @@
 
 ---
 
+## Identity Registry Deployment (new, not deployed)
+
+The source in `contracts/` is the new deployment for the identity registry
+(`docs/IDENTITY_REGISTRY.md` §3.8 and §7 in agents-marketplace). It adds the
+validator `identity_party` (Module-1 as a party of identity records). The v14
+tables below describe the old deployment, whose positions stay under the old
+rules until their owners exit.
+
+Hash order:
+
+1. `config_holder`, `config_seal` and `identity` (identity deployment).
+2. `claim`, `challenge` and `jury_pool`, each with `(AuditingConfig, ProtocolParams)`.
+   `AuditingConfig` holds the identity hash, the configuration record keys and
+   the verdict policy.
+3. `identity_party` with `(AuditingConfig, challenge hash)`. Its hash is M1.
+4. The seal: `config_seal` mints `identity-config` to `config_holder` with
+   the inline datum M1. The challenge validator reads M1 from this record.
+5. Register the stake credential of `identity_party` with the legacy stake
+   registration certificate (no script witness). `identity_party` fails every
+   publish purpose, so nobody can deregister or delegate it.
+6. Before anybody appoints Module-1, check the sealed datum.
+
+Commands (they sign and submit nothing):
+
+```sh
+python3 scripts/identity_deploy.py plan          # reads deploy/identity/config.json
+python3 scripts/identity_deploy.py check-seal --datum <inline datum CBOR hex>
+```
+
+`deploy/identity/config.json` has placeholders (identity hashes, operator
+key, refs token policy and the verdict policy, an open item). The plan
+refuses them unless `--allow-placeholders` is given; its output is then not
+for deployment. New Foundation operator keys deploy the modules; old module
+keys are not reused.
+
+---
+
 ## Contract Hashes
 
 | Validator | Script Hash |

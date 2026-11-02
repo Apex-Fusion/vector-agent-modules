@@ -44,12 +44,6 @@ const challenge_validator_hash: ByteArray =
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-const registry_policy_id: ByteArray =
-  #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
-
-const registry_script_hash: ByteArray =
-  #"e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
-
 const params_script_hash: ByteArray =
   #"f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
 
@@ -196,6 +190,7 @@ fn open_challenge_datum() -> ChallengeDatum {
     resolution_deadline: 5_400_000,
     eligible_jurors: [],
     state: PendingOracle,
+    claim_token: claim_tok_name(),
   }
 }
 
@@ -728,6 +723,7 @@ test adversarial_distribute_rewards_ref_spoofing() {
         resolution_deadline: 5_400_000,
         eligible_jurors: [],
         state: Resolved { verdict: ClaimerWins },
+        claim_token: claim_tok_name(),
       }),
       reference_script: None,
     },

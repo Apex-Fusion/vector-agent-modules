@@ -1,7 +1,8 @@
 /// Shared utility functions for Game 1: Adversarial Auditing
 ///
-/// Helpers for DID verification, stake math, token naming, datum access,
-/// signing checks, and the Phase 1.1 PRNG jury selection algorithm.
+/// Helpers for stake math, token naming, datum access, signing checks, and
+/// the Phase 1.1 PRNG jury selection algorithm. Identity registry checks are
+/// in adversarial_auditing/identity_checks.ak.
 ///
 /// VRF research incorporated (2026-03-23):
 ///   - Juror selection uses slot-number-based seed (Option C from report)
@@ -51,35 +52,6 @@ pub fn juror_token_name(seed: OutputReference) -> ByteArray {
   let hash = crypto.blake2b_256(cbor.serialise(seed))
   // "jur_" = 0x6a75725f
   builtin.append_bytearray(#"6a75725f", builtin.slice_bytearray(0, 28, hash))
-}
-
-// ══════════════════════════════════════════════════════════════════════
-// DID VERIFICATION
-// ══════════════════════════════════════════════════════════════════════
-
-/// Verify that a DID is active in the Agent Registry via reference input.
-/// Uses CIP-31 reference inputs — does not consume the registry UTXO.
-///
-/// Checks: the UTXO contains the agent's identity NFT under the registry policy.
-/// Note: registry_script_hash check removed — it was part of AuditingConfig but
-/// registry_script_hash is not circular and could be added to CrossValidatorRefs
-/// in a future upgrade if needed.
-pub fn verify_active_did(
-  config: AuditingConfig,
-  agent_did: PolicyId,
-  reference_inputs: List<Input>,
-) -> Bool {
-  list.any(
-    reference_inputs,
-    fn(input) {
-      // The registry NFT asset name equals the agent's DID (28-byte policy id)
-      assets.quantity_of(
-        input.output.value,
-        config.registry_policy_id,
-        agent_did,
-      ) == 1
-    },
-  )
 }
 
 // ══════════════════════════════════════════════════════════════════════
