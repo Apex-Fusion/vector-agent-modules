@@ -434,15 +434,29 @@ async function viewAgent(did) {
       </div>
     `;
 
-    const stakeRows = (d.stakes || []).map(st => `
+    // A stake: stake_id (the seed output reference of CreateStake) tells
+    // the stakes of an agent apart; challenge_locks are the challenge tokens
+    // of the open challenges that lock it (no decrease, decay or withdrawal
+    // of its endorsements while one is there).
+    const stakeRows = (d.stakes || []).map(st => {
+      const locks = st.challenge_locks || [];
+      const lockBadge = locks.length
+        ? `<span class="state-open" style="margin-left:8px">locked by ${locks.length} challenge${locks.length > 1 ? 's' : ''}</span>`
+        : '';
+      const lockList = locks.length
+        ? locks.map(l => `<span title="${escapeHtml(l)}">${escapeHtml(shortDid(l))}</span>`).join(', ')
+        : 'none';
+      return `
       <div class="list-row">
-        <div>Stake: <strong>${dfmToAp3x(st.stake_amount)} AP3X</strong> · history ${st.history_points || 0} pts</div>
-        <div class="small-did">UTXO ${escapeHtml(shortDid(st.utxo_ref))} · last updated ${formatTime(st.last_updated)}</div>
+        <div>Stake: <strong>${dfmToAp3x(st.stake_amount)} AP3X</strong> · history ${st.history_points || 0} pts${lockBadge}</div>
+        <div class="small-did" title="${escapeHtml(st.stake_id || '')}">Stake ID ${escapeHtml(shortDid(st.stake_id))} · UTXO ${escapeHtml(shortDid(st.utxo_ref))} · last updated ${formatTime(st.last_updated)}</div>
+        <div class="small-did">Challenge locks: ${lockList}</div>
         <div class="caps-list" style="margin-top:4px">${
           (st.capabilities || []).map(c => `<span class="capability-chip">${escapeHtml(c)}</span>`).join('') || '<span class="small-did">no capabilities</span>'
         }</div>
       </div>
-    `).join('') || '<div class="empty">No active stake.</div>';
+    `;
+    }).join('') || '<div class="empty">No active stake.</div>';
 
     const recvRows = (d.endorsements_received || []).map(e => `
       <div class="list-row">

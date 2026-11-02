@@ -26,8 +26,10 @@ the tier Unverified; their amounts stay.
 Stakes: a score has `stake_status` (missing, below_minimum or staked). No
 action burns a stake token, so a fully decayed stake stays with
 stake_amount 0 and is below_minimum, not missing. Each stake row has its
-`stake_id` (the seed output reference of CreateStake), and each endorsement
-row has `target_stake` (the stake_id of the stake that it backs).
+`stake_id` (the seed output reference of CreateStake) and `challenge_locks`
+(a list: the hex asset names of the challenge tokens of the open challenges
+that lock the stake), and each endorsement row has `target_stake` (the
+stake_id of the stake that it backs).
 
 Usage:
     uvicorn indexer.api:app --host 0.0.0.0 --port 8080
@@ -96,6 +98,13 @@ def _with_capabilities(rows: list) -> list:
     return _rows(rows)
 
 
+def _stake_rows(rows: list) -> list:
+    """Stake rows with the lists `capabilities` and `challenge_locks`."""
+    for row in rows:
+        row["challenge_locks"] = json.loads(row["challenge_locks"]) if row["challenge_locks"] else []
+    return _with_capabilities(rows)
+
+
 # ── Health ──────────────────────────────────────────────────────────────────
 
 
@@ -129,7 +138,7 @@ def get_agent(agent_did: str):
 
     return {
         "score": add_did_fields(score),
-        "stakes": _with_capabilities(storage.get_stakes_for_agent(agent_id)),
+        "stakes": _stake_rows(storage.get_stakes_for_agent(agent_id)),
         "endorsements_received": _with_capabilities(storage.get_endorsements_for_agent(agent_id)),
         "endorsements_given": _with_capabilities(storage.get_endorsements_by_agent(agent_id)),
         "challenges": _rows(storage.get_challenges_for_agent(agent_id)),

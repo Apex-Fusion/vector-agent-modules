@@ -14,11 +14,13 @@ redeemer fails.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import cbor2
 import pytest
-from pycardano import PaymentSigningKey, UTxO
+from pycardano import PaymentSigningKey, TransactionOutput, UTxO
+from pycardano.serialization import NonEmptyOrderedSet
 
 from aiken_simulate import aiken_available, apply_validator, resolved_inputs, simulate
 
@@ -28,12 +30,15 @@ from reputation_staking.constants import SYSTEM_START_UNIX_S
 from reputation_staking.models import ProtocolParamsInfo
 from reputation_staking.plutus_data import (
     AuditAuditorWins,
+    AuditClaimDatum,
     RepChallengeOutcomeFalsified,
     RepChallengeOutcomeInconclusive,
     RepChallengeOutcomeVerified,
     RepChallengeStateEscalated,
     RepChallengeStateResolved,
     ReputationConfig,
+    VerificationKeyCredential,
+    decode_datum,
 )
 
 pytestmark = pytest.mark.skipif(not aiken_available(), reason="aiken is not on PATH")
@@ -331,3 +336,103 @@ def test_resolve_escalation(world):
     ))
     tx = world.client().build_resolve_escalation(world.did("B"), world.did("A"), "code_review")
     passes(run(world, tx, "ResolveEscalation"))
+
+
+def escalation(world):
+    """The challenge of B against A with a response, and the escalation
+    transaction of the client (the target's claim on code_review)."""
+    _, challenge = add_challenge(world, cf.LO - 13 * HOUR, response=True)
+    tx, _ = world.client().build_escalate_to_audit(
+        world.did("B"), world.did("A"), "code_review", 50 * AP3X, 1_800_000, cf.CLAIM_REF,
+        storage_uri="ipfs://claim", claimer_skey=world.owner_a_key,
+    )
+    return challenge, tx
+
+
+def with_claim(tx, references=(), **changes):
+    """`tx` with `changes` in the datum of its Module-1 claim output and the
+    reference inputs `references` added. aiken tx simulate runs the scripts
+    only, so the witnesses of `tx` stay."""
+    body = tx.transaction_body
+    claim_address = str(cf.address(cf.CLAIM_HASH))
+    outputs = list(body.outputs)
+    [index] = [i for i, o in enumerate(outputs) if str(o.address) == claim_address]
+    claim = outputs[index]
+    datum = dataclasses.replace(decode_datum(AuditClaimDatum, claim.datum), **changes)
+    outputs[index] = TransactionOutput(claim.address, claim.amount, datum=datum)
+    refs = NonEmptyOrderedSet(list(body.reference_inputs) + [u.input for u in references])
+    changed = dataclasses.replace(body, outputs=outputs, reference_inputs=refs)
+    return dataclasses.replace(tx, transaction_body=changed)
+
+
+def test_escalate_to_audit_fails_with_a_claim_of_another_agent(world):
+    """The same transaction with a claim of the challenger B: B's record is
+    a reference input and declares the wallet key, which signs, so the
+    Module-1 claim mint passes. The challenge spend fails."""
+    challenge, tx = escalation(world)
+    changed = with_claim(
+        tx, [world.records["B"]], claimer_did=world.ids["B"],
+        claimer_credential=VerificationKeyCredential(cf.key_hash(world.wallet)),
+    )
+    sim = run(world, changed, "EscalateToAudit/claim of B")
+    assert not sim.passed
+    assert sim.failing == [spend_of(changed, challenge)]
+
+
+def test_escalate_to_audit_fails_with_a_claim_on_another_capability(world):
+    """The same transaction with a claim of A on testing (A stakes it too):
+    the Module-1 claim mint passes, the challenge spend fails."""
+    challenge, tx = escalation(world)
+    changed = with_claim(tx, claim_type=b"testing")
+    sim = run(world, changed, "EscalateToAudit/other capability")
+    assert not sim.passed
+    assert sim.failing == [spend_of(changed, challenge)]
+
+
+# ── Decay ────────────────────────────────────────────────────────────────────
+
+
+def inactive_since(epochs: int) -> int:
+    """A last_updated that gives `epochs` inactive epochs at the lower bound."""
+    return cf.LO - (PARAMS.activity_window + epochs) * PARAMS.epoch_length
+
+
+def test_claim_decay_refund_keeps_the_rest(world):
+    world.stake_a(last_updated=inactive_since(10))
+    tx = world.client().build_claim_decay_refund(world.did("A"))
+    passes(run(world, tx, "ClaimDecayRefund/partial"))
+
+
+def test_claim_decay_refund_below_the_minimum_pays_the_owner(world):
+    world.stake_a(amount=12 * AP3X, last_updated=inactive_since(20))
+    tx = world.client().build_claim_decay_refund(world.did("A"))
+    passes(run(world, tx, "ClaimDecayRefund/whole"))
+
+
+def test_claim_decay_refund_pays_the_controller_after_a_key_removal(world):
+    world.stake_a(amount=12 * AP3X, last_updated=inactive_since(20))
+    world.record("A", keys=())
+    tx = world.client().build_claim_decay_refund(world.did("A"))
+    passes(run(world, tx, "ClaimDecayRefund/controller"))
+
+
+def test_claim_decay_refund_fails_to_a_credential_that_the_record_no_longer_declares(world):
+    """The transaction pays the owner key; in the chain state of the
+    simulation A's record no longer lists it, so the stake spend fails."""
+    stake = world.stake_a(amount=12 * AP3X, last_updated=inactive_since(20))
+    tx = world.client().build_claim_decay_refund(world.did("A"))
+    without_key = same_ref(world.records["A"], cf.record_utxo(world.ids["A"], cf.identity_record(
+        cf.public_key(world.ctrl["A"]), keys=(),
+    )))
+    sim = run(world, tx, "ClaimDecayRefund/undeclared", replace=[without_key])
+    assert not sim.passed
+    assert sim.failing == [spend_of(tx, stake)]
+
+
+def test_claim_decay_refund_fails_within_the_activity_window(world):
+    """The same transaction one epoch earlier: no inactive epoch at lo."""
+    stake = world.stake_a(last_updated=inactive_since(1))
+    tx = world.client().build_claim_decay_refund(world.did("A"))
+    sim = run(world, tx, "ClaimDecayRefund/early", shift_ms=-PARAMS.epoch_length)
+    assert not sim.passed
+    assert sim.failing == [spend_of(tx, stake)]

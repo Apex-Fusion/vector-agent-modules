@@ -80,9 +80,12 @@ Module-6.
 
 The agent detail modal shows the canonical DID, the identity status, the
 full score breakdown (self-stake, endorsement total, challenge total,
-history bonus, decay) plus every endorsement received/given, every
-challenge, and every history bonus for the selected agent. Times are POSIX
-milliseconds, shown as local dates.
+history bonus, decay) plus every stake, every endorsement received/given,
+every challenge, and every history bonus for the selected agent. Each stake
+shows its `stake_id` (the seed output reference of CreateStake; an agent can
+have more than one stake) and its challenge locks (the challenge tokens of
+the open challenges that lock it). Times are POSIX milliseconds, shown as
+local dates.
 
 ## Agent identifiers in the API
 

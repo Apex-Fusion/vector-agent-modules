@@ -369,6 +369,34 @@ def resume_state_error(state: dict, owner_vkh_hex: str, identity_hash: str) -> O
     return None
 
 
+def redeploy_state_error(state: dict, proposal_utxos=()) -> Optional[str]:
+    """Check a deploy state before scripts/redeploy_proposal.py changes the
+    validators of the deployment.
+
+    Returns the reason to refuse, or None. The head of the activity list
+    holds the `activity` token of the one-shot record token policy and sits
+    at the proposal_spend address of the deployment; the nodes hold the
+    activity tokens of the proposal_mint policy. New proposal validators do
+    not use that list, and the record token policy cannot mint a second
+    head, so after a redeploy an agent could get a second activity record.
+    The redeploy is refused when the deploy state names the head
+    (tx_hashes["activity_head"], record step 5a) or when `proposal_utxos`
+    (the outputs at the proposal_spend address of the deployment) hold the
+    `activity` record token.
+    """
+    policy = state.get("record_token_policy") or ""
+    head_tx = (state.get("tx_hashes") or {}).get("activity_head")
+    head = find_record_utxo(proposal_utxos, policy, ACTIVITY_TOKEN_NAME) if policy else None
+    if not head_tx and head is None:
+        return None
+    where = f"transaction {head_tx}" if head_tx else utxo_ref(head)
+    return (f"the deployment has the head of the activity list ({where}). A redeploy "
+            "would leave the activity list at the old proposal validator, and the "
+            "one-shot record token policy cannot mint a new head, so agents could "
+            "get a second activity record. Start a new deployment with "
+            "scripts/deploy.py (move the deploy state to a different path first).")
+
+
 # ── UTxO references ──────────────────────────────────────────────────────────
 
 def format_utxo_ref(tx_id_hex: str, index: int) -> str:

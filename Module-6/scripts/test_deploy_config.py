@@ -23,12 +23,16 @@ Checks:
     ProposerActivityDatum (constructor 0, 5 fields) with agent_did = b"",
     the deployer credential, count 0, last_proposal_slot 0 and
     next_did = b"". The record token name of the head is `activity`.
+  - redeploy_state_error refuses a redeploy (scripts/redeploy_proposal.py)
+    of a deployment with the head of the activity list: in the deploy state
+    or in the outputs at the proposal_spend address.
 
 Usage:
     python3 scripts/test_deploy_config.py
 """
 
 import sys
+from types import SimpleNamespace
 
 import cbor2
 
@@ -43,6 +47,7 @@ from deploy_common import (
     build_cross_refs_data,
     build_governance_config_cbor,
     identity_hash_from_env,
+    redeploy_state_error,
     resume_state_error,
 )
 
@@ -73,6 +78,16 @@ def dummy(byte: int) -> str:
 ZERO = "00" * 28
 IDENTITY = dummy(0x1D)
 OWNER = dummy(0x0C)
+
+
+def proposal_output(policy: str, name: bytes):
+    """An output at the proposal_spend address with one token (policy, name),
+    in the shape of a pycardano UTxO."""
+    amount = SimpleNamespace(coin=2_000_000, multi_asset={bytes.fromhex(policy): {name: 1}})
+    return SimpleNamespace(
+        input=SimpleNamespace(transaction_id=b"\xcc" * 32, index=2),
+        output=SimpleNamespace(amount=amount),
+    )
 
 
 def build(identity_hash: str) -> str:
@@ -197,6 +212,19 @@ def main() -> int:
     except ValueError:
         refused = True
     check("activity head: a 27-byte deployer key hash: refused", refused)
+
+    print("\nModule-6 redeploy of a deployment with an activity list")
+    head_output = proposal_output(dummy(0x0A), ACTIVITY_TOKEN_NAME)
+    node_output = proposal_output(dummy(0x0B), b"pact_" + b"\x01" * 27)
+    before_records = dict(saved, tx_hashes={})
+    check("redeploy with the head in the deploy state: refused",
+          "activity list" in (redeploy_state_error(saved) or ""))
+    check("redeploy with the head on chain: refused",
+          "activity list" in (redeploy_state_error(before_records, [node_output, head_output]) or ""))
+    check("redeploy without a head: continues",
+          redeploy_state_error(before_records, [node_output]) is None)
+    check("redeploy with an `activity` token of another policy: continues",
+          redeploy_state_error(before_records, [proposal_output(dummy(0x2A), ACTIVITY_TOKEN_NAME)]) is None)
 
     print("\nAll checks passed." if not FAILED else f"\n{len(FAILED)} checks failed.")
     return 1 if FAILED else 0

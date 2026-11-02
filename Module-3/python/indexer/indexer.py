@@ -23,7 +23,8 @@ decayed stake stays with stake_amount 0. The indexer keeps it as a stake
 (stake_status below_minimum), not as a missing stake. An agent can have more
 than one stake; stake_id (the seed output reference of CreateStake) tells
 them apart, and each endorsement names the stake that it backs
-(target_stake).
+(target_stake). A stake row also has challenge_locks: the challenge token
+names of the open challenges that lock the stake.
 
 The indexer reads the chain through Ogmios.
 """
@@ -70,7 +71,7 @@ logger = logging.getLogger(__name__)
 # State field indices within inline datums (cardano-cli JSON format)
 # StakeDatum (8 fields): fields[0]=agent_did, [1]=owner_credential,
 #             [2]=stake_amount, [3]=capabilities, [4]=last_updated,
-#             [5]=history_points, [6]=challenge_locks (not indexed),
+#             [5]=history_points, [6]=challenge_locks (hex token names),
 #             [7]=stake_id (OutputReference)
 # EndorsementDatum (wrapped): fields[0]=inner, inner.fields[0..7]
 #             ([6]=slashed_by, not indexed; [7]=target_stake)
@@ -97,6 +98,11 @@ def _parse_capabilities(datum: dict, idx: int) -> list:
     """Parse a capabilities list field from datum."""
     lst = datum["fields"][idx].get("list", [])
     return [bytes.fromhex(item["bytes"]).decode("utf-8", errors="replace") for item in lst]
+
+
+def _hex_list(datum: dict, idx: int) -> list:
+    """A list of byte strings field as hex strings."""
+    return [item["bytes"] for item in datum["fields"][idx].get("list", [])]
 
 
 def _parse_challenge_state(state_field: dict) -> tuple:
@@ -406,11 +412,13 @@ class ReputationIndexer:
             capabilities = _parse_capabilities(datum, 3)
             last_updated = _int_field(datum, 4)
             history_points = _int_field(datum, 5)
+            challenge_locks = _hex_list(datum, 6)
             stake_id = _out_ref_field(datum, 7)
 
             self.storage.upsert_stake(
                 utxo_ref, agent_did, owner, stake_amount,
                 capabilities, last_updated, history_points, stake_id=stake_id,
+                challenge_locks=challenge_locks,
             )
         except (KeyError, IndexError, TypeError):
             logger.debug("Failed to parse stake datum at %s", utxo_ref)

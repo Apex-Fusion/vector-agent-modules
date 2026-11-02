@@ -90,24 +90,26 @@ def claim_token_of(tx) -> bytes:
 
 class TestEscalateToAudit:
     def setup(self, world, created_at=LO - 13 * HOUR, response=True, challenger_key=None,
-              state=None):
-        world.stake_a(challenge_locks=(world.lock_b(),))
+              state=None, capability="code_review"):
+        world.stake_a(challenge_locks=(world.lock_b(capability),))
         extra = dict(counter_evidence_hash=COUNTER, response_submitted_at=created_at + HOUR)
         return world.context.add(challenge_utxo(
             world.ids["B"], world.ids["A"], challenger_key or key_hash(world.wallet), world.owner_a,
-            created_at=created_at, state=state, **(extra if response else {}),
+            created_at=created_at, state=state, capability=capability,
+            **(extra if response else {}),
         ))
 
-    def build(self, world, **kwargs):
+    def build(self, world, capability="code_review", **kwargs):
         kwargs.setdefault("claimer_skey", world.owner_a_key)
         return world.client().build_escalate_to_audit(
-            world.did("B"), world.did("A"), "code_review", CLAIM_STAKE, WINDOW, CLAIM_REF,
+            world.did("B"), world.did("A"), capability, CLAIM_STAKE, WINDOW, CLAIM_REF,
             storage_uri="ipfs://claim", **kwargs
         )
 
     def test_shape(self, world):
         """The target escalates: its declared key (target_credential) signs
-        the Module-1 claim; the wallet pays the claim stake."""
+        the Module-1 claim; the wallet pays the claim stake. The claim is a
+        claim of the target on the challenged capability."""
         challenge = self.setup(world)
         tx, claim_token = self.build(world)
         assert claim_token == claim_token_of(tx)
@@ -133,7 +135,7 @@ class TestEscalateToAudit:
             claimer_did=world.ids["A"],
             claimer_credential=VerificationKeyCredential(world.owner_a),
             claim_hash=vi.blake2b_256(b"\x0e" * 32 + COUNTER),
-            claim_type=b"reputation_challenge",
+            claim_type=b"code_review",
             storage_uri=b"ipfs://claim",
             stake_amount=CLAIM_STAKE,
             submitted_at=LO,
@@ -157,6 +159,17 @@ class TestEscalateToAudit:
         self.setup(world)
         tx, _ = self.build(world)
         assert key_hash(world.wallet) in signers_of(tx)
+
+    def test_the_claim_is_on_the_challenged_capability(self, world):
+        """claim_type is the challenged capability of the challenge datum,
+        and the claimer is the target (not the challenger, whose key is the
+        wallet key)."""
+        self.setup(world, capability="testing")
+        tx, _ = self.build(world, capability="testing")
+        [claim] = outputs_to(tx, address(CLAIM_HASH))
+        datum = decode_datum(AuditClaimDatum, claim.datum)
+        assert datum.claim_type == b"testing"
+        assert datum.claimer_did == world.ids["A"]
 
     def test_deadline_boundary(self, world):
         hi = LO + 900_000

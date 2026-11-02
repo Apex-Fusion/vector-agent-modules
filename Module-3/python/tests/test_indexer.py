@@ -1,6 +1,7 @@
 """Offline tests of the indexer: identity status at index time, the identity
-rule of scoring and the leaderboard, canonical DIDs in the output, the
-deploy state check of the CLI, and the SQLite migration of an old file."""
+rule of scoring and the leaderboard, canonical DIDs in the output, the stake
+fields (stake_id, challenge_locks), the deploy state check of the CLI, and
+the SQLite migration of an old file."""
 
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from tests.chain_fixtures import (
     AP3X,
     LO,
     TIP_SLOT,
+    challenge_token,
     challenge_utxo,
     deploy_state,
     endorsement_utxo,
@@ -31,6 +33,8 @@ from tests.chain_fixtures import (
     params_record,
     public_key,
     record_utxo,
+    ref,
+    stake_datum_of,
     stake_utxo,
 )
 
@@ -202,6 +206,38 @@ class TestIdentityStatuses:
         record = record_utxo(ACTIVE_ID, identity_record(CONTROLLER))
         statuses = identity_statuses([record], bytes.fromhex("2e" * 28), [ACTIVE_ID.hex()], LO)
         assert statuses == {ACTIVE_ID.hex(): IdentityStatus.MISSING}
+
+
+class TestStakeFields:
+    def test_stake_rows_have_stake_id_and_challenge_locks(self, tmp_path, monkeypatch):
+        """A second stake of ACTIVE_ID with the lock of a challenge: each
+        stake row has its stake_id and its challenge locks (hex), in the
+        storage and in the API."""
+        from fastapi.testclient import TestClient
+        import indexer.api as api_module
+
+        state = deploy_state(key_hash(PaymentSigningKey.generate()))
+        chain = build_chain(state)
+        lock = challenge_token(CHILD_ID, ACTIVE_ID)
+        locked = stake_utxo(ACTIVE_ID, OWNER, amount=50 * AP3X, challenge_locks=(lock,))
+        chain[str(locked.output.address)].append(locked)
+        storage = IndexerStorage(str(tmp_path / "index.db"))
+        OfflineIndexer(chain, state, storage).poll_once()
+
+        rows = {row["utxo_ref"]: row for row in storage.get_stakes_for_agent(ACTIVE_ID.hex())}
+        assert len(rows) == 2
+        stake_id = stake_datum_of(locked).stake_id
+        assert rows[ref(locked)]["stake_id"] == f"{bytes(stake_id.transaction_id).hex()}#{stake_id.output_index}"
+        assert json.loads(rows[ref(locked)]["challenge_locks"]) == [lock.hex()]
+
+        monkeypatch.setattr(api_module, "_storage", storage)
+        data = TestClient(api_module.app).get(f"/v1/reputation/agent/{vi.did_from_id(ACTIVE_ID)}").json()
+        stakes = {s["utxo_ref"]: s for s in data["stakes"]}
+        assert stakes[ref(locked)]["challenge_locks"] == [lock.hex()]
+        assert stakes[ref(locked)]["stake_id"] == rows[ref(locked)]["stake_id"]
+        [other] = [s for key, s in stakes.items() if key != ref(locked)]
+        assert other["challenge_locks"] == []
+        assert other["stake_id"]
 
 
 class TestDeployStateCheck:

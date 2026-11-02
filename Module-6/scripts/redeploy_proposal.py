@@ -10,6 +10,16 @@ This script:
   3. Burns old CrossRefs NFT and mints a new one with updated hashes
   4. Updates deploy_state.json
 
+The script refuses a deployment that has the head of the activity list
+(deploy_common.redeploy_state_error): the deploy state names the head (record
+step 5a of scripts/deploy.py), or an output at the proposal_spend address
+holds the `activity` record token. The head sits at the proposal_spend
+address and the one-shot record token policy cannot mint a second head, so a
+redeploy would leave the activity list behind and let an agent get a second
+activity record. Such a deployment needs a new deployment (scripts/deploy.py).
+The script checks the deploy state before step 1 and the chain before the
+first transaction.
+
 Usage:
     nix-shell shell.nix --run "python scripts/redeploy_proposal.py"
 """
@@ -63,7 +73,7 @@ from deploy import (
     compute_native_script_policy,
     mint_refs_nft,
 )
-from deploy_common import build_cross_refs_data, build_governance_config_cbor
+from deploy_common import build_cross_refs_data, build_governance_config_cbor, redeploy_state_error
 
 
 async def redeploy():
@@ -94,6 +104,11 @@ async def redeploy():
         print(f"\n[ERROR] {DEPLOY_STATE_FILE} has no identity_hash.")
         print("        The current GovernanceConfig needs identity_hash (11 fields).")
         print("        Run scripts/deploy.py for a new deployment with identity_hash.")
+        return
+
+    error = redeploy_state_error(state)
+    if error:
+        print(f"\n[ERROR] {DEPLOY_STATE_FILE}: {error}")
         return
 
     # Step 1: Re-apply GovernanceConfig to all validators (fresh blueprint)
@@ -167,6 +182,16 @@ async def redeploy():
     ) as agent:
         balance = await agent.get_balance()
         print(f"\n  Balance: {balance.ada} AP3X")
+
+        # The chain check before the first transaction: an output at the
+        # proposal_spend address of the deployment with the `activity` token.
+        old_proposal_hash = state.get("proposal_validator_hash") or old_proposal_spend_hash
+        if old_proposal_hash:
+            proposal_address = script_hash_to_address(old_proposal_hash)
+            error = redeploy_state_error(state, await agent.context.async_utxos(proposal_address))
+            if error:
+                print(f"\n[ERROR] {proposal_address}: {error}")
+                return
 
         validators_to_redeploy = []
         if changed_mint:

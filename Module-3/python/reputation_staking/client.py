@@ -49,11 +49,12 @@ agents-marketplace, Module-3 row):
 - Stakes: `stake_id` of a StakeDatum is the output reference of the seed
   input that CreateStake spent. Every continuing stake keeps it, and no
   action burns a stake token: a stake that decays below min_self_stake
-  continues with stake_amount 0. An agent can have more than one stake. An
-  opening that reads a stake of the target (an endorsement, a challenge)
-  uses the target's stake with the largest stake_amount, unless the caller
-  names a stake by its stake_id. A closing path spends the stake that holds
-  the lock of its challenge.
+  continues with stake_amount 0, and the owner's payee receives the rest
+  (ClaimDecayRefund, `build_claim_decay_refund`; the oracle signs). An
+  agent can have more than one stake. An opening that reads a stake of the
+  target (an endorsement, a challenge) uses the target's stake with the
+  largest stake_amount, unless the caller names a stake by its stake_id. A
+  closing path spends the stake that holds the lock of its challenge.
 - Bound stake: an endorsement stores the stake_id of the stake that it read
   at creation (target_stake). Every withdrawal and slash of the endorsement
   has that stake as a reference input. A withdrawal needs the bound stake
@@ -68,11 +69,13 @@ agents-marketplace, Module-3 row):
   signature of the record's controller (`controller_skey` when it is not the
   wallet key). The permissionless payouts (ExpireChallenge,
   DistributeOutcome, SlashEndorsement) need no signature.
-- Escalation: EscalateToAudit creates a Module-1 claim of the target (the
-  claimer is the target: Module-1 ClaimerWins maps to CapabilityVerified)
-  with claim_hash = blake2b_256(evidence_hash ++ counter_evidence_hash) and
-  claim_type "reputation_challenge"; the challenge continues as
-  Escalated { audit_claim_token }. ResolveEscalation reads the resolved
+- Escalation: EscalateToAudit creates a Module-1 claim of the target on the
+  challenged capability (claimer_did = target_did, claim_type =
+  challenged_capability: Module-1 ClaimerWins maps to CapabilityVerified)
+  with claim_hash = blake2b_256(evidence_hash ++ counter_evidence_hash); the
+  challenge continues as Escalated { audit_claim_token }. The claim needs
+  the signature of a declared key of the target's record, so the target
+  takes part in every escalation. ResolveEscalation reads the resolved
   Module-1 challenge of that claim and maps its verdict.
 - The client checks these rules before it builds a transaction. It raises
   vector_identity.IdentityError (or a subclass) when an identity rule fails
@@ -143,6 +146,7 @@ from reputation_staking.plutus_data import (
     BurnChallengeTokenRedeemer,
     BurnEndorsementTokenRedeemer,
     ChallengeSpendRedeemer,
+    ClaimDecayRefundRedeemer,
     CreateStakeRedeemer,
     Credential,
     DecreaseStakeRedeemer,
@@ -179,6 +183,7 @@ from reputation_staking.plutus_data import (
     WithdrawEndorsementRedeemer,
     decode_datum,
 )
+from reputation_staking.scoring import compute_collector_fee, compute_decay, inactive_epochs
 from reputation_staking.token_names import (
     derive_audit_claim_token_name,
     derive_challenge_token_name,
@@ -213,9 +218,6 @@ AUDIT_OUTCOMES = {
     AuditAuditorWins: RepChallengeOutcomeFalsified,
     AuditInconclusive: RepChallengeOutcomeInconclusive,
 }
-
-# claim_type of the Module-1 claim of an escalation.
-ESCALATION_CLAIM_TYPE = b"reputation_challenge"
 
 # stake_id in the datum of a seed UTxO. CreateStake decodes the seed datum as
 # a StakeDatum but does not read its stake_id: it writes the output reference
@@ -565,13 +567,20 @@ class ReputationStakingClient:
             self._require_age(chain[0], self.protocol_params(), window)
         return chain[0]
 
-    def _require_oracle(self, action: str):
-        if _key_hash(self.skey).hex() != self.deployment.oracle_vkey_hash:
+    def _oracle_key(self, action: str, oracle_skey: Optional[PaymentSigningKey]) -> PaymentSigningKey:
+        """The signing key of the oracle (oracle_credential): `oracle_skey`
+        when given, else the wallet key. Raises ValueError for another key."""
+        key = oracle_skey or self.skey
+        if _key_hash(key).hex() != self.deployment.oracle_vkey_hash:
             raise ValueError(
                 f"{action} needs the signature of the oracle key "
-                f"{self.deployment.oracle_vkey_hash} (oracle_credential). The wallet "
-                f"key hash is {_key_hash(self.skey).hex()}."
+                f"{self.deployment.oracle_vkey_hash} (oracle_credential). The "
+                f"{'given oracle' if oracle_skey else 'wallet'} key hash is {_key_hash(key).hex()}."
             )
+        return key
+
+    def _require_oracle(self, action: str):
+        self._oracle_key(action, None)
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -1035,6 +1044,118 @@ class ReputationStakingClient:
             wait,
         )
         logger.info("DecreaseStake tx: %s", tx_hash)
+        return tx_hash
+
+    def build_claim_decay_refund(
+        self,
+        agent_did: AgentRef,
+        *,
+        stake_id: Optional[str] = None,
+        oracle_skey: Optional[PaymentSigningKey] = None,
+    ) -> Transaction:
+        """ClaimDecayRefund (permissionless; the oracle attests the
+        inactivity): decay a stake of the agent (the stake with `stake_id`,
+        "tx_hash#index", else the largest stake). The wallet is the
+        collector.
+
+        The amounts follow decay.validate_claim_decay_refund, with lo the
+        lower bound of the validity range:
+        inactive_epochs = (lo − last_updated) // epoch_length −
+        activity_window (at least 1); decay = min(stake_amount × decay_rate
+        × inactive_epochs / 10_000, stake_amount) (positive); collector fee
+        = decay × decay_collector_fee / 10_000; the treasury receives
+        decay − collector fee; remaining = stake_amount − decay.
+
+        - remaining >= min_self_stake: the stake continues with
+          stake_amount = remaining.
+        - else the stake continues with stake_amount 0, and the owner's
+          payee (`payee`: owner_credential while the agent's record
+          declares it, else the record's controller key) receives
+          remaining. The agent's record is a reference input (any status).
+
+        The stake token is never burned. The continuing stake keeps its
+        address, tokens and datum (also stake_id and the empty
+        challenge_locks) except stake_amount and last_updated. The contract
+        lets the oracle set last_updated; the client moves it forward by
+        the decayed epochs (last_updated + inactive_epochs × epoch_length),
+        so a later decay counts each inactive epoch once and the owner's
+        stake_cooldown does not start again.
+
+        The collector fee goes to the wallet in the change output: the
+        contract counts the AP3X of every output outside the protocol
+        addresses. The oracle key (`oracle_skey`, else the wallet key)
+        signs. The stake has no challenge lock, and the transaction mints
+        and burns nothing."""
+        agent_id = vi.normalize_agent_id(agent_did)
+        oracle = self._oracle_key("ClaimDecayRefund", oracle_skey)
+        window = self.tx_window()
+        params_utxo, params = self.params_record()
+        stake_utxo, stake = self._target_stake(agent_id, stake_id)
+        if list(stake.challenge_locks):
+            raise ValueError(
+                f"a challenge locks the stake of {vi.did_from_id(agent_id)}: it cannot "
+                f"decay until the challenge closes"
+            )
+        epochs = inactive_epochs(stake.last_updated, window.lo, params)
+        if epochs <= 0:
+            ready_at = stake.last_updated + (params.activity_window + 1) * params.epoch_length
+            raise ValueError(
+                f"the stake changed at {stake.last_updated} (POSIX ms): ClaimDecayRefund needs "
+                f"one inactive epoch after the activity window, from {ready_at}; the lower "
+                f"bound is {window.lo}"
+            )
+        decay = compute_decay(stake.stake_amount, epochs, params.decay_rate)
+        if decay <= 0:
+            raise ValueError(
+                f"the decay of a stake of {stake.stake_amount} over {epochs} inactive epochs is 0"
+            )
+        treasury = decay - compute_collector_fee(decay, params.decay_collector_fee)
+        remaining = stake.stake_amount - decay
+        new_amount = remaining if remaining >= params.min_self_stake else 0
+        owner_due = remaining - new_amount
+        decayed = dataclasses.replace(
+            stake,
+            stake_amount=new_amount,
+            last_updated=stake.last_updated + epochs * params.epoch_length,
+        )
+
+        builder = self._new_builder(window)
+        builder.add_script_input(
+            stake_utxo, script=self.rep_ref_utxo, redeemer=Redeemer(ClaimDecayRefundRedeemer()),
+        )
+        builder.add_output(
+            self._continuing_stake(
+                stake_utxo, decayed, int(stake_utxo.output.amount.coin) - decay - owner_due,
+            )
+        )
+        if treasury > 0:
+            builder.add_output(self._output(self.treasury_addr, treasury))
+        references = [params_utxo, self.cross_refs_utxo]
+        if owner_due > 0:
+            payee, record = self._payout(agent_id, stake.owner_credential)
+            builder.add_output(self._output(credential_address(payee), owner_due))
+            references.insert(0, record.utxo)
+        self._add_reference_inputs(builder, references)
+        return self._finish(builder, [oracle], [_key_hash(oracle)])
+
+    def claim_decay_refund(
+        self,
+        agent_did: AgentRef,
+        *,
+        stake_id: Optional[str] = None,
+        oracle_skey: Optional[PaymentSigningKey] = None,
+        wait: bool = True,
+    ) -> str:
+        """Decay a stake of an inactive agent (see build_claim_decay_refund).
+
+        Returns:
+            Transaction hash.
+        """
+        tx_hash = self._submit(
+            self.build_claim_decay_refund(agent_did, stake_id=stake_id, oracle_skey=oracle_skey),
+            wait,
+        )
+        logger.info("ClaimDecayRefund tx: %s", tx_hash)
         return tx_hash
 
     # ── Endorsement Operations ───────────────────────────────────────────
@@ -1600,21 +1721,24 @@ class ReputationStakingClient:
         reference script at `claim_script_ref`, the `claim_ref` of the
         Module-1 deployment) and creates the Module-1 claim output at the
         exact Module-1 claim address. The claim holds exactly `claim_stake`
-        lovelace (the wallet pays it) and the claim token. Its ClaimDatum
-        names the target as claimer (Module-1 ClaimerWins maps to
-        CapabilityVerified), with claim_hash = blake2b_256(evidence_hash ++
-        counter_evidence_hash), claim_type "reputation_challenge",
-        submitted_at = the lower bound and `challenge_window_ms` (within the
-        bounds of the Module-1 ProtocolParams). The claim token name comes
-        from the first input of the transaction (Module-1
-        claim_token_name). The challenge continues at its address with its
-        value and Escalated { audit_claim_token }.
+        lovelace (the wallet pays it) and the claim token. Its ClaimDatum is
+        a claim of the target on the challenged capability: claimer_did =
+        target_did and claim_type = challenged_capability (the contract
+        refuses another claimer or another capability, because Module-1
+        ClaimerWins maps to CapabilityVerified), with claim_hash =
+        blake2b_256(evidence_hash ++ counter_evidence_hash), submitted_at =
+        the lower bound and `challenge_window_ms` (within the bounds of the
+        Module-1 ProtocolParams). The claim token name comes from the first
+        input of the transaction (Module-1 claim_token_name). The challenge
+        continues at its address with its value and
+        Escalated { audit_claim_token }.
 
         Signatures: the claimer key (`claimer_skey`, else the wallet key)
         is a declared credential of the target's record, which is Active
-        over the validity range (the Module-1 claim rules); the transaction
-        also needs the signature of challenger_credential or
-        target_credential (the wallet key or the claimer key).
+        over the validity range (the Module-1 claim rules), so the target
+        takes part in every escalation; the transaction also needs the
+        signature of challenger_credential or target_credential (the wallet
+        key or the claimer key).
 
         Returns:
             (transaction, the asset name of the claim token)
@@ -1681,7 +1805,7 @@ class ReputationStakingClient:
                 claim_hash=vi.blake2b_256(
                     bytes(inner.evidence_hash) + bytes(inner.counter_evidence_hash)
                 ),
-                claim_type=ESCALATION_CLAIM_TYPE,
+                claim_type=bytes(inner.challenged_capability),
                 storage_uri=storage_uri.encode("utf-8"),
                 stake_amount=claim_stake,
                 submitted_at=window.lo,

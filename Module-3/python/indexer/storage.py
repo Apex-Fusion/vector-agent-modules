@@ -14,11 +14,14 @@ Schema versions (PRAGMA user_version):
      below_minimum or staked). No action burns a stake token: a fully
      decayed stake stays with stake_amount 0 and has the stake status
      below_minimum.
+  4  stakes.challenge_locks (JSON array: the hex asset names of the
+     challenge tokens of the open challenges that lock the stake).
 
 `IndexerStorage` migrates an existing database file when it opens it: it
 adds the new columns and keeps the rows. A row from an older schema gets
 identity_status 'missing' and tier 'Unverified', an empty stake_id and
-target_stake, and stake_status 'missing' until the next poll.
+target_stake, no challenge locks, and stake_status 'missing' until the next
+poll.
 
 Agent identifiers are stored as 64 lowercase hex characters.
 """
@@ -27,12 +30,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Optional
+from typing import Optional, Sequence
 
 
 DEFAULT_DB_PATH = "reputation_index.db"
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Columns of later schema versions: (table, column, definition).
 _ADDED_COLUMNS = (
@@ -41,6 +44,7 @@ _ADDED_COLUMNS = (
     ("agent_scores", "stake_status", "TEXT NOT NULL DEFAULT 'missing'"),
     ("stakes", "stake_id", "TEXT NOT NULL DEFAULT ''"),
     ("endorsements", "target_stake", "TEXT NOT NULL DEFAULT ''"),
+    ("stakes", "challenge_locks", "TEXT NOT NULL DEFAULT '[]'"),
 )
 
 
@@ -234,25 +238,29 @@ class IndexerStorage:
     def upsert_stake(
         self, utxo_ref: str, agent_did: str, owner_credential: str,
         stake_amount: int, capabilities: list, last_updated: int,
-        history_points: int, *, stake_id: str = "",
+        history_points: int, *, stake_id: str = "", challenge_locks: Sequence[str] = (),
     ):
         """Store a stake UTxO. A stake with stake_amount 0 (fully decayed)
         is a stake like any other. `stake_id` is "tx#ix" of the seed of
-        CreateStake."""
+        CreateStake; `challenge_locks` are the hex asset names of the
+        challenge tokens that lock the stake."""
         self.conn.execute(
             """INSERT INTO stakes
                (utxo_ref, agent_did, owner_credential, stake_amount,
-                capabilities, last_updated, history_points, stake_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                capabilities, last_updated, history_points, stake_id,
+                challenge_locks)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(utxo_ref) DO UPDATE SET
                  stake_amount=excluded.stake_amount,
                  capabilities=excluded.capabilities,
                  last_updated=excluded.last_updated,
                  history_points=excluded.history_points,
-                 stake_id=excluded.stake_id
+                 stake_id=excluded.stake_id,
+                 challenge_locks=excluded.challenge_locks
             """,
             (utxo_ref, agent_did, owner_credential, stake_amount,
-             json.dumps(capabilities), last_updated, history_points, stake_id),
+             json.dumps(capabilities), last_updated, history_points, stake_id,
+             json.dumps(list(challenge_locks))),
         )
         self.conn.commit()
 

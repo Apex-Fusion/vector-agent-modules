@@ -308,12 +308,13 @@ class TestRedeemers:
 
     def test_module1_claim_datum_and_submit_redeemer(self):
         """The Module-1 claim of an escalation: ClaimDatum (9 fields, state
-        Open) and ClaimAction.SubmitClaim (constructor 0)."""
+        Open; claim_type is the challenged capability) and
+        ClaimAction.SubmitClaim (constructor 0)."""
         datum = AuditClaimDatum(
             claimer_did=AGENT_A_DID,
             claimer_credential=VerificationKeyCredential(VKEY_HASH),
             claim_hash=b"\x01" * 32,
-            claim_type=b"reputation_challenge",
+            claim_type=b"code_review",
             storage_uri=b"",
             stake_amount=50_000_000,
             submitted_at=1000,
@@ -322,7 +323,7 @@ class TestRedeemers:
         )
         decoded = cbor2.loads(datum.to_cbor())
         assert decoded.tag == 121 and len(decoded.value) == 9
-        assert decoded.value[3] == b"reputation_challenge"
+        assert decoded.value[3] == b"code_review"
         assert decoded.value[8] == cbor2.CBORTag(121, [])
         assert AuditClaimDatum.from_cbor(datum.to_cbor()) == datum
         assert cbor2.loads(AuditSubmitClaimRedeemer().to_cbor()) == cbor2.CBORTag(121, [])

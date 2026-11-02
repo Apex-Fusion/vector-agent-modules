@@ -1,7 +1,8 @@
 """Offline tests of the payee rule and the closing builders of
 ReputationStakingClient: DecreaseStake, WithdrawEndorsement and
 WithdrawChallenge (exits: the controller of the record signs, the payee gets
-the funds) and ExpireChallenge (permissionless).
+the funds), ExpireChallenge (permissionless) and ClaimDecayRefund
+(permissionless; the oracle signs).
 
 Each test builds a signed transaction against the fake chain
 (tests/chain_fixtures.py) and checks the shape that the contracts need:
@@ -26,6 +27,7 @@ from reputation_staking.plutus_data import (
     BurnChallengeTokenRedeemer,
     BurnEndorsementTokenRedeemer,
     ChallengeSpendRedeemer,
+    ClaimDecayRefundRedeemer,
     DecreaseStakeRedeemer,
     EndorsementSpendRedeemer,
     ExpireChallengeRedeemer,
@@ -47,6 +49,7 @@ from tests.chain_fixtures import (
     LO,
     REP_HASH,
     REP_REF,
+    TREASURY,
     World,
     address,
     assert_window,
@@ -432,3 +435,128 @@ class TestExpireChallenge:
         tx = self.build(world, wallet=other)
         assert signers_of(tx) == {key_hash(other)}
         assert paid_to(tx, key_hash(world.wallet)) >= 25 * AP3X
+
+
+# ── ClaimDecayRefund ─────────────────────────────────────────────────────────
+
+EPOCH = PARAMS.epoch_length
+
+
+def inactive_since(epochs: int) -> int:
+    """A last_updated that gives `epochs` inactive epochs at LO."""
+    return LO - (PARAMS.activity_window + epochs) * EPOCH
+
+
+class TestClaimDecayRefund:
+    def build(self, world, wallet=None, **kwargs):
+        return world.client(wallet=wallet).build_claim_decay_refund(world.did("A"), **kwargs)
+
+    def test_shape_of_a_partial_decay(self, world):
+        """100 AP3X, 10 inactive epochs at 1%: decay 10 AP3X, collector fee
+        0.5 AP3X, treasury 9.5 AP3X; the stake continues with 90 AP3X. No
+        record is read (no owner payout)."""
+        stake = world.stake_a(last_updated=inactive_since(10))
+        tx = self.build(world)
+        assert ref(stake) in inputs_of(tx)
+        assert refs_of(tx) == {REP_REF} | world.deployment_refs()
+        assert signers_of(tx) == {key_hash(world.wallet)}  # the oracle key
+        assert_window(tx)
+        assert mint_of(tx) == {}
+        [(tag, data)] = redeemers_of(tx)
+        assert tag == "spend" and data == ClaimDecayRefundRedeemer()
+        [stake_out] = outputs_to(tx, address(REP_HASH))
+        before = stake_datum_of(stake)
+        assert stake_out.datum == dataclasses.replace(
+            before, stake_amount=90 * AP3X, last_updated=before.last_updated + 10 * EPOCH)
+        assert stake_out.datum.stake_id == before.stake_id
+        assert stake_out.amount.coin == 90 * AP3X
+        assert stake_out.amount.multi_asset == stake.output.amount.multi_asset
+        [treasury] = outputs_to(tx, address(TREASURY))
+        assert treasury.amount.coin >= 9_500_000
+        assert paid_to(tx, world.owner_a) == 0
+
+    def test_a_decay_below_the_minimum_continues_with_0_and_pays_the_owner(self, world):
+        """12 AP3X, 20 inactive epochs: decay 2.4 AP3X, remaining 9.6 AP3X is
+        below min_self_stake. The stake continues with 0 and keeps its token
+        and stake_id; the owner's payee receives 9.6 AP3X; A's record is a
+        reference input."""
+        stake = world.stake_a(amount=12 * AP3X, last_updated=inactive_since(20))
+        tx = self.build(world)
+        assert refs_of(tx) == {ref(world.records["A"]), REP_REF} | world.deployment_refs()
+        assert mint_of(tx) == {}
+        [stake_out] = outputs_to(tx, address(REP_HASH))
+        before = stake_datum_of(stake)
+        assert stake_out.datum == dataclasses.replace(
+            before, stake_amount=0, last_updated=before.last_updated + 20 * EPOCH)
+        assert stake_out.amount.multi_asset == stake.output.amount.multi_asset
+        assert paid_to(tx, world.owner_a) >= 9_600_000
+        [treasury] = outputs_to(tx, address(TREASURY))
+        assert treasury.amount.coin >= 2_280_000
+
+    def test_pays_the_controller_when_the_record_drops_the_owner_key(self, world):
+        world.stake_a(amount=12 * AP3X, last_updated=inactive_since(20))
+        world.record("A", keys=())
+        tx = self.build(world)
+        assert paid_to(tx, world.owner_a) == 0
+        assert paid_to(tx, key_hash(world.ctrl["A"])) >= 9_600_000
+
+    def test_a_retired_agent_gets_the_rest(self, world):
+        world.stake_a(amount=12 * AP3X, last_updated=inactive_since(20))
+        world.record("A", status=vi.Status.retired(LO - 1))
+        tx = self.build(world)
+        assert paid_to(tx, world.owner_a) >= 9_600_000
+
+    def test_names_a_stake_by_its_stake_id(self, world):
+        world.stake_a(amount=200 * AP3X, last_updated=inactive_since(10))
+        small = world.stake_a(amount=60 * AP3X, last_updated=inactive_since(10))
+        stake_id = stake_datum_of(small).stake_id
+        tx = self.build(world, stake_id=f"{bytes(stake_id.transaction_id).hex()}#{stake_id.output_index}")
+        assert ref(small) in inputs_of(tx)
+        [stake_out] = outputs_to(tx, address(REP_HASH))
+        assert stake_out.datum.stake_amount == 54 * AP3X
+
+    def test_inactive_epoch_boundary(self, world):
+        """One inactive epoch after the activity window is enough."""
+        world.stake_a(last_updated=inactive_since(1))
+        tx = self.build(world)
+        [stake_out] = outputs_to(tx, address(REP_HASH))
+        assert stake_out.datum.stake_amount == 99 * AP3X
+
+    def test_refuses_within_the_activity_window(self, world):
+        world.stake_a(last_updated=inactive_since(1) + 1)
+        with pytest.raises(ValueError, match="one inactive epoch"):
+            self.build(world)
+
+    def test_refuses_a_locked_stake(self, world):
+        world.stake_a(last_updated=inactive_since(10), challenge_locks=(world.lock_b(),))
+        with pytest.raises(ValueError, match="locks the stake"):
+            self.build(world)
+
+    def test_refuses_a_decayed_stake(self, world):
+        """A stake with stake_amount 0 has nothing to decay."""
+        world.stake_a(amount=0, last_updated=inactive_since(10))
+        with pytest.raises(ValueError, match="is 0"):
+            self.build(world)
+
+    def test_refuses_without_the_oracle_key(self, world):
+        world.stake_a(last_updated=inactive_since(10))
+        other = PaymentSigningKey.generate()
+        world.context.add(utxo_at(key_address(key_hash(other)), Value(100 * AP3X)))
+        with pytest.raises(ValueError, match="oracle key"):
+            self.build(world, wallet=other)
+
+    def test_another_collector_with_the_oracle_signature(self, world):
+        """The collector's wallet pays the fee and gets the collector fee;
+        the oracle signs."""
+        world.stake_a(last_updated=inactive_since(10))
+        other = PaymentSigningKey.generate()
+        world.context.add(utxo_at(key_address(key_hash(other)), Value(100 * AP3X)))
+        tx = self.build(world, wallet=other, oracle_skey=world.wallet)
+        assert signers_of(tx) == {key_hash(world.wallet)}
+        assert witness_keys(tx) == {key_hash(other), key_hash(world.wallet)}
+
+    def test_refuses_without_the_record_for_the_owner_payout(self, world):
+        world.stake_a(amount=12 * AP3X, last_updated=inactive_since(20))
+        world.context.remove(world.records.pop("A"))
+        with pytest.raises(vi.RecordNotFoundError):
+            self.build(world)
