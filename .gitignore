@@ -24,3 +24,7 @@ deploy/smoke_state.json
 /tmp/apex-sim-metrics-*
 **/simulation-results/
 .claude/
+
+# State of the identity-registry deployments (manifests, unsigned and signed
+# transactions). Never commit it; keys are read by path and never stored here.
+**/deploy/identity/state/

@@ -19,7 +19,7 @@ from pycardano import (
 from pycardano.hash import TransactionId, VerificationKeyHash
 from pycardano.backend.base import ProtocolParameters
 
-from simulation.config import OGMIOS_URL, TX_SUBMIT_URL, SYSTEM_START_UNIX, NETWORK
+from simulation.config import OGMIOS_URL, TX_SUBMIT_URL, KOIOS_URL, SYSTEM_START_UNIX, NETWORK
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -140,14 +140,25 @@ class OgmiosContext:
 
     def reward_account_balance(self, script_hash: bytes) -> int:
         """The withdrawable reward balance (lovelace) of the reward account
-        with the stake credential ``Script(script_hash)``, from the ledger
-        state. A withdrawal from that account must take exactly this
-        amount."""
+        with the stake credential ``Script(script_hash)``. A withdrawal from
+        that account must take exactly this amount.
+
+        Ogmios ``rewardAccountSummaries`` lists only delegated reward
+        accounts, and ``Script(M1)`` can never be delegated (identity_party
+        fails every publish purpose). When Ogmios has no summary, Koios
+        ``account_info`` of the stake address decides: a registered account
+        gives its ``rewards_available`` (anybody can pay into the account,
+        for example with a governance deposit refund), and an account that
+        is not registered raises RuntimeError."""
         result = ogmios_rpc(
             "queryLedgerState/rewardAccountSummaries",
             {"scripts": [bytes(script_hash).hex()]},
         )
-        return reward_balance_from_summaries(result, script_hash)
+        balance = reward_balance_from_summaries(result, script_hash)
+        if balance is not None:
+            return balance
+        address = str(Address(staking_part=ScriptHash(bytes(script_hash)), network=NETWORK))
+        return reward_balance_from_koios(koios_account_info([address]), address)
 
     def utxos(self, address):
         """Query UTxOs at an address via Ogmios."""
@@ -194,12 +205,12 @@ class OgmiosContext:
         return utxos
 
 
-def reward_balance_from_summaries(result, credential: bytes) -> int:
+def reward_balance_from_summaries(result, credential: bytes):
     """The reward balance of ``credential`` in the result of
-    ``queryLedgerState/rewardAccountSummaries``. Ogmios 6.x returns a map
-    keyed by the credential; newer versions return a list of summaries with
-    a ``credential`` field. Raises RuntimeError when the account is not
-    registered (no summary)."""
+    ``queryLedgerState/rewardAccountSummaries``, or None when the result has
+    no summary of the credential. Ogmios 6.x returns a map keyed by the
+    credential; newer versions return a list of summaries with a
+    ``credential`` field. Both list only delegated accounts."""
     want = bytes(credential).hex()
     summaries = []
     if isinstance(result, list):
@@ -217,14 +228,38 @@ def reward_balance_from_summaries(result, credential: bytes) -> int:
             )
         ]
     if not summaries:
-        raise RuntimeError(
-            f"the reward account of Script({want}) is not registered: register "
-            f"its stake credential before a withdrawal"
-        )
+        return None
     rewards = summaries[0].get("rewards", {})
     if isinstance(rewards, dict):
         return int(rewards.get("ada", {}).get("lovelace", 0))
     return int(rewards)
+
+
+def koios_account_info(stake_addresses) -> list:
+    """Koios ``account_info`` of stake addresses (read-only)."""
+    r = requests.post(
+        f"{KOIOS_URL}/account_info",
+        json={"_stake_addresses": list(stake_addresses)},
+        timeout=30,
+    )
+    if not r.ok:
+        raise RuntimeError(f"Koios account_info HTTP {r.status_code}: {r.text[:2000]}")
+    return r.json()
+
+
+def reward_balance_from_koios(accounts, stake_address: str) -> int:
+    """The ``rewards_available`` of a registered reward account in a Koios
+    ``account_info`` result. Raises RuntimeError when the account is not
+    registered."""
+    for account in accounts or []:
+        if not isinstance(account, dict) or account.get("stake_address") != stake_address:
+            continue
+        if account.get("status") == "registered":
+            return int(account.get("rewards_available") or 0)
+    raise RuntimeError(
+        f"the reward account {stake_address} is not registered: register "
+        f"its stake credential before a withdrawal"
+    )
 
 
 # Retry schedule (seconds) for the Ogmios "UTxO not found" race. On

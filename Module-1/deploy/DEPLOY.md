@@ -30,17 +30,20 @@ Hash order:
    publish purpose, so nobody can deregister or delegate it.
 6. Before anybody appoints Module-1, check the sealed datum.
 
-Commands (they sign and submit nothing):
+Commands: see [`identity/DEPLOY-IDENTITY.md`](identity/DEPLOY-IDENTITY.md)
+(plan, check-seal, the on-chain steps with dry run, build, sign and submit,
+the inputs, the checks and the costs). Tests:
 
 ```sh
-python3 scripts/identity_deploy.py plan          # reads deploy/identity/config.json
-python3 scripts/identity_deploy.py check-seal --datum <inline datum CBOR hex>
-python3 scripts/test_identity_deploy.py          # tests of the plan guards
+python3 scripts/test_identity_deploy.py                       # plan guards (standard library)
+pytest simulation/tests/test_deploy_transactions.py           # deploy transactions (pycardano, aiken)
 ```
 
-`deploy/identity/config.json` has placeholders (identity hashes, operator
-key, refs token policy and the verdict policy, an open item). The plan
-refuses them, and every all-zero `identity_hash`, `config_policy`,
+The identity values come from the identity `deployment.json`, `oracle_vkh`
+and `refs_token_policy` from the operator key, and `oracle_active` from
+`--mode`. `deploy/identity/config.json` keeps the verdict policy (still a
+placeholder) and the other ProtocolParams values. The plan refuses
+placeholders and every all-zero `identity_hash`, `config_policy`,
 `config_holder`, `oracle_vkh` or `refs_token_policy`, unless
 `--allow-placeholders` is given; its output is then not for deployment. New
 Foundation operator keys deploy the modules; old module keys are not reused.

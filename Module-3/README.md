@@ -271,9 +271,8 @@ Module-3/
 
   scripts/
     deploy_common.py                          # Config builders; deployment inputs and order
-    deploy_docker.py                          # Deploy to Vector testnet via Docker
-    deploy_ogmios.py                          # Deploy to Vector testnet via Ogmios (remote)
-    deploy_mainnet_ogmios.py                  # Deploy to Vector mainnet via Ogmios
+    deploy_docker.py                          # Deploy to a local node via Docker (inputs from the environment)
+    deploy_mainnet_ogmios.py                  # Deploy via Ogmios, mainnet or testnet (--network); dry run by default (see Module-1/deploy/identity/DEPLOY-IDENTITY.md)
     test_deploy_config.py                     # Offline checks of the config builder and the inputs
     smoke_test_ogmios.py                      # Full lifecycle smoke test — testnet (identity records from M3_SMOKE_AGENT_A/B)
     smoke_test_mainnet_ogmios.py              # Same smoke test on mainnet

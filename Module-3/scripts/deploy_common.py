@@ -1,16 +1,22 @@
 """
 Module 3: Reputation Staking — shared deploy helpers
 
-Used by deploy_ogmios.py, deploy_mainnet_ogmios.py and deploy_docker.py.
-These functions need cbor2 and the aiken CLI. They do not need pycardano or
-a chain connection.
+Used by deploy_mainnet_ogmios.py (the Ogmios deploy of mainnet and testnet)
+and deploy_docker.py (a local cardano-cli node). These functions need cbor2
+and the aiken CLI. They do not need pycardano or a chain connection.
 
-  - apply_holder: holder script for a tag, owned by a verification key hash
-  - apply_record_token_policy: one-shot record token policy for a seed UTxO
+  - apply_holder / apply_record_token_policy: shared/python/holder_scripts.py
+  - PARAMS_HOLDER_TAG / TREASURY_HOLDER_TAG: the Module-3 holder tags (31,
+    33). One operator key owns the holders of every module, so each module
+    has its own tags and its own holder addresses.
   - build_protocol_params_cbor / build_protocol_params_json: ProtocolParams
     datum (time values in POSIX milliseconds)
-  - deployment_inputs_from_env: identity_hash and the new Module-1 values
+  - deployment_inputs_from_files: identity_hash from the identity
+    deployment.json and the Module-1 values from the Module-1 manifest
+  - deployment_inputs_from_env: the same inputs from environment variables
+    (deploy_docker.py)
   - build_reputation_config_cbor: ReputationConfig (12 fields)
+  - build_cross_refs_cbor: CrossValidatorRefs (2 fields)
   - select_seed_utxo / find_record_utxo: read pycardano UTxO objects
 
 Deployment order (Part 2 §3.8 and §7 of docs/IDENTITY_REGISTRY.md in
@@ -26,7 +32,10 @@ agents-marketplace):
      Module-1 values of step 4.
   7. Module-6. GovernanceConfig embeds identity_hash.
 
-Inputs: environment variables, with no defaults (DEPLOYMENT_INPUTS).
+Inputs (DEPLOYMENT_INPUTS), with no defaults: the identity deployment.json
+(identity_hash) and the Module-1 manifest (hashes.claim, hashes.challenge,
+hashes.jury_pool, module1.refs_token_policy) for deploy_mainnet_ogmios.py;
+environment variables for deploy_docker.py:
 
   VECTOR_IDENTITY_HASH              identity_hash (step 3)
   VECTOR_MODULE1_CLAIM_HASH         audit_claim_validator_hash (step 4)
@@ -42,33 +51,40 @@ operators. The wallet key of a deploy script must be one of these keys. Old
 module keys are not reused.
 """
 
-import json
 import os
-import subprocess
-import tempfile
+import sys
 import time
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
 
 import cbor2
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-HOLDER_BLUEPRINT_PATH = REPO_ROOT / "shared" / "holder-scripts" / "plutus.json"
+if str(REPO_ROOT / "shared" / "python") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "shared" / "python"))
 
-HOLDER_TITLE = "holder.holder.spend"
-RECORD_TOKEN_TITLE = "record_token.record_token.mint"
+from holder_scripts import (  # noqa: E402
+    HOLDER_BLUEPRINT_PATH,
+    HOLDER_TAGS,
+    apply_holder,
+    apply_record_token_policy,
+)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-# Holder tags (shared/holder-scripts/validators/holder.ak)
-PARAMS_HOLDER_TAG = 1
-TREASURY_HOLDER_TAG = 3
+# The Module-3 holder tags (shared/python/holder_scripts.py HOLDER_TAGS).
+PARAMS_HOLDER_TAG = HOLDER_TAGS["module3"]["params"]
+TREASURY_HOLDER_TAG = HOLDER_TAGS["module3"]["treasury"]
 
 # Asset name of the record token that the ProtocolParams record holds
 # (shared/lib/shared/record_auth.ak)
 PARAMS_TOKEN_NAME = b"params"
+
+# Asset name of the CrossValidatorRefs token. The refs token policy is
+# ScriptPubkey(operator) for every module; each module has its own name.
+REFS_TOKEN_NAME = b"reputation_refs"
 
 # Redeemer of the record token policy: unit (constructor 0, no fields).
 # The policy ignores the redeemer.
@@ -216,81 +232,67 @@ def deployment_inputs_state(inputs: dict) -> dict:
     }
 
 
-# ── aiken blueprint apply ────────────────────────────────────────────────────
-
-def _aiken_apply(
-    blueprint_path: Path,
-    module: str,
-    validator: str,
-    param_cbor_hex: str,
-    out_path: Optional[Path] = None,
-) -> Optional[dict]:
-    """Apply one parameter. Writes to `out_path` when given, else returns the
-    applied blueprint."""
-    cmd = [
-        "aiken", "blueprint", "apply",
-        "-i", str(blueprint_path),
-        "-m", module, "-v", validator,
-        param_cbor_hex,
-    ]
-    if out_path is not None:
-        cmd.extend(["-o", str(out_path)])
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"aiken blueprint apply failed for {module}.{validator}: "
-            f"{result.stderr.strip()}"
-        )
-    if out_path is not None:
-        return None
-    return json.loads(result.stdout)
+#: The format of the Module-1 manifest (Module-1/scripts/identity_deploy.py).
+MODULE1_MANIFEST_FORMAT = "vector-module-deploy/1"
 
 
-def _validator(blueprint: dict, title: str) -> dict:
-    for v in blueprint["validators"]:
-        if v["title"] == title:
-            return v
-    raise ValueError(f"Validator {title} not found in the applied blueprint")
+def _value(data: Mapping[str, Any], path: str) -> Optional[str]:
+    node: Any = data
+    for part in path.split("."):
+        if not isinstance(node, Mapping):
+            return None
+        node = node.get(part)
+    return node if isinstance(node, str) else None
 
 
-def apply_holder(
-    tag: int,
-    owner_vkh_hex: str,
-    blueprint_path: Path = HOLDER_BLUEPRINT_PATH,
-) -> dict:
-    """Apply holder(tag, owner). Returns {"hash", "compiled_code"}.
+def deployment_inputs_from_files(deployment: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict:
+    """Read DEPLOYMENT_INPUTS from the identity deployment.json (identity_hash)
+    and the Module-1 manifest (hashes.claim, hashes.challenge,
+    hashes.jury_pool, module1.refs_token_policy): {config field: hex}.
 
-    Two `aiken blueprint apply` calls, one for each parameter: first the tag
-    (CBOR int), then the owner verification key hash (CBOR bytes, 28 bytes).
-    Only the owner key can spend an output at the holder address.
+    The manifest must be a Module-1 manifest of the same network that names
+    the same identity_hash. Raises DeployInputError that lists every problem
+    and names the deployment order.
     """
-    owner = _hex_bytes("owner_vkh_hex", owner_vkh_hex, 28)
-    with tempfile.TemporaryDirectory(prefix="holder-apply-") as tmp:
-        tagged = Path(tmp) / "holder-tag.json"
-        _aiken_apply(blueprint_path, "holder", "holder", cbor2.dumps(tag).hex(), tagged)
-        applied = _aiken_apply(tagged, "holder", "holder", cbor2.dumps(owner).hex())
-    v = _validator(applied, HOLDER_TITLE)
-    return {"hash": v["hash"], "compiled_code": v["compiledCode"]}
+    problems = []
+    if manifest.get("format") != MODULE1_MANIFEST_FORMAT or manifest.get("module") != "module1":
+        problems.append("the Module-1 manifest is not a manifest of Module-1/scripts/identity_deploy.py.")
+    if manifest.get("network") != deployment.get("network"):
+        problems.append(f"the Module-1 manifest is for network {manifest.get('network')!r}, the identity "
+                        f"deployment for {deployment.get('network')!r}.")
+    if _value(manifest, "identity.identity_hash") != deployment.get("identity_hash"):
+        problems.append("the Module-1 manifest names another identity_hash than the identity deployment.")
+    sources = {
+        "audit_claim_validator_hash": _value(manifest, "hashes.claim"),
+        "audit_challenge_validator_hash": _value(manifest, "hashes.challenge"),
+        "audit_jury_pool_hash": _value(manifest, "hashes.jury_pool"),
+        "audit_refs_token_policy": _value(manifest, "module1.refs_token_policy"),
+        "identity_hash": deployment.get("identity_hash"),
+    }
+    inputs = {}
+    for field in DEPLOYMENT_INPUTS:
+        value = (sources[field] or "").strip()
+        problem = _input_problem(field, value)
+        if problem:
+            problems.append(problem)
+        else:
+            inputs[field] = bytes.fromhex(value).hex()
+    if problems:
+        raise DeployInputError("\n".join(problems + [DEPLOYMENT_ORDER]))
+    return inputs
 
 
-def apply_record_token_policy(
-    seed_tx_id_hex: str,
-    seed_index: int,
-    blueprint_path: Path = HOLDER_BLUEPRINT_PATH,
-) -> dict:
-    """Apply record_token(seed). Returns {"policy_id", "compiled_code"}.
+# ── CrossValidatorRefs datum ─────────────────────────────────────────────────
 
-    The seed is an OutputReference: Plutus constructor 0 with the
-    transaction id (32 bytes) and the output index. Tokens of the policy can
-    be minted only in the transaction that spends the seed.
-    """
-    tx_id = _hex_bytes("seed_tx_id_hex", seed_tx_id_hex, 32)
-    if seed_index < 0:
-        raise ValueError(f"seed_index must not be negative, got {seed_index}")
-    seed_cbor = cbor2.dumps(cbor2.CBORTag(121, [tx_id, seed_index])).hex()
-    applied = _aiken_apply(blueprint_path, "record_token", "record_token", seed_cbor)
-    v = _validator(applied, RECORD_TOKEN_TITLE)
-    return {"policy_id": v["hash"], "compiled_code": v["compiledCode"]}
+
+def build_cross_refs_cbor(reputation_hash: str, endorsement_hash: str) -> bytes:
+    """CrossValidatorRefs (reputation-staking/lib/reputation_staking/config.ak)
+    as Plutus Data CBOR: constructor 0 with the reputation and the
+    endorsement validator hashes."""
+    return cbor2.dumps(cbor2.CBORTag(121, [
+        _hex_bytes("reputation_hash", reputation_hash, 28),
+        _hex_bytes("endorsement_hash", endorsement_hash, 28),
+    ]))
 
 
 # ── Deploy state ─────────────────────────────────────────────────────────────

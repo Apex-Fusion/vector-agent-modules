@@ -41,7 +41,8 @@ from pycardano import PlutusV3Script, Transaction, TransactionInput, UTxO, plutu
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _FAILURE = re.compile(r"failed script execution\s+(\w+\[\d+\])\s*([^\n]*)")
-_PURPOSES = {0: "Spend", 1: "Mint", 2: "Cert", 3: "Withdraw", 4: "Vote", 5: "Propose"}
+#: The redeemer tags as aiken v1.1.21 names the purposes in its reports.
+_PURPOSES = {0: "Spend", 1: "Mint", 2: "Publish", 3: "Withdraw", 4: "Vote", 5: "Propose"}
 
 
 class HarnessError(RuntimeError):

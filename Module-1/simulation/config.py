@@ -78,11 +78,15 @@ NETWORK_MAGIC = 764824073
 if IS_MAINNET:
     OGMIOS_URL = "https://ogmios.vector.mainnet.apexfusion.org"
     TX_SUBMIT_URL = "https://submit.vector.mainnet.apexfusion.org/api/submit/tx"
+    # Koios: the reward account of a stake credential without a delegation
+    # (Ogmios rewardAccountSummaries lists only delegated accounts).
+    KOIOS_URL = "https://v2.koios.vector.mainnet.apexfusion.org/api/v1"
     # Vector mainnet genesis: 2025-08-29 16:40:00 UTC
     SYSTEM_START_UNIX = 1756485600
 else:
     OGMIOS_URL = "https://ogmios.vector.testnet.apexfusion.org"
     TX_SUBMIT_URL = "https://submit.vector.testnet.apexfusion.org/api/submit/tx"
+    KOIOS_URL = "https://v2.koios.vector.testnet.apexfusion.org/api/v1"
     # Vector testnet genesis (unchanged from v14)
     SYSTEM_START_UNIX = 1752057484
 

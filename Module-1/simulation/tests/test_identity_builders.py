@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import importlib.util
+import types
 from pathlib import Path
 
 import cbor2
@@ -27,6 +28,7 @@ from pycardano import (
 from pycardano.address import PointerAddress
 from pycardano.utils import min_lovelace_post_alonzo
 
+import simulation.chain as chain_module
 import simulation.tx_builder as txb
 from simulation import identity_party as ip
 from simulation import vector_identity as vi
@@ -216,8 +218,114 @@ def test_reward_balance_parser_reads_both_ogmios_formats():
     as_map = {h.hex(): {"rewards": {"ada": {"lovelace": 5_678}}}}
     assert reward_balance_from_summaries(as_list, h) == 1_234
     assert reward_balance_from_summaries(as_map, h) == 5_678
+    # No summary: Ogmios lists only delegated reward accounts.
+    assert reward_balance_from_summaries([], h) is None
+    assert reward_balance_from_summaries({}, h) is None
+
+
+# ── Reward balance of Script(M1): Ogmios, else Koios ──────────────────────
+
+#: The reward address of Script(M1) (network id 1).
+M1_STAKE_ADDRESS = str(Address(staking_part=ScriptHash(M1), network=Network.MAINNET))
+
+
+def _reward_sources(monkeypatch, *, summaries, accounts) -> list:
+    """OgmiosContext.reward_account_balance reads ``summaries`` from
+    Ogmios and ``accounts`` from Koios account_info. Returns the list of
+    the stake addresses of each Koios call."""
+    calls: list = []
+
+    def rpc(method, params=None):
+        assert method == "queryLedgerState/rewardAccountSummaries"
+        assert params == {"scripts": [M1.hex()]}
+        return summaries
+
+    def koios(addresses):
+        calls.append(list(addresses))
+        return accounts
+
+    monkeypatch.setattr(chain_module, "ogmios_rpc", rpc)
+    monkeypatch.setattr(chain_module, "koios_account_info", koios)
+    return calls
+
+
+def _registered(rewards_available: str, status: str = "registered") -> list:
+    return [{"stake_address": M1_STAKE_ADDRESS, "status": status,
+             "rewards_available": rewards_available, "deposit": "5000000"}]
+
+
+def test_reward_balance_takes_the_ogmios_summary(monkeypatch):
+    calls = _reward_sources(
+        monkeypatch,
+        summaries=[{"from": "script", "credential": M1.hex(),
+                    "rewards": {"ada": {"lovelace": 42}}}],
+        accounts=_registered("999"),
+    )
+    assert chain_module.OgmiosContext().reward_account_balance(M1) == 42
+    assert calls == []
+
+
+def test_reward_balance_of_a_registered_account_without_a_summary_comes_from_koios(monkeypatch):
+    """Script(M1) can never be delegated, so Ogmios has no summary. Koios
+    gives the balance of the registered account; it is not assumed to be 0,
+    because anybody can pay into the account."""
+    calls = _reward_sources(monkeypatch, summaries=[], accounts=_registered("2500000"))
+    assert chain_module.OgmiosContext().reward_account_balance(M1) == 2_500_000
+    assert calls == [[M1_STAKE_ADDRESS]]
+
+
+@pytest.mark.parametrize("accounts", [
+    _registered("0", status="not registered"),
+    [],
+    [{"stake_address": "stake17other", "status": "registered", "rewards_available": "7"}],
+], ids=["not-registered", "unknown", "other-account"])
+def test_reward_balance_refuses_an_account_that_is_not_registered(monkeypatch, accounts):
+    _reward_sources(monkeypatch, summaries=[], accounts=accounts)
     with pytest.raises(RuntimeError, match="not registered"):
-        reward_balance_from_summaries([], h)
+        chain_module.OgmiosContext().reward_account_balance(M1)
+
+
+def _chain_balance(env, monkeypatch, accounts) -> None:
+    """The context of ``env`` reads the Script(M1) balance like
+    OgmiosContext: no Ogmios summary, then Koios ``accounts``."""
+    _reward_sources(monkeypatch, summaries=[], accounts=accounts)
+    monkeypatch.setattr(
+        env["ctx"], "reward_account_balance",
+        types.MethodType(chain_module.OgmiosContext.reward_account_balance, env["ctx"]),
+    )
+
+
+def _consent(env):
+    payer = _key(b"payer")
+    ctrl_skey, ctrl_vkey, _ = _key(b"controller")
+    env["ctx"].register_utxos(IDENTITY_ADDR, [identity_record_utxo(b"rec", "bb" * 32, ctrl_vkey)])
+    txb.build_consent_update(env["ctx"], env["dep"], *payer, ctrl_skey, "bb" * 32)
+
+
+def _apply_verdict(env, monkeypatch):
+    agent_vkey = _key(b"agent")[1]
+    env["ctx"].register_utxos(IDENTITY_ADDR, [identity_record_utxo(
+        b"arec", "dd" * 32, agent_vkey, module1_role=vi.Role.ACCOUNTABLE)])
+    vutxo = _verdict_utxo(env["dep"], _verdict(b"\xdd" * 32, ip.VerdictAction.SUSPEND, vi.DAYS_7_MS))
+    monkeypatch.setattr(txb, "resolve_utxo", lambda txid, idx: vutxo)
+    txb.build_apply_verdict(env["ctx"], env["dep"], *_key(b"anybody"), "ee" * 32 + "#3")
+
+
+@pytest.mark.parametrize("action", ["consent", "apply_verdict"])
+def test_module1_withdrawal_takes_the_koios_balance_without_an_ogmios_summary(env, monkeypatch, action):
+    _chain_balance(env, monkeypatch, _registered("1234567"))
+    _consent(env) if action == "consent" else _apply_verdict(env, monkeypatch)
+    b = env["builders"][-1]
+    reward = bytes(env["dep"].identity_party_reward_addr.to_primitive())
+    assert dict(b.withdrawals) == {reward: 1_234_567}
+
+
+@pytest.mark.parametrize("action", ["consent", "apply_verdict"])
+def test_module1_builders_refuse_a_reward_account_that_is_not_registered(env, monkeypatch, action):
+    _chain_balance(env, monkeypatch, _registered("0", status="not registered"))
+    with pytest.raises(RuntimeError, match="not registered"):
+        _consent(env) if action == "consent" else _apply_verdict(env, monkeypatch)
+    assert not env["builders"]
 
 
 # ── Verdict datum ──────────────────────────────────────────────────────────

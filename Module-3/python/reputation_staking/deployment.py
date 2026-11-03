@@ -1,11 +1,12 @@
 """
 The Module 3 deployment that a client, the indexer or the dashboard uses.
 
-The deploy scripts (scripts/deploy_ogmios.py, deploy_mainnet_ogmios.py and
-deploy_docker.py) write deploy/deploy_state.json (testnet) and
-deploy/mainnet/deploy_state.json (mainnet). `load_deployment` reads such a
-state and checks it. There are no default values: a missing or malformed
-value is an error that names the deployment order.
+The deploy scripts (scripts/deploy_mainnet_ogmios.py, for mainnet and
+testnet, and deploy_docker.py) write a deploy state. The deployment of the
+identity registry release writes deploy/identity/state/<network>/
+deploy_state.json. `load_deployment` reads such a state and checks it. There
+are no default values: a missing or malformed value is an error that names
+the deployment order.
 
 A state without `identity_hash` belongs to an old deployment (it has
 `agent_registry_hash`, the legacy agent registry) or to a deployment without
@@ -29,8 +30,7 @@ from reputation_staking.utils import script_hash_to_address
 DEPLOYMENT_ORDER = (
     "Deployment order: identity registry, Module-1, Module-3, Module-6 "
     "(Part 2 §3.8 and §7 of docs/IDENTITY_REGISTRY.md in agents-marketplace; "
-    "Module-3 runs scripts/deploy_ogmios.py, deploy_mainnet_ogmios.py or "
-    "deploy_docker.py)."
+    "Module-3 runs scripts/deploy_mainnet_ogmios.py or deploy_docker.py)."
 )
 
 # Deploy state keys with a 28-byte hash or policy ID (hex).
