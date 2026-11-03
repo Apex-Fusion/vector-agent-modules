@@ -1,10 +1,8 @@
 {
   "_comment": "Module-1 parameters for the identity deployment (Part 2 §3.8, §7). scripts/identity_deploy.py plan reads this file. The identity values (identity_hash, config_policy, config_holder, refs.identity) come from the identity deployment.json, oracle_vkh and refs_token_policy from the operator key, and oracle_active from --mode (oracle: true, jury: false). Every path in `placeholders` must get its confirmed value before a deployment; the plan refuses placeholders unless --allow-placeholders is given.",
-  "placeholders": [
-    "verdict_policy"
-  ],
+  "placeholders": [],
   "verdict_policy": {
-    "_comment": "PLACEHOLDER: the verdict policy and the Module-1 mode are open items (Part 2 §13.4, owners David and the module owners). The policy applies only to oracle resolutions (OracleResolve, oracle mode): jury resolutions, Inconclusive outcomes and timeouts give no verdict. Both modes embed this policy in AuditingConfig, so it changes the script hashes in both modes. The agent of a verdict is the losing side: auditor_wins names the claimer, claimer_wins names the auditor. action: suspend (duration_ms 1..2592000000) or revoke (duration_ms 0). null means no verdict.",
+    "_comment": "Confirmed by the deployer on 2026-11-03, with the oracle mode (Part 2 §13.4). The policy applies only to oracle resolutions (OracleResolve, oracle mode): jury resolutions, Inconclusive outcomes and timeouts give no verdict. Both modes embed this policy in AuditingConfig, so it changes the script hashes in both modes. The agent of a verdict is the losing side: auditor_wins names the claimer, claimer_wins names the auditor. action: suspend (duration_ms 1..2592000000) or revoke (duration_ms 0). null means no verdict.",
     "auditor_wins": {
       "action": "suspend",
       "duration_ms": 604800000
@@ -12,7 +10,7 @@
     "claimer_wins": null
   },
   "protocol_params": {
-    "_comment": "v14 mainnet values from deploy/DEPLOY.md, without oracle_active (--mode sets it). selection_delay, min_agent_age, max_concurrent_cases and min_jury_pool_total are not recorded for v14; these are the params.ak defaults, with min_jury_pool_total = 15 jurors x 25 AP3X. The v14 ProtocolParams record on mainnet holds the same 16 values. Confirm with the module owners.",
+    "_comment": "v14 mainnet values from deploy/DEPLOY.md, without oracle_active (--mode sets it). selection_delay, min_agent_age, max_concurrent_cases and min_jury_pool_total are not recorded for v14; these are the params.ak defaults, with min_jury_pool_total = 15 jurors x 25 AP3X. The v14 ProtocolParams record on mainnet holds the same 16 values. Confirmed by the deployer on 2026-11-03.",
     "min_claim_stake": 50000000,
     "min_challenge_window": 1800000,
     "max_challenge_window": 86400000,
