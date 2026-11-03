@@ -4,19 +4,28 @@ docs/IDENTITY_REGISTRY.md in agents-marketplace).
 Usage:
 
   python3 scripts/deploy.py [run|build|sign|submit] --deployment FILE
-          (--vkey F | --skey F) [--submit] [--dry-run-funds AP3X]
-          [--state-dir DIR] [--network mainnet|testnet] [--report F]
+          (--vkey F | --skey F) [--module1-manifest FILE] [--submit]
+          [--dry-run-funds AP3X] [--state-dir DIR] [--network mainnet|testnet]
+          [--report F]
 
 Inputs:
   --deployment   The identity deployment.json of the agents-marketplace tool
                  (format vector-identity-deployment/1). The tool reads
                  identity_hash, reference_address, operator_address,
-                 seal_seed_address and config_seed. It checks the file with
-                 the rules of Module-1 (scripts/identity_deploy.py).
+                 seal_seed_address, config_seed and the seal. It checks the
+                 file with the rules of Module-1 (scripts/identity_deploy.py).
   --vkey/--skey  The operator key: the key of operator_address. One operator
                  key deploys every module. It owns the holders, it is the
                  oracle credential, and its ScriptPubkey policy mints the
                  CrossRefs token "governance_refs".
+  --module1-manifest
+                 The Module-1 manifest.json (identity_deploy.py plan). A send
+                 (run --submit, build, submit) needs it: the tool sends only
+                 when the seal on chain names identity_party (M1) of the
+                 manifest (Module-1 seal_status), and the manifest must name
+                 the identity_hash and the network of the identity
+                 deployment. A dry run works before the seal and without the
+                 manifest; it prints the seal status.
 
 The plan (on each run, without the network):
   1. The params, oracle and treasury holders: holder(61|62|63, operator)
@@ -58,8 +67,9 @@ its result):
 Actions: "run" is a dry run (build each transaction, evaluate it with Ogmios
 evaluateTransaction, send nothing), or a send with --submit (sign with
 --skey). "build" writes unsigned transactions, "sign" signs them offline with
---skey, "submit" sends the signed ones. The tool never spends config_seed or
-an output at seal_seed_address of the identity deployment.
+--skey, "submit" sends the signed ones. Sends wait for the seal of M1. The
+tool never spends config_seed or an output at seal_seed_address of the
+identity deployment.
 
 State: DIR/deploy_state.json (default deploy/identity/state/<network>/;
 format vector-module-deploy/1, module "module6"). The tool refuses every
@@ -79,11 +89,8 @@ The tools deploy_params.py (replace the params record) and treasury_fund.py
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -94,10 +101,10 @@ import requests
 # deploy_common puts shared/python on sys.path (vector_deploy, holder_scripts).
 from deploy_common import (
     ACTIVITY_TOKEN_NAME,
+    BLUEPRINT_PATH,
     CRITIQUE_MINT,
     CRITIQUE_SPEND,
     DEFAULT_GOVERNANCE_PARAMS,
-    DEPLOYMENT_ORDER,
     ENDORSEMENT_SPEND,
     HOLDER_TAGS,
     ORACLE_TOKEN_NAME,
@@ -106,10 +113,12 @@ from deploy_common import (
     PROPOSAL_SPEND,
     RECORDS_STEP,
     REFS_TOKEN_NAME,
+    STATE_FILE,
+    STATE_ROOT,
     UNIT_REDEEMER,
     VALIDATOR_TITLES,
     DeployInputError,
-    aiken_apply,
+    apply_governance_config,
     apply_holder,
     apply_record_token_policy,
     build_activity_head_data,
@@ -120,8 +129,11 @@ from deploy_common import (
     current_params_entry,
     governance_params_data,
     load_identity_deployment,
+    load_module1_manifest,
+    module1_identity_deploy,
     oracle_datum_data,
     plutus_data_cbor,
+    script_hash_to_address,
     state_tx_hashes,
     treasury_batch_data,
 )
@@ -133,13 +145,10 @@ from pycardano.serialization import RawCBOR  # noqa: E402
 # ── Paths and constants ──────────────────────────────────────────────────────
 
 MODULE = "module6"
-MODULE_DIR = Path(__file__).resolve().parent.parent
-CONTRACT_DIR = MODULE_DIR / "contracts" / "governance-suggestion"
-BLUEPRINT_PATH = CONTRACT_DIR / "plutus.json"
-#: The state of a deployment: DIR/deploy_state.json and DIR/tx/ (the
-#: transaction files of the offline flow). The state is not in git.
-STATE_ROOT = MODULE_DIR / "deploy" / "identity" / "state"
-STATE_FILE = "deploy_state.json"
+# BLUEPRINT_PATH, STATE_ROOT and STATE_FILE come from deploy_common: the
+# state of a deployment is STATE_ROOT/<network>/STATE_FILE,
+# and STATE_ROOT/<network>/tx/ holds the transaction files of the offline
+# flow. The state is not in git.
 
 #: Lovelace of each record of the records step (or its min-UTxO when higher).
 RECORD_LOVELACE = 3_000_000
@@ -182,34 +191,7 @@ def lovelace(ap3x: float) -> int:
     return int(round(ap3x * vd.LOVELACE_PER_AP3X))
 
 
-def script_hash_to_address(script_hash_hex: str) -> str:
-    """The enterprise address of a script (Vector uses the network id 1)."""
-    return str(vd.script_address(bytes.fromhex(script_hash_hex)))
-
-
-def compute_native_script_policy(vkey_hash: str) -> tuple[str, bytes]:
-    """The policy ID and the CBOR of ScriptPubkey(vkey_hash)."""
-    native_script_cbor = cbor2.dumps([0, bytes.fromhex(vkey_hash)])
-    policy_id = hashlib.blake2b(b"\x00" + native_script_cbor, digest_size=28).hexdigest()
-    return policy_id, native_script_cbor
-
-
 # ── Plan ─────────────────────────────────────────────────────────────────────
-
-
-def apply_governance_config(config_cbor_hex: str, blueprint_path: Path = BLUEPRINT_PATH) -> dict:
-    """Apply GovernanceConfig to the five Module-6 validators with
-    `aiken blueprint apply` and return the applied blueprint. The
-    intermediate blueprints go to a temporary directory: the tool writes
-    nothing into contracts/."""
-    with tempfile.TemporaryDirectory(prefix="module6-apply-") as tmp:
-        current = Path(blueprint_path)
-        for number, title in enumerate(VALIDATOR_TITLES, start=1):
-            module, validator, _ = title.split(".")
-            out = Path(tmp) / f"applied-{number}.json"
-            aiken_apply(current, module, validator, config_cbor_hex, out)
-            current = out
-        return json.loads(current.read_text())
 
 
 def applied_validators(blueprint: Mapping[str, Any]) -> dict:
@@ -398,10 +380,12 @@ def write_plan(state: vd.DeployState, plan: Mapping[str, Any]) -> None:
 def update_state(state: vd.DeployState) -> None:
     """Write tx_hashes, the transaction of the activity head, the
     GovernanceParams values and client_settings from the recorded steps, and
-    save the state."""
+    save the state. The tx_hashes that another tool wrote into the state
+    (treasury_replenish.py, update_params.py) stay, unless a recorded step
+    gives the same key."""
     data = state.data
     steps = data.get("steps") or {}
-    data["tx_hashes"] = state_tx_hashes(steps)
+    data["tx_hashes"] = {**(data.get("tx_hashes") or {}), **state_tx_hashes(steps)}
     if isinstance(data.get("activity_head"), dict):
         data["activity_head"]["tx"] = data["tx_hashes"].get("activity_head")
     values = (current_params_entry(steps) or {}).get("governance_params")
@@ -661,6 +645,16 @@ def module6_steps(plan: Mapping[str, Any], state: vd.DeployState) -> list:
 # ── Command ──────────────────────────────────────────────────────────────────
 
 
+def seal_check(chain: vd.DeployChain, identity: Mapping[str, Any],
+               manifest: Optional[Mapping[str, Any]]) -> tuple[bool, str]:
+    """(ok, note): Module-1 seal_status for M1 (hashes.identity_party) of the
+    Module-1 manifest. ok is True only when the configuration record on chain
+    names M1. Without a manifest the tool does not check the seal."""
+    if manifest is None:
+        return False, "not checked (no --module1-manifest; a send needs it)"
+    return module1_identity_deploy().seal_status(vd, chain, dict(identity), manifest["hashes"]["identity_party"])
+
+
 def command_deploy(args, *, chain: Optional[vd.DeployChain] = None, post: Callable = requests.post,
                    sleep: Callable[[float], None] = time.sleep, log: Callable[[str], None] = print) -> None:
     state_dir: Path = args.state_dir or default_state_dir(args.network)
@@ -673,6 +667,10 @@ def command_deploy(args, *, chain: Optional[vd.DeployChain] = None, post: Callab
     identity = load_identity_deployment(args.deployment, args.network)
     check_operator_address(identity, operator)
     sending = args.submit or args.action in ("build", "submit")
+    manifest = load_module1_manifest(args.module1_manifest, identity) if args.module1_manifest else None
+    if sending and manifest is None:
+        raise vd.DeployError("a send (run --submit, build, submit) needs --module1-manifest, the Module-1 "
+                             "manifest.json: Module-6 is deployed only after the seal names M1")
     if args.action == "submit" and not state.data.get("record_token_seed"):
         raise vd.DeployError(f"{state.path} has no built transactions; run the build action first")
     if args.action == "build":
@@ -680,6 +678,10 @@ def command_deploy(args, *, chain: Optional[vd.DeployChain] = None, post: Callab
 
     chain = chain if chain is not None else make_chain(args)
     chain.check_network()
+    seal_ok, seal_note = seal_check(chain, identity, manifest)
+    log(f"Seal check: {seal_note}")
+    if sending and not seal_ok:
+        raise vd.DeployError("Module-6 is deployed only after the seal of M1 (check-seal must pass)")
     run = vd.Run(
         chain, operator,
         protected={identity["config_seed"]},
@@ -697,8 +699,6 @@ def command_deploy(args, *, chain: Optional[vd.DeployChain] = None, post: Callab
     mode = "dry run" if not sending else args.action if args.action != "run" else "send"
     log(f"Module-6 deploy on {chain.preset.name} ({mode})")
     describe_plan(plan, seed_virtual=seed_virtual, log=log)
-    if not identity["sealed"]:
-        log("  Note: the identity deployment has no seal yet. " + DEPLOYMENT_ORDER)
     if sending:
         write_plan(state, plan)
         update_state(state)  # the seed is in the state before the first on-chain step
@@ -706,7 +706,8 @@ def command_deploy(args, *, chain: Optional[vd.DeployChain] = None, post: Callab
     vd.execute(
         args, run, module6_steps(plan, state), state,
         tx_dir=state_dir / "tx",
-        header=plan_report(plan, network=chain.preset.name, mode=mode, seed_virtual=seed_virtual),
+        header=plan_report(plan, network=chain.preset.name, mode=mode, seed_virtual=seed_virtual)
+        | {"seal_check": {"ok": seal_ok, "note": seal_note}},
         after=lambda: update_state(state),
         post=post, sleep=sleep,
     )
@@ -724,6 +725,8 @@ def build_parser() -> argparse.ArgumentParser:
     vd.add_run_arguments(parser)
     parser.add_argument("--deployment", type=Path,
                         help="the identity deployment.json (format vector-identity-deployment/1)")
+    parser.add_argument("--module1-manifest", type=Path,
+                        help="the Module-1 manifest.json; a send needs it (the seal must name its M1)")
     parser.add_argument("--state-dir", type=Path, help="default: deploy/identity/state/<network>")
     return parser
 
@@ -740,102 +743,6 @@ def main(argv: Optional[Iterable[str]] = None, *, chain: Optional[vd.DeployChain
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
     return 0
-
-
-# ── Helpers of the scripts of the previous deployment ────────────────────────
-#
-# redeploy_proposal.py and move_crossrefs.py operate the previous deployment
-# (wallets/deploy_state.json) with the wallet of the Python SDK. They import
-# apply_governance_config, script_hash_to_address and
-# compute_native_script_policy (above) and the two functions below. The
-# deployment of this file does not use the two functions below.
-
-EXPLORER_URL = os.getenv("VECTOR_EXPLORER_URL", "https://vector.testnet.apexscan.org")
-
-
-def sign_tx(builder, agent):
-    """Build and sign a transaction with the wallet of an SDK agent (normal or
-    extended signing key). pycardano's build_and_sign gives an empty
-    verification key for an extended key, so the function adds the witness
-    itself."""
-    from pycardano import Transaction, VerificationKeyWitness
-    from pycardano.key import PaymentExtendedSigningKey
-
-    sk = agent._wallet.payment_signing_key
-    change_addr = agent._wallet.payment_address
-
-    if not isinstance(sk, PaymentExtendedSigningKey):
-        return builder.build_and_sign(signing_keys=[sk], change_address=change_addr)
-
-    tx_body = builder.build(change_address=change_addr)
-    vk = agent._wallet.payment_verification_key
-    signature = sk.sign(tx_body.hash())
-    witness_set = builder.build_witness_set()
-    witness_set.vkey_witnesses = [VerificationKeyWitness(vk, signature)]
-    return Transaction(tx_body, witness_set)
-
-
-async def deploy_reference_script(agent, script_cbor_hex: str, label: str) -> str:
-    """Send a validator as reference script to the address of its own hash
-    (the layout of the previous deployment)."""
-    from pycardano import Address as PycAddress, Network, TransactionBuilder, TransactionOutput
-    from pycardano.plutus import script_hash as compute_script_hash
-
-    script = PlutusV3Script(bytes.fromhex(script_cbor_hex))
-    script_size = len(script_cbor_hex) // 2
-    unspendable_addr = PycAddress(payment_part=compute_script_hash(script), network=Network.MAINNET)
-    min_lovelace = 2_000_000 + script_size * 4400
-    min_lovelace = ((min_lovelace + 999_999) // 1_000_000 + 2) * 1_000_000
-
-    builder = TransactionBuilder(agent.context)
-    builder.add_input_address(agent._wallet.payment_address)
-    builder.add_output(TransactionOutput(unspendable_addr, min_lovelace, script=script))
-    builder.fee_buffer = max(300_000, script_size * 50)
-
-    tx = sign_tx(builder, agent)
-    tx_cbor = tx.to_cbor()
-    tx_cbor_hex = tx_cbor.hex() if isinstance(tx_cbor, bytes) else tx_cbor
-    tx_hash = str(tx.id)
-    await agent.context.async_submit_tx_cbor(tx_cbor_hex)
-    print(f"  [{label}] Ref script deployed: {tx_hash}")
-    print(f"    Explorer: {EXPLORER_URL}/tx/{tx_hash}")
-    return tx_hash
-
-
-async def mint_refs_nft(agent, native_script_cbor: bytes, refs_datum_data, label: str,
-                        target_address: str = None) -> str:
-    """Mint the "governance_refs" token and create the CrossRefs output with
-    an inline datum at `target_address` (else at the wallet address)."""
-    from pycardano import (
-        Address as PycAddress, Asset, AssetName, MultiAsset, NativeScript, TransactionBuilder,
-        TransactionOutput, Value,
-    )
-    from pycardano.plutus import RawPlutusData
-
-    native_script = NativeScript.from_primitive(cbor2.loads(native_script_cbor))
-    policy_id = native_script.hash()
-    asset_name = AssetName(REFS_TOKEN_NAME)
-
-    builder = TransactionBuilder(agent.context)
-    builder.add_input_address(agent._wallet.payment_address)
-    builder.fee_buffer = 200_000
-    builder.native_scripts = [native_script]
-    builder.mint = MultiAsset({policy_id: Asset({asset_name: 1})})
-    output_addr = PycAddress.from_primitive(target_address) if target_address else agent._wallet.payment_address
-    builder.add_output(TransactionOutput(
-        output_addr,
-        Value(3_000_000, MultiAsset({policy_id: Asset({asset_name: 1})})),
-        datum=RawPlutusData(refs_datum_data),
-    ))
-
-    tx = sign_tx(builder, agent)
-    tx_cbor = tx.to_cbor()
-    tx_cbor_hex = tx_cbor.hex() if isinstance(tx_cbor, bytes) else tx_cbor
-    tx_hash = str(tx.id)
-    await agent.context.async_submit_tx_cbor(tx_cbor_hex)
-    print(f"  [{label}] Refs NFT minted: {tx_hash}")
-    print(f"    Explorer: {EXPLORER_URL}/tx/{tx_hash}")
-    return tx_hash
 
 
 if __name__ == "__main__":

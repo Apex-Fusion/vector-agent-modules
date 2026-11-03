@@ -14,12 +14,16 @@ Usage:
 
     # Force replenishment even if above threshold:
     nix-shell shell.nix --run "python scripts/treasury_replenish.py --force --target 10"
+
+    --state: the deploy state (default:
+    deploy/identity/state/<network>/deploy_state.json of scripts/deploy.py;
+    --network, default mainnet). The state of the previous deployment is used
+    only with --state wallets/deploy_state.json.
 """
 
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
@@ -27,7 +31,14 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
+from deploy_common import (  # noqa: E402
+    add_state_arguments,
+    default_state_path,
+    read_state,
+    state_endpoints,
+    state_path,
+)
+
 WALLET_FILE = Path("wallets/governance_wallet.json")
 
 # Spec §7.1, §9.4
@@ -44,8 +55,10 @@ def script_hash_to_address(script_hash_hex: str) -> str:
     return str(Address(payment_part=sh, network=Network.MAINNET))
 
 
-async def check_and_replenish(status_only: bool, force: bool, target_batches: int):
-    state = json.load(open(DEPLOY_STATE_FILE))
+async def check_and_replenish(status_only: bool, force: bool, target_batches: int,
+                              path: Path = None, network: str = "mainnet"):
+    path = Path(path) if path is not None else default_state_path(network)
+    state = read_state(path, network)
     skey_path = str(Path("wallets/payment.skey").absolute())
 
     holders = state.get("holders", {})
@@ -60,8 +73,9 @@ async def check_and_replenish(status_only: bool, force: bool, target_batches: in
     from pycardano import Address as PycAddr
     from pycardano.plutus import RawPlutusData
 
-    ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
-    submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
+    endpoints = state_endpoints(state, network)
+    ogmios_url = endpoints["ogmios_url"]
+    submit_url = endpoints["submit_url"]
 
     async with VectorAgent(
         ogmios_url=ogmios_url,
@@ -188,19 +202,23 @@ async def check_and_replenish(status_only: bool, force: bool, target_batches: in
 
         # Save updated state
         state["tx_hashes"] = tx_hashes
-        with open(DEPLOY_STATE_FILE, "w") as f:
+        with open(path, "w") as f:
             json.dump(state, f, indent=2)
 
         final_balance = await agent.get_balance()
         print(f"\nReplenished {batches_needed} batch(es). Final balance: {final_balance.ada} AP3X")
 
 
-if __name__ == "__main__":
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Monitor and replenish governance treasury batches")
     parser.add_argument("--status", action="store_true", help="Check status only, no replenishment")
     parser.add_argument("--force", action="store_true", help="Force replenishment even if above threshold")
     parser.add_argument("--target", type=int, default=MIN_TREASURY_BATCHES,
                         help=f"Target number of active batches (default {MIN_TREASURY_BATCHES})")
-    args = parser.parse_args()
+    add_state_arguments(parser)
+    return parser.parse_args(argv)
 
-    asyncio.run(check_and_replenish(args.status, args.force, args.target))
+
+if __name__ == "__main__":
+    args = parse_args()
+    asyncio.run(check_and_replenish(args.status, args.force, args.target, state_path(args), args.network))

@@ -1,4 +1,4 @@
-"""Offline tests of two deployment scripts.
+"""Offline tests of the deployment scripts.
 
 - scripts/test_expire.py takes the node of the proposer from the activity
   list (the expiry spends that node), not the first activity node at the
@@ -6,6 +6,14 @@
 - scripts/redeploy_proposal.py refuses a deployment with the head of the
   activity list: by the deploy state before step 1, and by the outputs at the
   proposal_spend address before the first transaction.
+- The scripts that read a deploy state (smoke_test.py, test_expire.py,
+  test_expire_e2e.py, update_params.py, treasury_replenish.py) read the state
+  of scripts/deploy.py on --network by default, and another state only from
+  --state. The state of scripts/deploy.py has no endpoints: the network
+  presets give them.
+- The scripts of the previous deployment (redeploy_proposal.py,
+  move_crossrefs.py, recreate_infra.py) say so, and they import their helpers
+  from old_deploy_helpers.py; deploy.py has no copies of them.
 """
 
 from __future__ import annotations
@@ -14,12 +22,23 @@ import asyncio
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
+import deploy
+import deploy_common as dc
 import governance_identity as gi
+import move_crossrefs
+import old_deploy_helpers
+import recreate_infra
 import redeploy_proposal
+import smoke_test
 import test_expire
+import test_expire_e2e
+import treasury_replenish
+import update_params
+import vector_deploy as vd
 from conftest import CRITIC, ENDORSER, PROPOSER, deploy_state, make_world, tx_in
 
 # ── scripts/test_expire.py ───────────────────────────────────────────────────
@@ -161,3 +180,90 @@ def test_redeploy_without_a_head_reaches_the_first_transaction(redeploy):
     world.chain.store[address] = []  # no head
     with pytest.raises(AssertionError, match="submitted a transaction"):
         redeploy(deploy_state(), world.chain)
+
+
+# ── The deploy state of the scripts (--state, --network) ─────────────────────
+
+
+PARSERS = {
+    "smoke_test.py": smoke_test.parse_args,
+    "test_expire.py": lambda argv: test_expire.parse_args(["--latest", *argv]),
+    "test_expire_e2e.py": test_expire_e2e.parse_args,
+    "update_params.py": lambda argv: update_params.parse_args(argv)[0],
+    "treasury_replenish.py": treasury_replenish.parse_args,
+}
+
+
+@pytest.mark.parametrize("script", sorted(PARSERS))
+def test_the_scripts_read_the_state_of_deploy_py_by_default(script):
+    parse = PARSERS[script]
+    args = parse([])
+    assert args.network == "mainnet"
+    assert dc.state_path(args) == dc.MODULE_DIR / "deploy" / "identity" / "state" / "mainnet" / "deploy_state.json"
+    assert dc.state_path(parse(["--network", "testnet"])) == dc.STATE_ROOT / "testnet" / "deploy_state.json"
+    # The state of the previous deployment only on --state.
+    assert dc.state_path(parse(["--state", "wallets/deploy_state.json"])) == Path("wallets/deploy_state.json")
+
+
+def test_the_other_options_of_the_scripts_stay():
+    args, overrides = update_params.parse_args(["--network", "testnet", "--proposal_cooldown=1000",
+                                                "--max_amendments=7", "ignored"])
+    assert args.network == "testnet" and overrides == {"proposal_cooldown": 1000, "max_amendments": 7}
+    args = test_expire.parse_args(["ab" * 32, "2", "--state", "s.json"])
+    assert (args.tx_hash, args.output_index, args.latest, args.state) == ("ab" * 32, 2, False, Path("s.json"))
+    args = smoke_test.parse_args(["--agent", "a1" * 32, "--finalise", "adopt", "--network", "testnet"])
+    assert (args.agent, args.finalise, args.network) == ("a1" * 32, "adopt", "testnet")
+    args = treasury_replenish.parse_args(["--force", "--target", "10"])
+    assert (args.force, args.target, args.state) == (True, 10, None)
+
+
+def test_a_state_of_deploy_py_on_another_network_is_refused(tmp_path):
+    path = tmp_path / "deploy_state.json"
+    path.write_text(json.dumps(dict(deploy_state(), format=dc.STATE_FORMAT, module="module6", network="testnet")))
+    with pytest.raises(dc.DeployInputError, match="give --network testnet"):
+        dc.read_state(path, "mainnet")
+    assert dc.read_state(path, "testnet")["network"] == "testnet"
+    with pytest.raises(FileNotFoundError, match="scripts/deploy.py"):
+        dc.read_state(tmp_path / "missing.json", "mainnet")
+
+
+def test_the_state_of_deploy_py_takes_the_endpoints_of_the_network(monkeypatch):
+    """The state of scripts/deploy.py has no endpoints: the environment and
+    the network presets give them. The state of the previous deployment keeps
+    its own endpoints."""
+    for name in ("VECTOR_OGMIOS_URL", "VECTOR_SUBMIT_URL", "VECTOR_EXPLORER_URL"):
+        monkeypatch.delenv(name, raising=False)
+    new = {"format": dc.STATE_FORMAT, "module": "module6", "network": "testnet"}
+    assert dc.state_endpoints(new, "testnet") == {
+        "ogmios_url": vd.NETWORKS["testnet"].ogmios_url,
+        "submit_url": vd.NETWORKS["testnet"].submit_url,
+        "explorer_url": "https://vector.testnet.apexscan.org",
+    }
+    assert dc.state_endpoints(new, "mainnet")["explorer_url"] == "https://vector.apexscan.org"
+    old = {"ogmios_url": "https://ogmios.old", "submit_url": "https://submit.old", "explorer_url": "https://explorer.old"}
+    assert dc.state_endpoints(old, "mainnet") == old
+    monkeypatch.setenv("VECTOR_OGMIOS_URL", "https://ogmios.example")
+    assert dc.state_endpoints(new, "testnet")["ogmios_url"] == "https://ogmios.example"
+
+
+# ── The scripts of the previous deployment ───────────────────────────────────
+
+
+def test_the_scripts_of_the_previous_deployment_use_old_deploy_helpers():
+    for module in (redeploy_proposal, move_crossrefs, recreate_infra):
+        assert "For the previous deployment only (wallets/deploy_state.json)" in module.__doc__
+        assert module.DEPLOY_STATE_FILE.parts[-2:] == ("wallets", "deploy_state.json")
+    for name in ("apply_governance_config", "script_hash_to_address", "deploy_reference_script",
+                 "compute_native_script_policy", "mint_refs_nft"):
+        assert getattr(redeploy_proposal, name) is getattr(old_deploy_helpers, name)
+    assert move_crossrefs.compute_native_script_policy is old_deploy_helpers.compute_native_script_policy
+    # One copy of each helper: deploy.py uses the shared ones of deploy_common
+    # and has none of the wallet helpers.
+    assert old_deploy_helpers.apply_governance_config is dc.apply_governance_config is deploy.apply_governance_config
+    assert old_deploy_helpers.script_hash_to_address is dc.script_hash_to_address is deploy.script_hash_to_address
+    for name in ("deploy_reference_script", "mint_refs_nft", "compute_native_script_policy", "sign_tx"):
+        assert not hasattr(deploy, name)
+    operator = bytes.fromhex("0c" * 28)
+    policy, native = old_deploy_helpers.compute_native_script_policy(operator.hex())
+    assert policy == vd.native_policy_id(vd.operator_native_script(operator)).hex()
+    assert dc.script_hash_to_address("4a" * 28) == str(vd.script_address(bytes.fromhex("4a" * 28)))

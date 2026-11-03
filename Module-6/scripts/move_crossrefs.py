@@ -1,6 +1,10 @@
 """
 Mint a fresh CrossRefs NFT at the oracle holder script address.
 
+For the previous deployment only (wallets/deploy_state.json). The deployment
+on the identity registry creates its CrossRefs output in the cross-refs step
+of scripts/deploy.py.
+
 The CrossRefs NFT must NOT be at the same address as GovernanceParams
 (they share a ScriptCredential and read_governance_params would find
 the wrong datum). The oracle holder address is a different script hash.
@@ -31,7 +35,7 @@ EXPLORER_URL = os.getenv("VECTOR_EXPLORER_URL", "https://vector.testnet.apexscan
 
 sys.path.insert(0, str(GAME6_ROOT))
 
-from deploy import compute_native_script_policy
+from old_deploy_helpers import compute_native_script_policy
 from deploy_common import build_cross_refs_data
 
 

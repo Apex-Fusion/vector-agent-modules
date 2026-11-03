@@ -359,6 +359,12 @@ def deploy(argv=None) -> int:
         preset = vd.network_from_args(args)
         chain = vd.DeployChain(vd.Ogmios(preset.ogmios_url), preset)
         chain.check_network()
+        # Sends wait until the seal names M1 of the Module-1 manifest (the
+        # check of Module-1/scripts/identity_deploy.py); a dry run works before.
+        seal_ok, seal_note = identity.seal_status(vd, chain, deployment, manifest["hashes"]["identity_party"])
+        print(f"Seal check: {seal_note}")
+        if sending and not seal_ok:
+            raise vd.DeployError("Module-3 is deployed only after the seal of M1 (check-seal must pass)")
         run = vd.Run(
             chain, operator,
             protected={deployment["config_seed"]},

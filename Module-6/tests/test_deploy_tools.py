@@ -25,9 +25,10 @@ import cbor2
 import pytest
 import requests
 from pycardano import (
-    ExecutionUnits, PaymentSigningKey, PaymentVerificationKey, Transaction, TransactionId, TransactionInput,
-    TransactionOutput, UTxO, Value,
+    ExecutionUnits, MultiAsset, PaymentSigningKey, PaymentVerificationKey, Transaction, TransactionId,
+    TransactionInput, TransactionOutput, UTxO, Value,
 )
+from pycardano.serialization import RawCBOR
 
 import deploy
 import deploy_common as dc
@@ -58,6 +59,13 @@ SEED_REF = vd.ref_key(SEED)
 #: The virtual output of --dry-run-funds (vector_deploy.Run).
 VIRTUAL_SEED = hashlib.blake2b(b"vector-deploy dry-run funds", digest_size=32).hexdigest() + "#0"
 
+#: The seal: the configuration record at config_holder holds a token of
+#: config_policy and names M1 (identity_party of the Module-1 manifest).
+CONFIG_POLICY = bytes.fromhex("cf" * 28)
+CONFIG_HOLDER = bytes.fromhex("c4" * 28)
+M1 = bytes.fromhex("e1" * 28)
+CONFIG_RECORD = TransactionInput(TransactionId(b"\x5c" * 32), 0)
+
 PUBLISH_STEPS = [name for name in deploy.STEP_NAMES if name.startswith("publish-")]
 TREASURY_STEPS = [f"treasury-{i}" for i in range(1, deploy.TREASURY_BATCHES + 1)]
 
@@ -69,30 +77,51 @@ def funding() -> list[UTxO]:
     ]
 
 
-def identity_deployment() -> dict:
+def config_record(names: bytes = M1) -> UTxO:
+    """The configuration record of the seal on chain: its inline datum is the
+    Plutus byte string of `names`."""
+    value = Value(2_000_000, MultiAsset.from_primitive({CONFIG_POLICY: {b"identity-config": 1}}))
+    return UTxO(CONFIG_RECORD, TransactionOutput(vd.script_address(CONFIG_HOLDER), value,
+                                                 datum=RawCBOR(cbor2.dumps(bytes(names)))))
+
+
+def identity_deployment(sealed: bool = True, module1_hash: bytes = M1) -> dict:
+    seal = {"tx": "5c" * 32, "module1_hash": module1_hash.hex(), "config_record": vd.ref_key(CONFIG_RECORD)}
     return {
         "format": "vector-identity-deployment/1",
         "network": "mainnet",
         "identity_hash": IDENTITY_HASH.hex(),
-        "config_policy": "cf" * 28,
-        "config_holder": "c4" * 28,
+        "config_policy": CONFIG_POLICY.hex(),
+        "config_holder": CONFIG_HOLDER.hex(),
         "reference_address": REFERENCE_ADDRESS,
         "operator_address": str(OPERATOR_ADDR),
         "seal_seed_address": SEAL_SEED_ADDRESS,
         "config_seed": CONFIG_SEED,
         "refs": {"identity": "cd" * 32 + "#0"},
-        "seal": None,
+        "seal": seal if sealed else None,
     }
+
+
+def module1_manifest(**changes) -> dict:
+    """The values of a Module-1 manifest that the seal check reads."""
+    manifest = {"format": vd.STATE_FORMAT, "module": "module1", "network": "mainnet",
+                "identity": {"identity_hash": IDENTITY_HASH.hex()}, "hashes": {"identity_party": M1.hex()}}
+    manifest.update(changes)
+    return manifest
 
 
 def chain_of(ogmios: FakeOgmios) -> vd.DeployChain:
     return vd.DeployChain(ogmios, vd.NETWORKS["mainnet"], koios=FakeKoios())
 
 
-def ogmios_with(*utxos: UTxO, store: dict | None = None) -> FakeOgmios:
+def ogmios_with(*utxos: UTxO, store: dict | None = None, seal: bytes | None = M1) -> FakeOgmios:
+    """A fake chain with `utxos`. A new chain has the configuration record of
+    a seal that names `seal` (None: no seal on chain)."""
     ogmios = FakeOgmios()
     if store:
         ogmios.store = dict(store)
+    elif seal is not None:
+        ogmios.add(config_record(seal))
     ogmios.add(*utxos)
     return ogmios
 
@@ -103,10 +132,14 @@ def no_sleep(_seconds: float) -> None:
 
 @pytest.fixture(scope="module")
 def files(tmp_path_factory) -> dict:
-    """The identity deployment file and the operator key files."""
+    """The identity deployment files (sealed, and without a seal), the
+    Module-1 manifest and the operator key files."""
     tmp = tmp_path_factory.mktemp("inputs")
-    paths = {"deployment": tmp / "deployment.json", "skey": tmp / "operator.skey", "vkey": tmp / "operator.vkey"}
+    paths = {"deployment": tmp / "deployment.json", "unsealed": tmp / "unsealed.json",
+             "manifest": tmp / "module1-manifest.json", "skey": tmp / "operator.skey", "vkey": tmp / "operator.vkey"}
     paths["deployment"].write_text(json.dumps(identity_deployment()))
+    paths["unsealed"].write_text(json.dumps(identity_deployment(sealed=False)))
+    paths["manifest"].write_text(json.dumps(module1_manifest()))
     paths["skey"].write_text(json.dumps({"type": "PaymentSigningKeyShelley_ed25519", "description": "",
                                          "cborHex": "5820" + bytes(OPERATOR_SKEY.payload).hex()}))
     paths["vkey"].write_text(json.dumps({"type": "PaymentVerificationKeyShelley_ed25519", "description": "",
@@ -118,10 +151,10 @@ def files(tmp_path_factory) -> dict:
 def plan(files) -> dict:
     """The plan of deploy.py for the seed SEED. The tool applies the
     parameters in a temporary directory: contracts/ gets no file."""
-    before = sorted(p.name for p in deploy.CONTRACT_DIR.iterdir())
+    before = sorted(p.name for p in dc.CONTRACT_DIR.iterdir())
     identity = dc.load_identity_deployment(files["deployment"], "mainnet")
     result = deploy.module6_plan(identity, OPERATOR, SEED_REF)
-    assert sorted(p.name for p in deploy.CONTRACT_DIR.iterdir()) == before
+    assert sorted(p.name for p in dc.CONTRACT_DIR.iterdir()) == before
     return result
 
 
@@ -180,7 +213,8 @@ def deployed(files, tmp_path_factory) -> dict:
     ogmios = ogmios_with(*funding())
     submit = FakeSubmit(ogmios)
     rc = deploy.main(["run", "--submit", "--deployment", files["deployment"], "--skey", files["skey"],
-                      "--state-dir", str(tmp)], chain=chain_of(ogmios), post=submit, sleep=no_sleep)
+                      "--module1-manifest", files["manifest"], "--state-dir", str(tmp)],
+                     chain=chain_of(ogmios), post=submit, sleep=no_sleep)
     assert rc == 0
     return {"store": dict(ogmios.store), "state": tmp / deploy.STATE_FILE, "sent": list(submit.sent)}
 
@@ -391,9 +425,10 @@ def test_the_clients_load_the_deploy_state(deployed):
         assert ref.endswith("#0") and ref in on_chain
         assert vd.script_hash_of(on_chain[ref].output.script) == script.hash
     assert all(value is not None for client in data["client_settings"].values() for value in client.values())
-    mcp = data["client_settings"]["mcp-server"]
-    assert mcp["GOV_PARAMS_UTXO"] == f"{records}#0" and mcp["GOV_ORACLE_UTXO"] == f"{records}#1"
-    assert mcp["GOV_CROSSREFS_UTXO"] == f"{steps['cross-refs']['tx']}#0"
+    mcp, sdk = data["client_settings"]["mcp-server"], data["client_settings"]["agent-sdk-py"]
+    assert not any(name.endswith("_UTXO") for name in mcp)
+    assert sdk["VECTOR_MODULE6_PARAMS_UTXO"] == f"{records}#0" and sdk["VECTOR_MODULE6_ORACLE_UTXO"] == f"{records}#1"
+    assert sdk["VECTOR_MODULE6_CROSSREFS_UTXO"] == f"{steps['cross-refs']['tx']}#0"
     assert mcp["GOV_TREASURY_ADDRESS"] == data["holders"]["treasury"]["address"]
     assert data["client_settings"]["agent-sdk-py"]["VECTOR_MODULE6_PROPOSAL_SPEND_REF_UTXO"] == \
         f"{steps['publish-proposal_spend']['tx']}#0"
@@ -452,12 +487,13 @@ def test_the_seed_is_saved_before_the_first_step_and_a_resumed_run_reuses_it(fil
             return super().__call__(url, data=data, headers=headers, timeout=timeout, **kw)
 
     argv = ["run", "--submit", "--deployment", files["deployment"], "--skey", files["skey"],
-            "--state-dir", str(tmp_path)]
+            "--module1-manifest", files["manifest"], "--state-dir", str(tmp_path)]
     assert deploy.main(argv, chain=chain_of(ogmios), post=FailingSubmit(ogmios), sleep=no_sleep) == 1
     state = json.loads((tmp_path / deploy.STATE_FILE).read_text())
     assert state["record_token_seed"] == SEED_REF
     assert list(state["steps"]) == ["records", "publish-holder-params"]
-    assert state["client_settings"]["mcp-server"]["GOV_PARAMS_UTXO"] == f"{state['steps']['records']['tx']}#0"
+    assert state["client_settings"]["agent-sdk-py"]["VECTOR_MODULE6_PARAMS_UTXO"] == \
+        f"{state['steps']['records']['tx']}#0"
     assert state["client_settings"]["mcp-server"]["GOV_PROPOSAL_SPEND_REF"] is None
 
     # A larger operator output than the change: a new seed choice would take it.
@@ -537,19 +573,23 @@ def test_the_config_seed_and_the_seal_seed_address_are_protected(plan, files, tm
 def test_build_sign_submit(files, tmp_path):
     """The offline flow: build writes the unsigned transactions and saves the
     seed, sign adds the operator witness without a network, submit sends them
-    in order."""
+    in order. The submit action checks the seal again: a seal that names
+    another hash stops it before the first transaction."""
     ogmios = ogmios_with(*funding())
     common = ["--state-dir", str(tmp_path)]
-    assert deploy.main(["build", "--deployment", files["deployment"], "--vkey", files["vkey"], *common],
-                       chain=chain_of(ogmios)) == 0
+    send = ["--deployment", files["deployment"], "--vkey", files["vkey"], "--module1-manifest", files["manifest"]]
+    assert deploy.main(["build", *send, *common], chain=chain_of(ogmios)) == 0
     state = json.loads((tmp_path / deploy.STATE_FILE).read_text())
     assert state["record_token_seed"] == SEED_REF and list(state["pending"]) == list(deploy.STEP_NAMES)
     files_written = sorted(p.name for p in (tmp_path / "tx").glob("*.unsigned.json"))
     assert files_written == [f"{i:02d}-{name}.unsigned.json" for i, name in enumerate(deploy.STEP_NAMES, 1)]
     assert deploy.main(["sign", "--skey", files["skey"], *common]) == 0
     submit = FakeSubmit(ogmios)
-    assert deploy.main(["submit", "--deployment", files["deployment"], "--vkey", files["vkey"], *common],
-                       chain=chain_of(ogmios), post=submit, sleep=no_sleep) == 0
+    ogmios.add(config_record(b"\xe2" * 28))
+    assert deploy.main(["submit", *send, *common], chain=chain_of(ogmios), post=submit, sleep=no_sleep) == 1
+    assert submit.sent == []
+    ogmios.add(config_record(M1))
+    assert deploy.main(["submit", *send, *common], chain=chain_of(ogmios), post=submit, sleep=no_sleep) == 0
     assert len(submit.sent) == len(deploy.STEP_NAMES)
     assert all(OPERATOR in vd.vkey_witness_hashes(tx) for tx in submit.sent)
     state = json.loads((tmp_path / deploy.STATE_FILE).read_text())
@@ -566,6 +606,87 @@ def test_another_operator_key_is_refused(files, tmp_path, capsys):
                      chain=chain_of(ogmios_with(*funding())))
     assert rc == 1
     assert "is not the key of the operator address" in capsys.readouterr().err
+
+
+# ── Sends wait for the seal of M1 ────────────────────────────────────────────
+
+
+def send_argv(action: str, files: dict, state_dir: Path, *, deployment: str | None = None,
+              manifest: str | None = None) -> list[str]:
+    """The arguments of a send: run --submit (with --skey) or build (with --vkey)."""
+    argv = ["run", "--submit", "--skey", files["skey"]] if action == "run" else [action, "--vkey", files["vkey"]]
+    argv += ["--deployment", deployment or files["deployment"], "--state-dir", str(state_dir)]
+    return argv + (["--module1-manifest", manifest] if manifest else [])
+
+
+@pytest.mark.parametrize("action", ["run", "build"])
+def test_a_send_needs_the_module1_manifest(files, tmp_path, capsys, action):
+    submit = FakeSubmit(ogmios := ogmios_with(*funding()))
+    assert deploy.main(send_argv(action, files, tmp_path), chain=chain_of(ogmios), post=submit, sleep=no_sleep) == 1
+    assert "needs --module1-manifest" in capsys.readouterr().err
+    assert submit.sent == [] and not (tmp_path / deploy.STATE_FILE).exists()
+
+
+@pytest.mark.parametrize("action", ["run", "build"])
+@pytest.mark.parametrize("case, note", [
+    ("no seal yet", "has no seal yet (seal.config_record)"),
+    ("no record on chain", "is not on chain"),
+    ("another hash on chain", "the seal on chain names ANOTHER hash"),
+    ("another hash in deployment.json", "deployment.json seal.module1_hash names ANOTHER hash"),
+])
+def test_a_send_waits_for_the_seal_of_m1(files, tmp_path, capsys, action, case, note):
+    """Module-1 seal_status must find the configuration record on chain and
+    it must name M1 of the Module-1 manifest. Else a send stops before it
+    writes the state."""
+    other = b"\xe2" * 28
+    deployment, seal = files["deployment"], M1
+    if case == "no seal yet":
+        deployment = files["unsealed"]
+    elif case == "no record on chain":
+        seal = None
+    elif case == "another hash on chain":
+        seal = other
+    else:
+        deployment = str(tmp_path / "deployment.json")
+        Path(deployment).write_text(json.dumps(identity_deployment(module1_hash=other)))
+    ogmios = ogmios_with(*funding(), seal=seal)
+    submit = FakeSubmit(ogmios)
+    argv = send_argv(action, files, tmp_path / "state", deployment=deployment, manifest=files["manifest"])
+    assert deploy.main(argv, chain=chain_of(ogmios), post=submit, sleep=no_sleep) == 1
+    out = capsys.readouterr()
+    assert f"Seal check: " in out.out and note in out.out
+    assert "only after the seal of M1" in out.err
+    assert submit.sent == [] and not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("change, error", [
+    ({"identity": {"identity_hash": "2e" * 28}}, "names another identity_hash"),
+    ({"network": "testnet"}, "network 'testnet'"),
+    ({"module": "module3"}, "not a manifest of Module-1"),
+])
+def test_the_module1_manifest_must_match_the_identity_deployment(files, tmp_path, capsys, change, error):
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps(module1_manifest(**change)))
+    argv = send_argv("build", files, tmp_path / "state", manifest=str(manifest))
+    assert deploy.main(argv, chain=chain_of(ogmios_with(*funding()))) == 1
+    assert error in capsys.readouterr().err
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("with_manifest", [True, False])
+def test_a_dry_run_works_before_the_seal(files, tmp_path, capsys, with_manifest):
+    """The identity deployment has no seal yet. The dry run builds every
+    step, prints the seal status and writes it into the report."""
+    report = tmp_path / "report.json"
+    argv = ["--deployment", files["unsealed"], "--vkey", files["vkey"], "--state-dir", str(tmp_path / "state"),
+            "--report", str(report)] + (["--module1-manifest", files["manifest"]] if with_manifest else [])
+    assert deploy.main(argv, chain=chain_of(ogmios_with(*funding(), seal=None))) == 0
+    note = "has no seal yet (seal.config_record)" if with_manifest else "not checked (no --module1-manifest"
+    assert f"Seal check: " in (out := capsys.readouterr().out) and note in out
+    data = json.loads(report.read_text())
+    assert data["seal_check"]["ok"] is False and note in data["seal_check"]["note"]
+    assert [t["step"] for t in data["transactions"]] == list(deploy.STEP_NAMES)
+    assert not (tmp_path / "state").exists()
 
 
 # ── The validators read the records of the deploy ────────────────────────────
@@ -685,7 +806,7 @@ def test_deploy_params_dry_run_send_and_no_change(files, deployed, tmp_path, cap
     state = json.loads((state_dir / deploy.STATE_FILE).read_text())
     tx = state["steps"]["params-update-1"]["tx"]
     assert state["tx_hashes"]["params_utxo"] == tx
-    assert state["client_settings"]["mcp-server"]["GOV_PARAMS_UTXO"] == f"{tx}#0"
+    assert "GOV_PARAMS_UTXO" not in state["client_settings"]["mcp-server"]
     assert state["client_settings"]["agent-sdk-py"]["VECTOR_MODULE6_PARAMS_UTXO"] == f"{tx}#0"
     assert state["governance_params"] == values
     record = ogmios.store[f"{tx}#0"]

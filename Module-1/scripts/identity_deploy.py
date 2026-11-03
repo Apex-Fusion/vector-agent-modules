@@ -845,6 +845,21 @@ def chain_seal_datum(vd, chain, deployment: dict[str, Any]) -> str:
     return datum.hex()
 
 
+def seal_status(vd, chain, deployment: dict[str, Any], m1_hash: str) -> tuple[bool, str]:
+    """(True when the configuration record on chain names ``m1_hash``, a
+    note). The module deploy tools send only after the seal names M1; a dry
+    run works before the seal."""
+    try:
+        sealed = chain_seal_datum(vd, chain, deployment)
+        if (deployment.get("seal") or {}).get("module1_hash") not in (None, m1_hash):
+            return False, "deployment.json seal.module1_hash names ANOTHER hash"
+        if seal_matches(sealed, m1_hash):
+            return True, "the seal on chain names M1"
+        return False, "the seal on chain names ANOTHER hash"
+    except (PlanError, ValueError) as error:
+        return False, str(error)
+
+
 def command_check_seal(args: argparse.Namespace) -> int:
     blueprint = args.blueprint or ((args.state_dir or default_state_dir(args.network)) / "plan" / "plutus.json")
     if not blueprint.exists():
@@ -1073,12 +1088,7 @@ def command_deploy(args: argparse.Namespace) -> int:
         preset = vd.network_from_args(args)
         chain = vd.DeployChain(vd.Ogmios(preset.ogmios_url), preset)
         chain.check_network()
-        try:
-            sealed = chain_seal_datum(vd, chain, deployment)
-            seal_ok = seal_matches(sealed, manifest["hashes"]["identity_party"])
-            seal_note = "the seal on chain names M1" if seal_ok else "the seal on chain names ANOTHER hash"
-        except PlanError as error:
-            seal_ok, seal_note = False, str(error)
+        seal_ok, seal_note = seal_status(vd, chain, deployment, manifest["hashes"]["identity_party"])
         print(f"Seal check: {seal_note}")
         if sending and not seal_ok:
             raise PlanError("Module-1 is deployed only after the seal of M1 (check-seal must pass)")

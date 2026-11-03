@@ -135,11 +135,14 @@ python3 Module-3/scripts/deploy_mainnet_ogmios.py --deployment $ID --module1-man
   Module-3 SDK reads it with `reputation_staking.deployment.load_deployment`.
 - ReputationConfig has 12 fields with `identity_hash` last. The treasury
   holder is `holder(33, operator)`.
+- A send (`run --submit`, `build`, `submit`) waits until the seal on chain
+  names M1 of `$M1` (the check of Module-1 `seal_status`). A dry run works
+  before the seal and prints the seal status.
 
 ### Step 9 — Module-6
 
 ```sh
-python3 Module-6/scripts/deploy.py --deployment $ID --vkey $VKEY
+python3 Module-6/scripts/deploy.py --deployment $ID --module1-manifest $M1 --vkey $VKEY
 python3 Module-6/scripts/treasury_fund.py --vkey $VKEY --batches N --size AP3X   # more batches later
 python3 Module-6/scripts/deploy_params.py --vkey $VKEY --params <values.json>       # replace the params record later
 ```
@@ -147,8 +150,15 @@ python3 Module-6/scripts/deploy_params.py --vkey $VKEY --params <values.json>   
 - Holders: params `holder(61, operator)`, oracle `holder(62, operator)`,
   treasury `holder(63, operator)`. GovernanceConfig has 11 fields as a
   definite-length CBOR array, with `identity_hash` last.
+- A send of `deploy.py` needs `--module1-manifest` and waits until the seal
+  names M1, as for Module-3. A dry run works before the seal.
 - State: `Module-6/deploy/identity/state/mainnet/deploy_state.json`. It has a
   `client_settings` object with the values of the external clients.
+- `smoke_test.py`, `test_expire.py`, `test_expire_e2e.py`, `update_params.py`
+  and `treasury_replenish.py` read this state by default (`--state`,
+  `--network`). They read the old `wallets/deploy_state.json` only with an
+  explicit `--state`. `recreate_infra.py`, `redeploy_proposal.py` and
+  `move_crossrefs.py` are for the old deployment only.
 
 ## 4. Client settings
 
@@ -157,7 +167,7 @@ python3 Module-6/scripts/deploy_params.py --vkey $VKEY --params <values.json>   
 | Module-1 simulation and tools | the manifest `$M1` (`DEPLOYMENT_PATH`) | the file |
 | Module-3 SDK, indexer, dashboard | the Module-3 state (`load_deployment`) | the file |
 | Module-6 scripts and dashboard | the Module-6 state (`GovernanceDeployment.from_state`, `MODULE6_DEPLOYMENT_FILE`) | the file |
-| mcp-server | environment `GOV_PROPOSAL_SPEND_HASH`, `GOV_PROPOSAL_MINT_HASH`, `GOV_CRITIQUE_SPEND_HASH`, `GOV_CRITIQUE_MINT_HASH`, `GOV_ENDORSEMENT_SPEND_HASH`, `GOV_TREASURY_ADDRESS`, `GOV_PROPOSAL_SPEND_REF`, `GOV_PROPOSAL_MINT_REF`, `GOV_PARAMS_UTXO`, `GOV_ORACLE_UTXO`, `GOV_CROSSREFS_UTXO` and the new values of its identity branch | `client_settings["mcp-server"]` of the Module-6 state. The built-in defaults are the old deployment: set every value. |
+| mcp-server | the 15 `GOV_*` environment values of its identity branch (the release branch); the `GOV_*_UTXO` values of `main` are not used | `client_settings["mcp-server"]` of the Module-6 state. The built-in defaults are the old deployment: set every value. |
 | agent-sdk-py | `GovernanceDeployment.from_deploy_state` (the Module-6 state) or `VECTOR_MODULE6_*` | `client_settings["agent-sdk-py"]` of the Module-6 state |
 
 No client computes a holder address from a tag: every client reads the holder

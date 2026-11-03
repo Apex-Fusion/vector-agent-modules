@@ -152,3 +152,44 @@ def test_build_sign_submit_writes_a_state_that_the_client_loads(run_env):
     # A new run finds every step on chain and builds nothing.
     built, found = vd.plan_steps(run, run_env["steps"], state)
     assert built == [] and [s.name for s, _ in found] == STEPS
+
+
+def _files(tmp_path, seal=None) -> list:
+    dep = dict(deployment(), seal=seal)
+    (tmp_path / "deployment.json").write_text(json.dumps(dep))
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest()))
+    skey = tmp_path / "op.skey"
+    skey.write_text(json.dumps({"type": "PaymentSigningKeyShelley_ed25519", "description": "",
+                                "cborHex": "5820" + bytes(SKEY.payload).hex()}))
+    return ["--deployment", str(tmp_path / "deployment.json"), "--module1-manifest",
+            str(tmp_path / "manifest.json"), "--state-dir", str(tmp_path / "state"), "--skey", str(skey)]
+
+
+@pytest.fixture
+def fake_ogmios(monkeypatch):
+    _, ogmios, _ = fake_chain()
+    ogmios.add(UTxO(TransactionInput(TransactionId(b"\x0f" * 32), 0),
+                    TransactionOutput(OPERATOR_ADDR, Value(300_000_000))))
+    monkeypatch.setattr(vd, "Ogmios", lambda url, **kw: ogmios)
+    return ogmios
+
+
+def test_a_send_waits_for_the_seal_of_m1(tmp_path, fake_ogmios, capsys):
+    assert m3.deploy(["run", "--submit"] + _files(tmp_path)) == 1
+    assert "only after the seal of M1" in capsys.readouterr().err
+    # A seal of another hash: refused too (the record holds the config token).
+    config_policy, holder = "cf" * 28, vd.script_address(bytes.fromhex("c4" * 28))
+    record = UTxO(TransactionInput(TransactionId(b"\xee" * 32), 0), TransactionOutput(
+        holder, Value(2_000_000, vd.tokens(bytes.fromhex(config_policy), {b"identity-config": 1})),
+        datum=__import__("pycardano").RawCBOR(cbor2.dumps(b"\xe2" * 28))))
+    fake_ogmios.add(record)
+    seal = {"tx": "ee" * 32, "module1_hash": "e1" * 28, "config_record": "ee" * 32 + "#0"}
+    assert m3.deploy(["run", "--submit"] + _files(tmp_path, seal)) == 1
+    assert "ANOTHER hash" in capsys.readouterr().out
+
+
+def test_a_dry_run_works_before_the_seal(tmp_path, fake_ogmios, capsys):
+    assert m3.deploy(["run"] + _files(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "Seal check: " in out and "Dry run: nothing was signed or sent." in out
+    assert not (tmp_path / "state" / "deploy_state.json").exists()

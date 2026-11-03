@@ -14,7 +14,16 @@ Checks:
   - load_identity_deployment reads the identity deployment.json with the
     rules of Module-1: it refuses another network, a zero or legacy
     identity_hash, a reference address that can spend, and the same operator
-    and seal-seed address. check_operator_address refuses another key.
+    and seal-seed address. It keeps the seal values (seal, config_policy,
+    config_holder) for the seal check. check_operator_address refuses
+    another key.
+  - load_module1_manifest refuses a manifest of another module or format,
+    of another network or identity_hash, and a manifest without M1.
+  - default_state_path and read_state: the scripts read
+    deploy/identity/state/<network>/deploy_state.json by default; a state of
+    scripts/deploy.py on another network or of another module is refused;
+    the state of the previous deployment is read only from --state.
+    script_hash_to_address gives the enterprise script address.
   - build_governance_config_cbor gives tag 121 and a definite array of 11
     byte strings (head 0x8b), in the order of the Aiken type
     GovernanceConfig, with identity_hash last and reputation_validator_hash
@@ -37,8 +46,10 @@ Checks:
     next_did = b"". The record token name of the head is `activity`.
   - plutus_data_cbor writes the Plutus encoding (indefinite arrays).
   - state_tx_hashes and client_settings give the tx_hashes keys of the
-    earlier deploy states and the client values; a value of a step stays
-    None until the state records the step.
+    earlier deploy states and the client values: the GOV_* values of the
+    mcp-server branch for the identity registry (no *_UTXO values) and the
+    VECTOR_MODULE6_* values of the Python SDK. A value of a step stays None
+    until the state records the step.
   - redeploy_state_error refuses a redeploy (scripts/redeploy_proposal.py)
     of a deployment with the head of the activity list: in the deploy state
     or in the outputs at the proposal_spend address.
@@ -62,24 +73,30 @@ from deploy_common import (
     GOVERNANCE_PARAMS_FIELDS,
     HOLDER_TAGS,
     LEGACY_REGISTRY_HASH,
+    MODULE_DIR,
     ORACLE_TOKEN_NAME,
     PARAMS_TOKEN_NAME,
     REFS_TOKEN_NAME,
+    STATE_FORMAT,
     VALIDATOR_TITLES,
     DeployInputError,
-    _module1_identity_deploy,
     build_activity_head_data,
     build_cross_refs_data,
     build_governance_config_cbor,
     check_governance_params,
     check_operator_address,
     client_settings,
+    default_state_path,
     governance_params_data,
     governance_params_from_data,
     load_identity_deployment,
+    load_module1_manifest,
+    module1_identity_deploy,
     oracle_datum_data,
     plutus_data_cbor,
+    read_state,
     redeploy_state_error,
+    script_hash_to_address,
     state_tx_hashes,
     treasury_batch_data,
 )
@@ -130,12 +147,12 @@ def aiken_fields(type_name: str) -> list:
 ZERO = "00" * 28
 IDENTITY = dummy(0x1D)
 OWNER = dummy(0x0C)
-M1 = _module1_identity_deploy()
+MODULE1 = module1_identity_deploy()
 
 
 def address(key_hash: bytes) -> str:
     """The enterprise key address (network id 1) of a key hash."""
-    return M1.bech32("addr", b"\x61" + key_hash)
+    return MODULE1.bech32("addr", b"\x61" + key_hash)
 
 
 def identity_deployment(**changes) -> dict:
@@ -161,6 +178,22 @@ def load(data: dict, network: str = "mainnet"):
         path = Path(tmp) / "deployment.json"
         path.write_text(json.dumps(data))
         return load_identity_deployment(path, network)
+
+
+def file_error(fn, data, *args) -> str:
+    """The DeployInputError message of fn(<file with `data`>, *args)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "data.json"
+        path.write_text(json.dumps(data))
+        return input_error(fn, path, *args)
+
+
+def manifest(**changes) -> dict:
+    """A Module-1 manifest with the values of the seal check."""
+    data = {"format": STATE_FORMAT, "module": "module1", "network": "mainnet",
+            "identity": {"identity_hash": IDENTITY}, "hashes": {"identity_party": dummy(0xE1)}}
+    data.update(changes)
+    return data
 
 
 def proposal_output(policy: str, name: bytes):
@@ -200,8 +233,14 @@ def main() -> int:
           and identity["reference_address"] == address(bytes(28))
           and identity["operator_address"] == address(bytes.fromhex(OWNER))
           and identity["seal_seed_address"] == address(b"\x5e" * 28)
-          and identity["network"] == "mainnet" and identity["sealed"] is False)
+          and identity["network"] == "mainnet" and identity["sealed"] is False and identity["seal"] is None)
     check("config_seed in lower case", identity["config_seed"] == "ab" * 32 + "#0")
+    check("the values of the seal check: config_policy, config_holder, file",
+          identity["config_policy"] == dummy(0xCF) and identity["config_holder"] == dummy(0xC4)
+          and identity["file"].endswith("deployment.json"))
+    seal = {"tx": "5c" * 32, "module1_hash": dummy(0xE1), "config_record": "5c" * 32 + "#0"}
+    sealed = load(identity_deployment(seal=seal))
+    check("a sealed identity deployment keeps its seal", sealed["sealed"] is True and sealed["seal"] == seal)
     check("refs.identity is not needed", load(identity_deployment(refs={}))["identity_hash"] == IDENTITY)
     for label, data, network, expected in [
         ("another network", identity_deployment(), "testnet", "network"),
@@ -221,6 +260,48 @@ def main() -> int:
     check("another operator key: refused",
           "is not the key of the operator address" in input_error(check_operator_address, identity,
                                                                   bytes.fromhex(dummy(0x0D))))
+
+    print("\nModule-1 manifest (the seal check of deploy.py)")
+    check("a manifest of the identity deployment: accepted",
+          file_error(load_module1_manifest, manifest(), identity) == "")
+    for label, data, expected in [
+        ("of another module", manifest(module="module3"), "not a manifest of Module-1"),
+        ("of another format", manifest(format="other/1"), "not a manifest of Module-1"),
+        ("of another network", manifest(network="testnet"), "network 'testnet'"),
+        ("with another identity_hash", manifest(identity={"identity_hash": dummy(0x2E)}),
+         "another identity_hash"),
+        ("without M1", manifest(hashes={}), "hashes.identity_party"),
+        ("with a short M1", manifest(hashes={"identity_party": "ab" * 27}), "hashes.identity_party"),
+    ]:
+        check(f"a manifest {label}: refused", expected in file_error(load_module1_manifest, data, identity))
+    check("a missing manifest: refused",
+          "cannot read the Module-1 manifest" in input_error(load_module1_manifest, Path("/no/such/manifest.json"),
+                                                              identity))
+
+    print("\nModule-6 deploy state of the scripts (--state, --network)")
+    check("the default state is deploy/identity/state/<network>/deploy_state.json",
+          default_state_path("mainnet") == MODULE_DIR / "deploy" / "identity" / "state" / "mainnet" / "deploy_state.json"
+          and default_state_path("testnet").parent.name == "testnet")
+    check("an unknown network: refused", "unknown network" in input_error(default_state_path, "preprod"))
+    new_state = {"format": STATE_FORMAT, "module": "module6", "network": "mainnet", "identity_hash": IDENTITY}
+    check("a state of scripts/deploy.py on its network: read",
+          file_error(read_state, new_state, "mainnet") == "")
+    check("a state of scripts/deploy.py on another network: refused",
+          "give --network mainnet" in file_error(read_state, new_state, "testnet"))
+    check("a state of another module: refused",
+          "not of Module-6" in file_error(read_state, dict(new_state, module="module3"), "mainnet"))
+    check("the state of the previous deployment (no format): read on --state",
+          file_error(read_state, {"network": "vector-testnet", "identity_hash": IDENTITY}, "mainnet") == "")
+    try:
+        read_state(Path("/no/such/deploy_state.json"), "mainnet")
+        missing = ""
+    except FileNotFoundError as e:
+        missing = str(e)
+    check("a missing state: refused, with the deploy tool", "scripts/deploy.py" in missing)
+    script = dummy(0x14)
+    check("script_hash_to_address: the enterprise script address (header 0x71, network id 1)",
+          script_hash_to_address(script) == MODULE1.bech32("addr", b"\x71" + bytes.fromhex(script))
+          and script_hash_to_address(script).startswith("addr1w"))
 
     print("\nModule-6 GovernanceConfig")
     raw = bytes.fromhex(build(IDENTITY))
@@ -373,27 +454,33 @@ def main() -> int:
     }
     settings = client_settings(state)
     mcp, sdk = settings["mcp-server"], settings["agent-sdk-py"]
-    check("mcp-server: the listed GOV_* values", {
+    check("mcp-server: exactly the GOV_* values of the identity registry branch", set(mcp) == {
         "GOV_PROPOSAL_SPEND_HASH", "GOV_PROPOSAL_MINT_HASH", "GOV_CRITIQUE_SPEND_HASH", "GOV_CRITIQUE_MINT_HASH",
-        "GOV_ENDORSEMENT_SPEND_HASH", "GOV_TREASURY_ADDRESS", "GOV_PROPOSAL_SPEND_REF", "GOV_PROPOSAL_MINT_REF",
-        "GOV_PARAMS_UTXO", "GOV_ORACLE_UTXO", "GOV_CROSSREFS_UTXO"} <= set(mcp))
+        "GOV_ENDORSEMENT_SPEND_HASH", "GOV_RECORD_TOKEN_POLICY", "GOV_REFS_TOKEN_POLICY", "GOV_PARAMS_ADDRESS",
+        "GOV_CROSSREFS_ADDRESS", "GOV_TREASURY_ADDRESS", "GOV_PROPOSAL_SPEND_REF", "GOV_PROPOSAL_MINT_REF",
+        "GOV_CRITIQUE_SPEND_REF", "GOV_CRITIQUE_MINT_REF", "GOV_ENDORSEMENT_SPEND_REF"})
+    check("mcp-server: no *_UTXO values (the branch finds the records by their tokens)",
+          not any(name.endswith("_UTXO") for name in mcp))
     check("mcp-server: values of the plan and of the recorded steps",
           mcp["GOV_PROPOSAL_SPEND_HASH"] == state["validators"]["proposal.proposal_spend.spend"]["hash"]
-          and mcp["GOV_TREASURY_ADDRESS"] == "addr_treasury"
-          and mcp["GOV_PROPOSAL_SPEND_REF"] == tx["proposal_spend"] + "#0"
-          and mcp["GOV_PARAMS_UTXO"] == tx["records"] + "#0" and mcp["GOV_ORACLE_UTXO"] == tx["records"] + "#1")
+          and mcp["GOV_TREASURY_ADDRESS"] == "addr_treasury" and mcp["GOV_PARAMS_ADDRESS"] == "addr_params"
+          and mcp["GOV_CROSSREFS_ADDRESS"] == "addr_oracle" and mcp["GOV_RECORD_TOKEN_POLICY"] == dummy(0x0A)
+          and mcp["GOV_PROPOSAL_SPEND_REF"] == tx["proposal_spend"] + "#0")
     check("mcp-server: a step that is not recorded gives None",
-          mcp["GOV_PROPOSAL_MINT_REF"] is None and mcp["GOV_CROSSREFS_UTXO"] is None)
+          mcp["GOV_PROPOSAL_MINT_REF"] is None and mcp["GOV_ENDORSEMENT_SPEND_REF"] is None)
     check("agent-sdk-py: VECTOR_MODULE6_* values",
           sdk["VECTOR_MODULE6_IDENTITY_HASH"] == IDENTITY
           and sdk["VECTOR_MODULE6_PARAMS_HOLDER_HASH"] == dummy(0x06)
           and sdk["VECTOR_MODULE6_PROPOSAL_SPEND_REF_UTXO"] == tx["proposal_spend"] + "#0"
+          and sdk["VECTOR_MODULE6_PARAMS_UTXO"] == tx["records"] + "#0"
+          and sdk["VECTOR_MODULE6_ORACLE_UTXO"] == tx["records"] + "#1"
+          and sdk["VECTOR_MODULE6_CROSSREFS_UTXO"] is None
           and all(name.startswith("VECTOR_MODULE6_") for name in sdk))
     steps["params-update-1"] = {"tx": tx["update"], "time": "2026-11-03T11:00:00Z", "params": tx["update"] + "#0",
                                 "governance_params": dict(DEFAULT_GOVERNANCE_PARAMS)}
     check("a newer params-update gives the params record",
           state_tx_hashes(steps)["params_utxo"] == tx["update"]
-          and client_settings(state)["mcp-server"]["GOV_PARAMS_UTXO"] == tx["update"] + "#0")
+          and client_settings(state)["agent-sdk-py"]["VECTOR_MODULE6_PARAMS_UTXO"] == tx["update"] + "#0")
 
     print("\nModule-6 redeploy of a deployment with an activity list")
     saved = {

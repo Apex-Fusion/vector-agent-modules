@@ -1,7 +1,7 @@
 """
 Module 6: End-to-End Smoke Test (identity registry deployment)
 
-Runs the governance lifecycle on Vector testnet. Proposals, amendments,
+Runs the governance lifecycle on Vector (--network). Proposals, amendments,
 critiques and endorsements go through scripts/governance_identity.py: each
 of them reads the identity record of the agent (Part 2 §7, Module-6 row).
 Withdrawals and adoption go through GovernanceClient of the Python SDK
@@ -11,13 +11,15 @@ the oracle record, the node of the proposer in the activity list and the
 reference scripts of the deployment itself.
 
 Usage:
-    VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/smoke_test.py"
+    VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/smoke_test.py --network testnet"
     nix-shell shell.nix --run "python scripts/smoke_test.py --agent <DID> --endorser <DID> --finalise adopt"
 
 Inputs:
-    - wallets/deploy_state.json of a Module-6 deployment with identity_hash
-      (scripts/deploy.py with VECTOR_IDENTITY_HASH). Deployment order:
-      identity registry, Module-1, Module-3, Module-6.
+    - --state: the deploy state of a Module-6 deployment with identity_hash.
+      Default: deploy/identity/state/<network>/deploy_state.json of
+      scripts/deploy.py (--network, default mainnet). The state of the
+      previous deployment is used only with --state wallets/deploy_state.json.
+      Deployment order: identity registry, Module-1, Module-3, Module-6.
     - VECTOR_AGENT_DID or --agent: the agent, as did:vector:<64 hex> or 64
       hex characters. Its identity record must be Active. Its controller key
       or a listed key with the transaction purpose must be the wallet key
@@ -67,21 +69,17 @@ load_dotenv()
 
 import governance_identity as gi
 import vector_identity as vid
+from deploy_common import add_state_arguments, read_state, state_endpoints, state_path
 
-DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
 ENDORSER_DID_ENV = "VECTOR_ENDORSER_DID"
 TX_WAIT = 20  # seconds for an SDK transaction to reach the chain
 
 
-def load_deploy_state() -> dict:
-    """Load deployment state."""
-    if not DEPLOY_STATE_FILE.exists():
-        raise FileNotFoundError(
-            "Deploy state not found. Run: python scripts/deploy.py"
-        )
-    with open(DEPLOY_STATE_FILE) as f:
-        return json.load(f)
+def load_deploy_state(path: Path, network: str) -> dict:
+    """Load the deploy state: --state, else the state of scripts/deploy.py on
+    --network."""
+    return read_state(path, network)
 
 
 def blake2b_256(data: str) -> bytes:
@@ -95,6 +93,7 @@ def parse_args(argv=None):
     parser.add_argument("--endorser", help=f"second agent for the endorsement steps (default: ${ENDORSER_DID_ENV})")
     parser.add_argument("--finalise", choices=("withdraw", "adopt"), default="withdraw",
                         help="how step 8 ends the proposal (default: withdraw)")
+    add_state_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -119,17 +118,20 @@ async def smoke_test(args):
     print("Module 6: Self-Improvement Module — Smoke Test")
     print("=" * 60)
 
-    state = load_deploy_state()
+    path = state_path(args)
+    state = load_deploy_state(path, args.network)
+    endpoints = state_endpoints(state, args.network)
 
     print(f"\nNetwork: {state['network']}")
-    print(f"Wallet: {state['wallet_address']}")
-    print(f"Explorer: {state['explorer_url']}")
+    print(f"State: {path}")
+    print(f"Wallet: {state.get('wallet_address', state.get('operator_address', '-'))}")
+    print(f"Explorer: {endpoints['explorer_url']}")
     print(f"Proposal hash: {state.get('proposal_validator_hash', 'NOT SET')}")
     print(f"Critique hash: {state.get('critique_validator_hash', 'NOT SET')}")
 
     # The deployment must read the identity registry (identity_hash).
     try:
-        deployment = gi.GovernanceDeployment.from_state(state, str(DEPLOY_STATE_FILE))
+        deployment = gi.GovernanceDeployment.from_state(state, str(path))
         agent_id = gi.agent_id_from(args.agent)
         endorser_value = args.endorser or os.environ.get(ENDORSER_DID_ENV, "")
         endorser_id = gi.agent_id_from(endorser_value) if endorser_value else None
@@ -145,7 +147,7 @@ async def smoke_test(args):
     if not tx_hashes:
         print("\n[WARN] No deployment transactions found. Run deploy.py first.")
         print("       Running offline validation instead...")
-        await offline_validation(state)
+        await offline_validation(state, str(path))
         return
 
     print("\n--- Test Plan ---")
@@ -168,7 +170,7 @@ async def smoke_test(args):
         print(f"\n[SKIP] SDK import failed: {e}")
         print('       Install SDK 0.2.0 or later: pip install "apex-fusion-agent-sdk>=0.2.0"')
         print("\n--- Offline Validation ---")
-        await offline_validation(state)
+        await offline_validation(state, str(path))
         return
 
     # GovernanceClient builds the exits. It derives the five scripts from its
@@ -181,9 +183,9 @@ async def smoke_test(args):
         print(f"\n[ERROR] {e}")
         return
 
-    # Connect to Vector testnet
-    ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
-    submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
+    # Connect to the network of the deployment
+    ogmios_url = endpoints["ogmios_url"]
+    submit_url = endpoints["submit_url"]
 
     skey_path = str(Path("wallets/payment.skey").absolute())
 
@@ -219,7 +221,7 @@ async def smoke_test(args):
             passed = 0
             failed = 0
             skipped = 0
-            explorer = state["explorer_url"]
+            explorer = endpoints["explorer_url"]
 
             def tx_link(tx_hash):
                 return f"{explorer}/tx/{tx_hash}"
@@ -396,10 +398,10 @@ async def smoke_test(args):
         print(f"\n[ERROR] {e}")
         traceback.print_exc()
         print("\n--- Falling back to offline validation ---")
-        await offline_validation(state)
+        await offline_validation(state, str(path))
 
 
-async def offline_validation(state: dict):
+async def offline_validation(state: dict, source: str = "the deploy state"):
     """Run offline validation checks when testnet is unavailable."""
     print("\nValidating deployment configuration...")
 
@@ -427,7 +429,7 @@ async def offline_validation(state: dict):
 
     # Check the identity registry deployment
     try:
-        deployment = gi.GovernanceDeployment.from_state(state, str(DEPLOY_STATE_FILE))
+        deployment = gi.GovernanceDeployment.from_state(state, source)
         print(f"  [OK] identity_hash: {deployment.identity_hash.hex()}")
         print(f"       identity address: {deployment.identity_address}")
     except gi.GovernanceClientError as e:

@@ -89,16 +89,18 @@ Deploy the identity registry, Module-1 with its seal and Module-3 first (Part 2 
 ```bash
 # Dry run (the default): build each transaction, evaluate it with Ogmios, send nothing
 python3 scripts/deploy.py --deployment deployment.json --vkey operator.vkey --network testnet \
-    --dry-run-funds 600 --report report.json
+    --module1-manifest manifest.json --dry-run-funds 600 --report report.json
 # Send: sign with the operator key, send the transactions in order
-python3 scripts/deploy.py run --submit --deployment deployment.json --skey operator.skey --network testnet
+python3 scripts/deploy.py run --submit --deployment deployment.json --skey operator.skey \
+    --module1-manifest manifest.json --network testnet
 # Offline signing: build, then sign without a network, then submit
-python3 scripts/deploy.py build --deployment deployment.json --vkey operator.vkey --network testnet
+python3 scripts/deploy.py build --deployment deployment.json --vkey operator.vkey --module1-manifest manifest.json --network testnet
 python3 scripts/deploy.py sign --skey operator.skey --network testnet
-python3 scripts/deploy.py submit --deployment deployment.json --vkey operator.vkey --network testnet
+python3 scripts/deploy.py submit --deployment deployment.json --vkey operator.vkey --module1-manifest manifest.json --network testnet
 ```
 
-- `--deployment` is the identity `deployment.json` of the agents-marketplace tool (format `vector-identity-deployment/1`). The tool reads `identity_hash`, `reference_address`, `operator_address`, `seal_seed_address` and `config_seed`. It checks the file with the rules of Module-1 (`Module-1/scripts/identity_deploy.py`).
+- `--deployment` is the identity `deployment.json` of the agents-marketplace tool (format `vector-identity-deployment/1`). The tool reads `identity_hash`, `reference_address`, `operator_address`, `seal_seed_address`, `config_seed` and the seal. It checks the file with the rules of Module-1 (`Module-1/scripts/identity_deploy.py`).
+- `--module1-manifest` is the Module-1 `manifest.json` (the plan of `identity_deploy.py`). A send (`run --submit`, `build`, `submit`) needs it: the tool sends only when the configuration record on chain names `identity_party` (M1) of the manifest. It uses `seal_status` of Module-1 and prints `Seal check: <note>`. The manifest must name the `identity_hash` and the network of the identity deployment. A dry run works before the seal and without the manifest; it prints the seal status and writes it into the report.
 - The operator key (`--vkey` or `--skey`, a file path) must be the key of `operator_address`. One operator key deploys every module. It owns the holders, it is the oracle credential, and its `ScriptPubkey` policy mints the CrossRefs token `governance_refs`.
 - The holders are `holder(61, operator)` (params), `holder(62, operator)` (oracle and CrossRefs) and `holder(63, operator)` (treasury). Module-6 has its own tags, so its records and its treasury never share an address with another module.
 - `aiken blueprint apply` applies GovernanceConfig (11 fields, `identity_hash` last) to the five validators in a temporary directory.
@@ -114,7 +116,7 @@ Each step is one transaction. The tool skips a step when the chain shows its res
 
 The seed is the largest lovelace-only operator UTxO. The tool chooses it once and saves it before the first on-chain step. A resumed run uses the saved seed. In a dry run with `--dry-run-funds`, the virtual funds output is the seed, so the validator hashes of a dry run differ from the hashes of a send. The tool never spends `config_seed` or an output at `seal_seed_address`. A mainnet dry run shows a cost of about 260.7 AP3X: 3.8 AP3X of fees, 156.1 AP3X for the eight reference scripts, 90 AP3X for the treasury batches, 9 AP3X for the records and 1.8 AP3X for the CrossRefs output.
 
-The state is `deploy/identity/state/<network>/deploy_state.json` (`--state-dir` gives another folder; the state is not in git). A dry run writes no state. The tool refuses every state file of another format, so it never writes the state of the previous deployment (`wallets/deploy_state.json`). The state has the keys that `GovernanceDeployment.from_state` (`governance_identity.py`) and `GovernanceDeployment.from_deploy_state` (Python SDK) read, and `tx_hashes` with the key names of the earlier states. `client_settings` holds the `GOV_*` values of the mcp-server and the `VECTOR_MODULE6_*` values of the Python SDK. The tool fills each value when it records the step that gives it.
+The state is `deploy/identity/state/<network>/deploy_state.json` (`--state-dir` gives another folder; the state is not in git). A dry run writes no state. The tool refuses every state file of another format, so it never writes the state of the previous deployment (`wallets/deploy_state.json`). The state has the keys that `GovernanceDeployment.from_state` (`governance_identity.py`) and `GovernanceDeployment.from_deploy_state` (Python SDK) read, and `tx_hashes` with the key names of the earlier states. `client_settings` holds the `GOV_*` values of the mcp-server branch for the identity registry (hashes, token policies, addresses and the five reference-script UTxOs; that branch finds the records by their tokens) and the `VECTOR_MODULE6_*` values of the Python SDK. The tool fills each value when it records the step that gives it.
 
 After the deployment:
 
@@ -125,7 +127,9 @@ python3 scripts/deploy_params.py --vkey operator.vkey --params params.json --net
 python3 scripts/treasury_fund.py --vkey operator.vkey --batches 3 --size 500 --network testnet
 ```
 
-`deploy_params.py` spends the params record with the params holder script and creates it again at the same address, with the same `params` token and the values of `--params` (a JSON object with the 21 GovernanceParams fields; default: the values of `deploy.py`). It refuses a state without a params record. Both tools have the actions and the options of `deploy.py`, and they write the same state.
+`deploy_params.py` spends the params record with the params holder script and creates it again at the same address, with the same `params` token and the values of `--params` (a JSON object with the 21 GovernanceParams fields; default: the values of `deploy.py`). It refuses a state without a params record. Both tools have the actions and the options of `deploy.py` (they need no seal check), and they write the same state.
+
+`redeploy_proposal.py`, `recreate_infra.py` and `move_crossrefs.py` are for the previous deployment only (`wallets/deploy_state.json`). They import their helpers from `scripts/old_deploy_helpers.py`.
 
 ### Identity-checked actions (clients)
 
@@ -142,7 +146,7 @@ Inputs of the scripts:
 
 | Input | Used by | Meaning |
 |-------|---------|---------|
-| `wallets/deploy_state.json` | all | Must have `identity_hash`. A state without it belongs to the old deployment with the legacy agent registry: the scripts refuse it and name the deployment order. |
+| `--state` (default: `deploy/identity/state/<network>/deploy_state.json` of `deploy.py`) and `--network` (default `mainnet`) | `smoke_test.py`, `test_expire.py`, `test_expire_e2e.py`, `update_params.py`, `treasury_replenish.py` | The deploy state. It must have `identity_hash`. A state without it belongs to the old deployment with the legacy agent registry: the scripts refuse it and name the deployment order. The state of the previous deployment is read only with `--state wallets/deploy_state.json`. The state of `deploy.py` has no endpoints: `VECTOR_OGMIOS_URL`, `VECTOR_SUBMIT_URL`, `VECTOR_EXPLORER_URL` or the preset of `--network` give them. `test_validated_submit.py` reads `wallets/deploy_state.json`. |
 | `VECTOR_AGENT_DID` or `--agent` | `smoke_test.py`, `test_validated_submit.py`, `test_expire_e2e.py` | The agent: `did:vector:<64 hex>` or the 64-hex identifier. The record must be Active and must declare the wallet key (controller or listed key with the transaction purpose). |
 | `VECTOR_ENDORSER_DID` or `--endorser` | `smoke_test.py` | Optional second agent for the endorsement steps (an agent cannot endorse its own proposal). |
 | `--finalise withdraw\|adopt` | `smoke_test.py` | How the smoke test ends the proposal; `adopt` needs the oracle key as wallet key. |

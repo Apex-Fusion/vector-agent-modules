@@ -23,11 +23,15 @@ Usage:
 
     # Or the active proposal with the latest submitted_at:
     nix-shell shell.nix --run "python scripts/test_expire.py --latest"
+
+    --state: the deploy state (default:
+    deploy/identity/state/<network>/deploy_state.json of scripts/deploy.py;
+    --network, default mainnet). The state of the previous deployment is used
+    only with --state wallets/deploy_state.json.
 """
 
+import argparse
 import asyncio
-import json
-import os
 import sys
 from pathlib import Path
 from typing import Iterable, Optional
@@ -40,8 +44,7 @@ load_dotenv()
 
 import governance_identity as gi  # noqa: E402
 import vector_identity as vid  # noqa: E402
-
-DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
+from deploy_common import add_state_arguments, read_state, state_endpoints, state_path  # noqa: E402
 
 
 def latest_proposal(utxos: Iterable[UTxO], deployment: gi.GovernanceDeployment) -> Optional[UTxO]:
@@ -99,10 +102,21 @@ def sdk_ref(ref: TransactionInput) -> dict:
     return {"tx_hash": str(ref.transaction_id), "output_index": ref.index}
 
 
+def parse_args(argv: list) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Module 6: expire a proposal (ExpireProposal)")
+    parser.add_argument("tx_hash", nargs="?", help="the transaction of the proposal output")
+    parser.add_argument("output_index", nargs="?", type=int, default=0, help="its output index (default 0)")
+    parser.add_argument("--latest", action="store_true",
+                        help="the active proposal with the latest submitted_at")
+    add_state_arguments(parser)
+    return parser.parse_args(argv)
+
+
 async def test_expire(argv: list) -> bool:
-    if len(argv) > 1 and argv[1] != "--latest":
-        target = TransactionInput(TransactionId(bytes.fromhex(argv[1])), int(argv[2]) if len(argv) > 2 else 0)
-    elif "--latest" in argv:
+    args = parse_args(argv[1:])
+    if args.tx_hash:
+        target = TransactionInput(TransactionId(bytes.fromhex(args.tx_hash)), args.output_index)
+    elif args.latest:
         target = None
     else:
         print("Usage: python scripts/test_expire.py <tx_hash> [output_index]")
@@ -112,17 +126,19 @@ async def test_expire(argv: list) -> bool:
     from vector_agent import VectorAgent
     from vector_agent.governance import GovernanceClient, GovernanceConfigError, GovernanceDeployment
 
-    state = json.load(open(DEPLOY_STATE_FILE))
+    path = state_path(args)
+    state = read_state(path, args.network)
+    endpoints = state_endpoints(state, args.network)
     try:
-        deployment = gi.GovernanceDeployment.from_state(state, str(DEPLOY_STATE_FILE))
+        deployment = gi.GovernanceDeployment.from_state(state, str(path))
         sdk_deployment = GovernanceDeployment.from_deploy_state(state)
     except (gi.GovernanceClientError, GovernanceConfigError) as e:
         print(f"[ERROR] {e}")
         return False
 
     async with VectorAgent(
-        ogmios_url=state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL")),
-        submit_url=state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL")),
+        ogmios_url=endpoints["ogmios_url"],
+        submit_url=endpoints["submit_url"],
         skey_path=str(Path("wallets/payment.skey").absolute()),
     ) as agent:
         context = agent.context
@@ -155,9 +171,7 @@ async def test_expire(argv: list) -> bool:
         print("\n[INFO] Expiring proposal...")
         result = await gov.expire_proposal(sdk_ref(proposal.input))
         print(f"[PASS] Proposal expired: {result['tx_hash']}")
-        explorer = state.get("explorer_url", "")
-        if explorer:
-            print(f"       Explorer: {explorer}/tx/{result['tx_hash']}")
+        print(f"       Explorer: {endpoints['explorer_url']}/tx/{result['tx_hash']}")
         return True
 
 

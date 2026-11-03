@@ -2,10 +2,13 @@
 Module 6: shared deploy helpers
 
 The deploy tools (deploy.py, deploy_params.py and treasury_fund.py), the
-operations scripts of the previous deployment (update_params.py,
-redeploy_proposal.py, recreate_infra.py, move_crossrefs.py) and the client
-module governance_identity.py use these helpers. They need cbor2 and the
-aiken CLI. They do not need pycardano or a chain connection.
+scripts that read a deploy state (smoke_test.py, test_expire.py,
+test_expire_e2e.py, update_params.py, treasury_replenish.py), the scripts of
+the previous deployment (redeploy_proposal.py, recreate_infra.py,
+move_crossrefs.py, through old_deploy_helpers.py) and the client module
+governance_identity.py use these helpers. They need cbor2 and the aiken CLI.
+They do not need pycardano or a chain connection; only state_endpoints reads
+the network presets of shared/python/vector_deploy.py (pycardano).
 
   - HOLDER_TAGS, apply_holder, apply_record_token_policy: the holder scripts
     and the one-shot record token policy of shared/python/holder_scripts.py.
@@ -14,8 +17,12 @@ aiken CLI. They do not need pycardano or a chain connection.
     operator key.
   - load_identity_deployment, check_operator_address: the identity
     deployment.json of the agents-marketplace tool, checked with the rules of
-    Module-1 (Module-1/scripts/identity_deploy.py).
+    Module-1 (Module-1/scripts/identity_deploy.py, module1_identity_deploy).
+  - load_module1_manifest: the Module-1 manifest.json, for the seal check of
+    deploy.py.
   - build_governance_config_cbor: GovernanceConfig (11 fields)
+  - apply_governance_config: GovernanceConfig applied to the five validators
+  - script_hash_to_address: the enterprise address of a script
   - governance_params_data, DEFAULT_GOVERNANCE_PARAMS: GovernanceParams (21
     fields)
   - oracle_datum_data: GovernanceOracleDatum (3 fields)
@@ -27,6 +34,8 @@ aiken CLI. They do not need pycardano or a chain connection.
   - plutus_data_cbor: the Plutus CBOR of a datum
   - state_tx_hashes, client_settings: the values of a deploy state that the
     clients read
+  - add_state_arguments, state_path, read_state, state_endpoints: the --state
+    and --network options of the scripts that read a deploy state
   - redeploy_state_error, find_record_utxo: checks of the older scripts
 
 The datum builders give Plutus Data trees (cbor2.CBORTag), in the field order
@@ -45,11 +54,13 @@ agents-marketplace):
      of step 4.
   7. Module-6 (these scripts). GovernanceConfig embeds identity_hash.
 
-Input: the identity deployment.json (format vector-identity-deployment/1).
+Inputs: the identity deployment.json (format vector-identity-deployment/1).
 deploy.py reads identity_hash, reference_address, operator_address,
-seal_seed_address and config_seed from it. It stops when identity_hash is
-missing, is not 28 bytes of hex, is all zero or is the legacy agent registry
-hash.
+seal_seed_address, config_seed and the seal from it. It stops when
+identity_hash is missing, is not 28 bytes of hex, is all zero or is the
+legacy agent registry hash. A send also needs the Module-1 manifest.json:
+deploy.py sends only when the seal on chain names identity_party (M1) of the
+manifest (Module-1 seal_status).
 
 Operator key: one new operator key deploys every module. It owns the
 holders, it is the oracle credential and its ScriptPubkey policy mints the
@@ -58,7 +69,10 @@ deployment. Old module keys are not used again.
 """
 
 import importlib.util
+import json
+import os
 import sys
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
@@ -67,7 +81,8 @@ import cbor2
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+MODULE_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = MODULE_DIR.parent
 SHARED_PYTHON = REPO_ROOT / "shared" / "python"
 if str(SHARED_PYTHON) not in sys.path:
     sys.path.insert(0, str(SHARED_PYTHON))
@@ -89,9 +104,24 @@ from holder_scripts import (  # noqa: E402, F401  (shared/python)
 _aiken_apply = aiken_apply
 _validator = validator_entry
 
-#: The deploy script of Module-1. Its identity deployment checks are the
-#: rules of every module.
+#: The deploy script of Module-1. Its identity deployment checks and its seal
+#: check are the rules of every module.
 MODULE1_IDENTITY_DEPLOY = REPO_ROOT / "Module-1" / "scripts" / "identity_deploy.py"
+
+#: The Module-6 blueprint (the validators without parameters).
+CONTRACT_DIR = MODULE_DIR / "contracts" / "governance-suggestion"
+BLUEPRINT_PATH = CONTRACT_DIR / "plutus.json"
+
+#: The state of the deployment on the identity registry (scripts/deploy.py):
+#: STATE_ROOT/<network>/STATE_FILE. The state is not in git.
+STATE_ROOT = MODULE_DIR / "deploy" / "identity" / "state"
+STATE_FILE = "deploy_state.json"
+#: The format of the states of shared/python/vector_deploy.py.
+STATE_FORMAT = "vector-module-deploy/1"
+NETWORKS = ("mainnet", "testnet")
+#: The explorer of each network (the state of the previous deployment keeps
+#: its explorer_url).
+EXPLORER_URLS = {"mainnet": "https://vector.apexscan.org", "testnet": "https://vector.testnet.apexscan.org"}
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -223,9 +253,11 @@ def _identity_hash_bytes(value: Optional[str]) -> bytes:
 
 
 @lru_cache(maxsize=1)
-def _module1_identity_deploy():
-    """Module-1/scripts/identity_deploy.py as a module. It needs only the
-    Python standard library."""
+def module1_identity_deploy():
+    """Module-1/scripts/identity_deploy.py as a module: the identity
+    deployment checks (load_identity_deployment, check_operator_address) and
+    the seal check (seal_status). It needs only the Python standard library;
+    seal_status reads the chain with the shared deploy runner."""
     spec = importlib.util.spec_from_file_location("module1_identity_deploy", MODULE1_IDENTITY_DEPLOY)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -242,10 +274,11 @@ def load_identity_deployment(path, network: str) -> dict:
     file can come before the identity reference scripts. identity_hash must
     not be the legacy agent registry hash.
 
-    Returns identity_hash, reference_address, operator_address,
-    seal_seed_address, config_seed (lower case), network, sealed (the file
-    has a seal), file and sha256. Raises DeployInputError."""
-    module1 = _module1_identity_deploy()
+    Returns identity_hash, config_policy, config_holder, reference_address,
+    operator_address, seal_seed_address, config_seed (lower case), seal (the
+    seal of the file, or None), sealed, network, file and sha256: the values
+    of Module-1 seal_status too. Raises DeployInputError."""
+    module1 = module1_identity_deploy()
     try:
         data = module1.load_identity_deployment(Path(path), network, allow_placeholders=True)
     except module1.PlanError as error:
@@ -255,10 +288,13 @@ def load_identity_deployment(path, network: str) -> dict:
     return {
         "network": data["network"],
         "identity_hash": identity_hash,
+        "config_policy": str(data["config_policy"]).lower(),
+        "config_holder": str(data["config_holder"]).lower(),
         "reference_address": data["reference_address"],
         "operator_address": data["operator_address"],
         "seal_seed_address": data["seal_seed_address"],
         "config_seed": f"{tx_id.lower()}#{int(index)}",
+        "seal": data.get("seal") or None,
         "sealed": bool(data.get("seal")),
         "file": data["file"],
         "sha256": data["sha256"],
@@ -268,11 +304,44 @@ def load_identity_deployment(path, network: str) -> dict:
 def check_operator_address(identity: Mapping[str, Any], operator_key_hash: bytes) -> None:
     """The operator key must be the key of operator_address of the identity
     deployment (an enterprise key address). Raises DeployInputError."""
-    module1 = _module1_identity_deploy()
+    module1 = module1_identity_deploy()
     try:
         module1.check_operator_address(identity, bytes(operator_key_hash))
     except module1.PlanError as error:
         raise DeployInputError(str(error)) from None
+
+
+def load_module1_manifest(path, identity: Mapping[str, Any]) -> dict:
+    """The Module-1 manifest.json (Module-1/scripts/identity_deploy.py plan)
+    for the seal check: a manifest of Module-1 (format
+    vector-module-deploy/1, module "module1") of the network of the identity
+    deployment, with the identity_hash of the identity deployment and the
+    28-byte hash hashes.identity_party (M1). Raises DeployInputError that
+    lists every problem."""
+    try:
+        manifest = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as error:
+        raise DeployInputError(f"cannot read the Module-1 manifest {path}: {error}") from None
+    if not isinstance(manifest, dict):
+        raise DeployInputError(f"{path} is not a Module-1 manifest")
+    problems = []
+    if manifest.get("format") != STATE_FORMAT or manifest.get("module") != "module1":
+        problems.append(f"{path} is not a manifest of Module-1/scripts/identity_deploy.py.")
+    if manifest.get("network") != identity.get("network"):
+        problems.append(f"the Module-1 manifest is for network {manifest.get('network')!r}, the identity "
+                        f"deployment for {identity.get('network')!r}.")
+    if (manifest.get("identity") or {}).get("identity_hash") != identity.get("identity_hash"):
+        problems.append("the Module-1 manifest names another identity_hash than the identity deployment.")
+    m1 = str((manifest.get("hashes") or {}).get("identity_party") or "")
+    try:
+        valid = len(bytes.fromhex(m1)) == 28
+    except ValueError:
+        valid = False
+    if not valid:
+        problems.append("the Module-1 manifest has no 28-byte hashes.identity_party (M1).")
+    if problems:
+        raise DeployInputError("\n".join(problems + [DEPLOYMENT_ORDER]))
+    return manifest
 
 
 # ── GovernanceConfig CBOR ────────────────────────────────────────────────────
@@ -315,6 +384,28 @@ def build_governance_config_cbor(
     ]
     # Plutus Data constructor: Tag 121 + 0 = constr(0, fields)
     return cbor2.dumps(cbor2.CBORTag(121, fields)).hex()
+
+
+def apply_governance_config(config_cbor_hex: str, blueprint_path: Path = BLUEPRINT_PATH) -> dict:
+    """Apply GovernanceConfig to the five Module-6 validators with
+    `aiken blueprint apply` and return the applied blueprint. The
+    intermediate blueprints go to a temporary directory: nothing is written
+    into contracts/."""
+    with tempfile.TemporaryDirectory(prefix="module6-apply-") as tmp:
+        current = Path(blueprint_path)
+        for number, title in enumerate(VALIDATOR_TITLES, start=1):
+            module, validator, _ = title.split(".")
+            out = Path(tmp) / f"applied-{number}.json"
+            aiken_apply(current, module, validator, config_cbor_hex, out)
+            current = out
+        return json.loads(current.read_text())
+
+
+def script_hash_to_address(script_hash_hex: str) -> str:
+    """The enterprise address of a script (bech32 "addr"; Vector mainnet and
+    Vector testnet both use the network id 1)."""
+    raw = _hex_bytes("script_hash", script_hash_hex, 28)
+    return module1_identity_deploy().script_addresses(raw.hex())["enterprise"]
 
 
 # ── Datums ───────────────────────────────────────────────────────────────────
@@ -519,10 +610,12 @@ def state_tx_hashes(steps: Mapping[str, Mapping[str, Any]]) -> dict:
 def client_settings(state: Mapping[str, Any]) -> dict:
     """The environment values of the external clients for a deploy state:
 
-    - "mcp-server": the GOV_* values. The main branch reads GOV_PARAMS_UTXO,
-      GOV_ORACLE_UTXO and GOV_CROSSREFS_UTXO; the identity registry branch
-      reads GOV_RECORD_TOKEN_POLICY, GOV_REFS_TOKEN_POLICY,
-      GOV_PARAMS_ADDRESS, GOV_CROSSREFS_ADDRESS and all five *_REF values.
+    - "mcp-server": the GOV_* values of the mcp-server branch for the
+      identity registry (packages/builder/src/vector/gov-deployment.ts): the
+      five validator hashes, the record and refs token policies, the params,
+      CrossRefs and treasury addresses and the five reference-script UTxOs.
+      That branch finds the params record, the CrossRefs output and the head
+      of the activity list by their tokens, so it has no *_UTXO values.
     - "agent-sdk-py": the VECTOR_MODULE6_* values of
       vector_agent.governance.deployment.ENV_VARS. The zero hashes of
       GovernanceConfig are the SDK defaults, so they are not set.
@@ -562,9 +655,6 @@ def client_settings(state: Mapping[str, Any]) -> dict:
             "GOV_CRITIQUE_SPEND_REF": script_ref(CRITIQUE_SPEND),
             "GOV_CRITIQUE_MINT_REF": script_ref(CRITIQUE_MINT),
             "GOV_ENDORSEMENT_SPEND_REF": script_ref(ENDORSEMENT_SPEND),
-            "GOV_PARAMS_UTXO": params,
-            "GOV_ORACLE_UTXO": oracle,
-            "GOV_CROSSREFS_UTXO": cross_refs,
         },
         "agent-sdk-py": {
             "VECTOR_MODULE6_IDENTITY_HASH": state.get("identity_hash"),
@@ -583,6 +673,64 @@ def client_settings(state: Mapping[str, Any]) -> dict:
             "VECTOR_MODULE6_ORACLE_UTXO": oracle,
             "VECTOR_MODULE6_CROSSREFS_UTXO": cross_refs,
         },
+    }
+
+
+# ── The scripts that read a deploy state ─────────────────────────────────────
+
+def default_state_path(network: str) -> Path:
+    """The state of scripts/deploy.py on `network`."""
+    if network not in NETWORKS:
+        raise DeployInputError(f"unknown network {network!r}; use one of {', '.join(NETWORKS)}")
+    return STATE_ROOT / network / STATE_FILE
+
+
+def add_state_arguments(parser) -> None:
+    """--network and --state of the scripts that read a deploy state."""
+    parser.add_argument("--network", choices=NETWORKS, default="mainnet",
+                        help="the network of the deployment (default: mainnet)")
+    parser.add_argument("--state", type=Path,
+                        help="the deploy state (default: deploy/identity/state/<network>/deploy_state.json of "
+                             "scripts/deploy.py; the previous deployment: --state wallets/deploy_state.json)")
+
+
+def state_path(args) -> Path:
+    """The --state path, else the state of scripts/deploy.py on --network."""
+    return Path(args.state) if args.state is not None else default_state_path(args.network)
+
+
+def read_state(path, network: str) -> dict:
+    """A deploy state. The state of scripts/deploy.py (format
+    vector-module-deploy/1) must be a Module-6 state of `network`. The state
+    of the previous deployment (wallets/deploy_state.json) has no format and
+    keeps its endpoints. Raises FileNotFoundError or DeployInputError."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"{path} does not exist. Run scripts/deploy.py (build, or run --submit) for "
+                                "the deployment on the identity registry, or give --state.")
+    state = json.loads(path.read_text())
+    if state.get("format") == STATE_FORMAT:
+        if state.get("module") != "module6":
+            raise DeployInputError(f"{path} is a state of {state.get('module')}, not of Module-6")
+        if state.get("network") != network:
+            raise DeployInputError(f"{path} is a state of {state.get('network')}; give --network "
+                                   f"{state.get('network')}")
+    return state
+
+
+def state_endpoints(state: Mapping[str, Any], network: str) -> dict:
+    """ogmios_url, submit_url and explorer_url for a deploy state. The state
+    of the previous deployment keeps them. The state of scripts/deploy.py has
+    none: then VECTOR_OGMIOS_URL, VECTOR_SUBMIT_URL and VECTOR_EXPLORER_URL
+    give them, else the preset of `network` (shared/python/vector_deploy.py,
+    needs pycardano)."""
+    import vector_deploy
+
+    preset = vector_deploy.network_preset(network)
+    return {
+        "ogmios_url": state.get("ogmios_url") or preset.ogmios_url,
+        "submit_url": state.get("submit_url") or preset.submit_url,
+        "explorer_url": state.get("explorer_url") or os.environ.get("VECTOR_EXPLORER_URL") or EXPLORER_URLS[network],
     }
 
 

@@ -1,6 +1,10 @@
 """
 Module 6: Targeted Redeployment — proposal_mint + proposal_spend + CrossRefs
 
+For the previous deployment only (wallets/deploy_state.json). The deployment
+on the identity registry (scripts/deploy.py) has the head of the activity
+list, so this script refuses it (see below).
+
 After fixing Bug C (token name uses own_ref) and Bug D (activity_tracking
 output policy hash), the proposal_mint and proposal_spend validators changed.
 This script:
@@ -65,8 +69,8 @@ def load_deploy_state() -> dict:
         return json.load(f)
 
 
-# Import functions from deploy.py and deploy_common.py
-from deploy import (
+# Helpers of the previous deployment (old_deploy_helpers.py) and deploy_common.py
+from old_deploy_helpers import (
     apply_governance_config,
     script_hash_to_address,
     deploy_reference_script,

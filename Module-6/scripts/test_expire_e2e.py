@@ -13,19 +13,19 @@ reads no identity record. GovernanceClient.expire_proposal of the Python SDK
 activity list itself.
 
 Usage:
-    VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/test_expire_e2e.py"
+    VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/test_expire_e2e.py --network testnet"
     nix-shell shell.nix --run "python scripts/test_expire_e2e.py --agent <DID or 64 hex>"
 
-The deploy state (wallets/deploy_state.json) must have identity_hash
+The deploy state (--state, default deploy/identity/state/<network>/deploy_state.json
+of scripts/deploy.py; --network, default mainnet) must have identity_hash
 (deployment order: identity registry, Module-1, Module-3, Module-6). The
-wallet key must be the controller key of the agent's record or a listed key
-with the transaction purpose.
+state of the previous deployment is used only with --state
+wallets/deploy_state.json. The wallet key must be the controller key of the
+agent's record or a listed key with the transaction purpose.
 """
 
 import argparse
 import asyncio
-import json
-import os
 import sys
 import hashlib
 from pathlib import Path
@@ -37,8 +37,7 @@ load_dotenv()
 
 import governance_identity as gi
 import vector_identity as vid
-
-DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
+from deploy_common import add_state_arguments, default_state_path, read_state, state_endpoints, state_path
 
 
 def blake2b_256(data: str) -> bytes:
@@ -54,12 +53,14 @@ def posix_ms_to_human(ms: int) -> str:
         return f"{ms} ms"
 
 
-async def run_test(agent_arg=None):
-    state = json.load(open(DEPLOY_STATE_FILE))
+async def run_test(agent_arg=None, path=None, network="mainnet"):
+    path = Path(path) if path is not None else default_state_path(network)
+    state = read_state(path, network)
+    endpoints = state_endpoints(state, network)
     skey_path = str(Path("wallets/payment.skey").absolute())
 
     try:
-        deployment = gi.GovernanceDeployment.from_state(state, str(DEPLOY_STATE_FILE))
+        deployment = gi.GovernanceDeployment.from_state(state, str(path))
         agent_id = gi.agent_id_from(agent_arg)
     except gi.GovernanceClientError as e:
         print(f"[ERROR] {e}")
@@ -80,8 +81,8 @@ async def run_test(agent_arg=None):
         print(f"[ERROR] {e}")
         return False
 
-    ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
-    submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
+    ogmios_url = endpoints["ogmios_url"]
+    submit_url = endpoints["submit_url"]
 
     async with VectorAgent(
         ogmios_url=ogmios_url,
@@ -146,7 +147,7 @@ async def run_test(agent_arg=None):
         submit_tx = submitted.tx
         print(f"[OK] Proposal submitted: {submit_tx}")
         print(f"     Lock TX: {submitted.lock_tx}")
-        print(f"     Explorer: {state['explorer_url']}/tx/{submit_tx}")
+        print(f"     Explorer: {endpoints['explorer_url']}/tx/{submit_tx}")
 
         # ── Step 2: Read the on-chain datum to check review window ──
         print(f"\n{'='*60}")
@@ -227,7 +228,7 @@ async def run_test(agent_arg=None):
 
         expire_tx = expire_result["tx_hash"]
         print(f"[OK] Proposal expired: {expire_tx}")
-        print(f"     Explorer: {state['explorer_url']}/tx/{expire_tx}")
+        print(f"     Explorer: {endpoints['explorer_url']}/tx/{expire_tx}")
 
         # ── Step 5: Verify ──────────────────────────────────────────
         print(f"\n{'='*60}")
@@ -247,12 +248,12 @@ async def run_test(agent_arg=None):
         return True
 
 
-async def main(agent_arg=None):
+async def main(agent_arg=None, path=None, network="mainnet"):
     print("=" * 60)
     print("Module 6: Test 9 — Expire Proposal (End-to-End)")
     print("=" * 60)
 
-    success = await run_test(agent_arg)
+    success = await run_test(agent_arg, path, network)
 
     print(f"\n{'='*60}")
     if success:
@@ -262,7 +263,13 @@ async def main(agent_arg=None):
     print("=" * 60)
 
 
-if __name__ == "__main__":
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Module 6 expire test (end-to-end)")
     parser.add_argument("--agent", help=f"agent DID or 64-hex identifier (default: ${gi.AGENT_DID_ENV})")
-    asyncio.run(main(parser.parse_args().agent))
+    add_state_arguments(parser)
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    asyncio.run(main(args.agent, state_path(args), args.network))

@@ -1,6 +1,10 @@
 """
 Module 6: Recreate Infrastructure UTxOs
 
+For the previous deployment only (wallets/deploy_state.json). The deployment
+on the identity registry uses scripts/deploy.py, deploy_params.py and
+treasury_fund.py.
+
 Recreates the GovernanceParams, Oracle, and CrossRefs NFT UTxOs
 at their holder addresses. These are needed as reference inputs
 by the governance validators.
