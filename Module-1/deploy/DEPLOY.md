@@ -6,6 +6,71 @@
 
 ---
 
+## Identity Registry Deployment (new, not deployed)
+
+The source in `contracts/` is the new deployment for the identity registry
+(`docs/IDENTITY_REGISTRY.md` §3.8 and §7 in agents-marketplace). It adds the
+validator `identity_party` (Module-1 as a party of identity records). The v14
+tables below describe the old deployment, whose positions stay under the old
+rules until their owners exit.
+
+Hash order:
+
+1. `config_holder`, `config_seal` and `identity` (identity deployment).
+2. `claim`, `challenge` and `jury_pool`, each with `(AuditingConfig, ProtocolParams)`.
+   `AuditingConfig` holds the identity hash, the configuration record keys and
+   the verdict policy.
+3. `identity_party` with `(AuditingConfig, challenge hash, claim hash)`. Its
+   hash is M1. The verdict mint reads the claim of a resolved challenge at the
+   claim hash of its parameters, not from CrossValidatorRefs.
+4. The seal: `config_seal` mints `identity-config` to `config_holder` with
+   the inline datum M1. The challenge validator reads M1 from this record.
+5. Register the stake credential of `identity_party` with the legacy stake
+   registration certificate (no script witness). `identity_party` fails every
+   publish purpose, so nobody can deregister or delegate it.
+6. Before anybody appoints Module-1, check the sealed datum.
+
+Commands: see [`identity/DEPLOY-IDENTITY.md`](identity/DEPLOY-IDENTITY.md)
+(plan, check-seal, the on-chain steps with dry run, build, sign and submit,
+the inputs, the checks and the costs). Tests:
+
+```sh
+python3 scripts/test_identity_deploy.py                       # plan guards (standard library)
+pytest simulation/tests/test_deploy_transactions.py           # deploy transactions (pycardano, aiken)
+```
+
+The identity values come from the identity `deployment.json`, `oracle_vkh`
+and `refs_token_policy` from the operator key, and `oracle_active` from
+`--mode`. `deploy/identity/config.json` keeps the verdict policy (still a
+placeholder) and the other ProtocolParams values. The plan refuses
+placeholders and every all-zero `identity_hash`, `config_policy`,
+`config_holder`, `oracle_vkh` or `refs_token_policy`, unless
+`--allow-placeholders` is given; its output is then not for deployment. New
+Foundation operator keys deploy the modules; old module keys are not reused.
+
+Rules for transaction builders of the new deployment:
+
+- Only OracleResolve gives an identity verdict (the verdict policy applies to
+  oracle outcomes only). ResolveJury mints no verdict. With
+  `oracle_active = false`, no verdict is ever minted.
+- An OracleResolve that mints a verdict has a validity range with finite
+  bounds of at most one hour. The verdict datum is
+  `{ agent, action, duration, challenge, deposit_to, expires_at }` with
+  `expires_at = hi + 30 days`; `deposit_to` is the address of the wallet that
+  funds the AP3X of the verdict output.
+- ApplyVerdict needs `hi <= expires_at`. After `expires_at`, anybody can
+  reclaim the verdict output: burn its token (BurnVerdict, no identity_party
+  withdrawal), pay all its AP3X to `deposit_to` without datum, spend no other
+  script input, and use a range with `lo > expires_at` of at most one hour.
+- Every resolution spends the claim input that holds the challenge's
+  `claim_token` and burns exactly that claim token.
+- ResolveJury writes `Resolved { verdict, refund_to }`; `refund_to` is the
+  address of the wallet that funds the AP3X kept in the Resolved output (equal
+  to the auditor stake). CleanupResolved pays all AP3X of the Resolved output
+  to `refund_to` without datum and spends no other script input.
+
+---
+
 ## Contract Hashes
 
 | Validator | Script Hash |
@@ -163,4 +228,4 @@ Vector uses Conway-era CBOR encoding. Aiken's `plutus.json` output uses definite
 
 ## Compiled Blueprint
 
-The compiled Plutus V3 blueprint is available at [`plutus.json`](plutus.json). This contains all three validators pre-compiled and ready for deployment. The blueprint reflects the v14 mainnet contract build.
+The compiled Plutus V3 blueprint is available at [`plutus.json`](plutus.json). It is the unapplied build (aiken v1.1.21, `-t silent`) of the identity registry deployment in `contracts/` (claim, challenge, jury_pool and identity_party), equal to `contracts/plutus.json`. `scripts/identity_deploy.py plan` builds it again and applies the parameters. The v14 mainnet blueprint is in git history.

@@ -15,7 +15,7 @@
 ///
 /// All datums use inline datum pattern (CIP-32). Tokens track lifecycle.
 
-use cardano/address.{Credential}
+use cardano/address.{Address, Credential}
 use cardano/assets.{PolicyId}
 use cardano/transaction.{OutputReference}
 
@@ -26,7 +26,8 @@ use cardano/transaction.{OutputReference}
 /// A claim submitted by an agent asserting it performed some task.
 /// One UTXO per claim — fully parallelizable across thousands of audits.
 pub type ClaimDatum {
-  /// DID of the claiming agent (policy_id of their registry NFT)
+  /// Identity registry identifier of the claiming agent (did:vector, 32 bytes).
+  /// SubmitClaim checks the record (Part 2 §7, Module-1 row).
   claimer_did: PolicyId,
   /// Payment credential of claimer (for stake return)
   claimer_credential: Credential,
@@ -90,7 +91,8 @@ pub type ClaimAction {
 pub type ChallengeDatum {
   /// Reference to the claim UTXO being challenged (cross-validator link)
   claim_ref: OutputReference,
-  /// DID of the challenging agent
+  /// Identity registry identifier of the challenging agent (did:vector,
+  /// 32 bytes). OpenChallenge checks the record (Part 2 §7, Module-1 row).
   auditor_did: PolicyId,
   /// Payment credential of auditor (for stake return or reward)
   auditor_credential: Credential,
@@ -114,6 +116,11 @@ pub type ChallengeDatum {
   eligible_jurors: List<PolicyId>,
   /// Current state of this challenge
   state: ChallengeState,
+  /// Asset name of the claim token of the challenged claim. OpenChallenge
+  /// checks that the consumed claim input holds this token, and every
+  /// continuing challenge output keeps it. It binds the challenge to its
+  /// claim, so a verdict names the agent of that claim.
+  claim_token: ByteArray,
 }
 
 /// Lifecycle state of a challenge UTXO.
@@ -126,8 +133,13 @@ pub type ChallengeState {
   PendingJury
   /// Jury selected, awaiting votes — holds the selected juror DIDs
   Voting { selected_jurors: List<PolicyId> }
-  /// Resolved — verdict rendered, stakes distributed
-  Resolved { verdict: Verdict }
+  /// Resolved — verdict rendered, stakes distributed. ResolveJury writes
+  /// this state. The Resolved output keeps AP3X equal to the auditor stake;
+  /// the ResolveJury transaction funds it, because the payouts of that
+  /// transaction already use both stakes. `refund_to` is the address that
+  /// gets this AP3X back when CleanupResolved removes the output. The
+  /// ResolveJury transaction sets it to the address of its funder.
+  Resolved { verdict: Verdict, refund_to: Address }
 }
 
 /// Outcome of a challenge resolution.
@@ -159,7 +171,9 @@ pub type ChallengeAction {
   /// Timeout: deadline passed without full jury resolution; both stakes returned.
   TimeoutResolve
   /// Phase 1.0+: Burn the challenge UTxO after resolution.
-  /// Requires state == Resolved. Oracle must sign (Phase 1.0 simplicity).
+  /// Requires state == Resolved. Anybody can submit it after the cleanup
+  /// time. The AP3X of the Resolved output goes to its `refund_to`; the
+  /// transaction spends no other script input.
   /// The challenge token is burned here (deferred from ResolveJury to allow
   /// DistributeRewards to reference the Resolved challenge UTxO).
   CleanupResolved
@@ -177,7 +191,8 @@ pub type ChallengeAction {
 /// One UTXO per juror — bond (AP3X) held in UTXO value.
 /// `active_case`: when Some, juror cannot withdraw until case resolves.
 pub type JurorDatum {
-  /// DID of the juror agent
+  /// Identity registry identifier of the juror agent (did:vector, 32 bytes).
+  /// RegisterJuror checks the record (Part 2 §7, Module-1 row).
   juror_did: PolicyId,
   /// Payment credential for reward distribution
   juror_credential: Credential,
@@ -285,9 +300,12 @@ pub type JuryAction {
 /// Contains ONLY fields that do NOT create circular deployment dependencies.
 /// The three cross-validator script hashes (which change after apply) are
 /// intentionally absent — they live in CrossValidatorRefs (a runtime UTxO datum).
+/// The hash of `identity_party` is also absent: the challenge validator reads
+/// it from the identity configuration record (Part 2 §3.8).
 pub type AuditingConfig {
-  /// Policy ID of the Agent Registry (for DID verification)
-  registry_policy_id: PolicyId,
+  /// Script hash (= policy ID) of the identity registry contract. Agent
+  /// records are reference inputs at its exact address (vector_identity).
+  identity_hash: ByteArray,
   /// Foundation oracle verification key hash (Phase 1.0 dispute resolution)
   oracle_vkh: ByteArray,
   /// Policy ID of the NFT that authenticates the CrossValidatorRefs UTxO.
@@ -300,6 +318,15 @@ pub type AuditingConfig {
   /// poisoned hashes (any UTxO holding AP3X tokens would pass the check).
   /// The NativeScript policy ensures only the oracle can mint the refs NFT.
   refs_token_policy: PolicyId,
+  /// Policy ID of the identity configuration token (`config_seal`).
+  config_policy: PolicyId,
+  /// Script hash of `config_holder`. The configuration record is the output
+  /// at its exact address that holds the token `identity-config`.
+  config_holder: ByteArray,
+  /// Verdict policy, fixed at deployment (Part 2 §3.8). It applies only to
+  /// oracle resolutions (OracleResolve). The values are an open item (Part 2
+  /// §13.4).
+  verdict_policy: VerdictPolicy,
 }
 
 /// Runtime cross-validator references — stored as an inline datum on a UTxO
@@ -313,4 +340,76 @@ pub type CrossValidatorRefs {
   challenge_validator_hash: ByteArray,
   /// Script hash of the jury pool validator (= juror token policy_id)
   jury_pool_hash: ByteArray,
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// IDENTITY PARTY TYPES (Part 2 §3.8)
+// ══════════════════════════════════════════════════════════════════════
+
+/// The action of a verdict.
+pub type VerdictAction {
+  /// A hold with reason 64 that lasts `duration` milliseconds.
+  VerdictSuspend
+  /// A revocation with reason 64, without "invalid from" time and successor.
+  VerdictRevoke
+}
+
+/// The action and the duration that the verdict policy gives for one
+/// oracle outcome.
+pub type VerdictRule {
+  action: VerdictAction,
+  /// Milliseconds: 1 to 30 days for VerdictSuspend, 0 for VerdictRevoke.
+  duration: Int,
+}
+
+/// Which oracle outcome (OracleResolve) gives which verdict. The agent of a
+/// verdict is the side that loses the challenge. Inconclusive outcomes, jury
+/// resolutions (ResolveJury) and timeouts give no verdict: the auditor names
+/// the eligible jurors of a challenge, so a jury outcome is not safe for an
+/// identity verdict.
+pub type VerdictPolicy {
+  /// The rule for AuditorWins. The verdict names the claimer.
+  auditor_wins: Option<VerdictRule>,
+  /// The rule for ClaimerWins. The verdict names the auditor.
+  claimer_wins: Option<VerdictRule>,
+}
+
+/// The inline datum of a verdict output. The verdict token name is
+/// blake2b_256 of the CBOR serialisation (serialiseData) of this value, with
+/// all fields.
+pub type IdentityVerdict {
+  /// Identity registry identifier of the agent.
+  agent: ByteArray,
+  action: VerdictAction,
+  /// Milliseconds; 0 for VerdictRevoke.
+  duration: Int,
+  /// The challenge UTxO that the resolution transaction spends.
+  challenge: OutputReference,
+  /// The address that gets the AP3X of the verdict output when the verdict
+  /// expires without an application. The resolution transaction names it in
+  /// the verdict output; its funder pays that AP3X.
+  deposit_to: Address,
+  /// POSIX milliseconds: the upper bound of the resolution transaction plus
+  /// 30 days. A verdict application needs `hi <= expires_at`. After
+  /// `expires_at` (`expires_at < lo`), anybody can spend the verdict output
+  /// without an application: its token is burned and its AP3X goes to
+  /// `deposit_to`.
+  expires_at: Int,
+}
+
+/// Mint redeemer of `identity_party`.
+pub type VerdictMint {
+  /// Mint one verdict token in the resolution of one challenge.
+  MintVerdict
+  /// Burn one verdict token in a verdict application.
+  BurnVerdict
+}
+
+/// Withdraw redeemer of `identity_party`: the two kinds of identity
+/// transaction that Module-1 approves.
+pub type PartyApproval {
+  /// Module-1 becomes a new party in an identity Register, Adopt or Update.
+  Consent
+  /// One verdict becomes a Suspend or a Revoke by the Module-1 party.
+  ApplyVerdict
 }

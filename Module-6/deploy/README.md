@@ -4,7 +4,8 @@ Layout:
 
 ```
 deploy/
-├── plutus.json    ← Compiled Plutus V3 blueprint. Network-agnostic.
+├── plutus.json    ← Compiled Plutus V3 blueprint of v8. Network-agnostic.
+├── identity/state/<network>/  ← State of the deployment on the identity registry (scripts/deploy.py; not in git)
 ├── testnet/       ← Vector testnet deployment (current)
 │   ├── DEPLOY.md            ← Human-readable: hashes, addresses, params, lifecycle
 │   ├── deployment.json      ← Machine-readable deployment state
@@ -24,6 +25,7 @@ The Module-6 validators are **parameterized** by `GovernanceConfig` (which embed
 - 1 GovernanceOracle datum UTxO
 - 1 CrossRefs NFT UTxO
 - 3 Treasury batch UTxOs
+- 1 head of the activity list (deployment on the identity registry)
 
 …all of which live under the network-specific folder.
 
@@ -31,4 +33,4 @@ The Module-6 validators are **parameterized** by `GovernanceConfig` (which embed
 
 ## When you redeploy
 
-`scripts/deploy.py` writes its outputs to `wallets/deploy_state.json` keyed by network. After a successful deploy, refresh the human-readable artifacts under the matching `deploy/<network>/` folder.
+`scripts/deploy.py` deploys Module-6 on the identity registry. It applies the current blueprint `contracts/governance-suggestion/plutus.json` (not `deploy/plutus.json` of v8). It sends only after the seal names M1 of the Module-1 manifest (`--module1-manifest`). It writes its state to `deploy/identity/state/<network>/deploy_state.json` (not in git): the hashes, the transactions and `client_settings`, the values for the mcp-server and the Python SDK. It never writes `wallets/deploy_state.json` of the previous deployment. A dry run writes no state. After a send, refresh the human-readable artifacts under the matching `deploy/<network>/` folder. The steps and the options are in "Deployment on the identity registry" of [../README.md](../README.md#deployment-on-the-identity-registry).

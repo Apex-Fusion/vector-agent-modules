@@ -55,7 +55,7 @@ Constructor index → CBOR tag (verified in types.ak):
         PendingOracle       Constr0 -> CBORTag(121, [])
         PendingJury         Constr1 -> CBORTag(122, [])
         Voting              Constr2 -> CBORTag(123, [selected_jurors])
-        Resolved            Constr3 -> CBORTag(124, [verdict])  <-- HERE
+        Resolved            Constr3 -> CBORTag(124, [verdict, refund_to])  <-- HERE
 
     Verdict (Constr index, inside Resolved wrapper):
         ClaimerWins         Constr0 -> CBORTag(121, [])
@@ -806,9 +806,11 @@ def test_continuing_challenge_datum_state_is_Resolved_tag_124(
     default_jury_size, default_jury_fee_rate,
 ):
     """field[9] of the continuing challenge datum must be
-    CBORTag(124, [verdict]) = Resolved { verdict }. With the all-CW
-    juror set, verdict should be ClaimerWins = CBORTag(121, []).
-    Validator line 567: `updated.state == Resolved { verdict }`.
+    CBORTag(124, [verdict, refund_to]) = Resolved { verdict, refund_to }.
+    With the all-CW juror set, verdict should be ClaimerWins =
+    CBORTag(121, []). refund_to is the Plutus Address of the wallet that
+    funds the transaction (CleanupResolved pays the kept AP3X back to it).
+    Validator: `Resolved { verdict: written, .. } -> written == verdict`.
     """
     _, builder = _run_build_resolve_jury(
         patched_network_for_resolve_jury, captured_builder, mock_ogmios_context,
@@ -824,16 +826,21 @@ def test_continuing_challenge_datum_state_is_Resolved_tag_124(
     state = fields[9]
     assert hasattr(state, "tag") and state.tag == 124, (
         f"Continuing challenge datum field[9] must be Resolved "
-        f"= CBORTag(124, [verdict]); got {state!r}"
+        f"= CBORTag(124, [verdict, refund_to]); got {state!r}"
     )
-    assert isinstance(state.value, list) and len(state.value) == 1, (
-        f"Resolved payload must be [verdict]; got {state.value!r}"
+    assert isinstance(state.value, list) and len(state.value) == 2, (
+        f"Resolved payload must be [verdict, refund_to]; got {state.value!r}"
     )
-    verdict = state.value[0]
+    verdict, refund_to = state.value
     assert hasattr(verdict, "tag") and verdict.tag == 121, (
         f"Verdict in all-ClaimerWins scenario must be "
         f"CBORTag(121, []) = ClaimerWins; got {verdict!r}"
     )
+    # Address { VerificationKey(wallet key hash), None }
+    _, wallet_vkey, _ = sample_auditor_wallet
+    assert refund_to == cbor2.CBORTag(121, [
+        cbor2.CBORTag(121, [bytes(wallet_vkey.hash())]), cbor2.CBORTag(122, []),
+    ])
 
 
 def test_continuing_challenge_datum_fields_0_through_8_preserved(

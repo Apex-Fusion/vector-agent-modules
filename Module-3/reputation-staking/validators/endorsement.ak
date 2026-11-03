@@ -7,165 +7,147 @@
 ///
 /// Because both handlers share the same script hash:
 ///   policy_id == script_hash == payment_credential of the endorsement address
+///
+/// Each mint redeemer accepts exactly its own token set: one token of its
+/// kind, and no other token of the policy.
 
-use aiken/interval.{Finite}
 use aiken/collection/list
 use cardano/address.{Script}
 use cardano/assets.{PolicyId}
-use cardano/transaction.{InlineDatum, Output, OutputReference, Transaction}
+use cardano/transaction.{InlineDatum, Input, Output, OutputReference, Transaction}
 use reputation_staking/challenge_validation
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig, get_cross_refs}
 use reputation_staking/endorsement_validation
 use reputation_staking/params.{ProtocolParams, find_protocol_params}
+use reputation_staking/time
 use reputation_staking/types.{
   BurnChallengeToken, BurnEndorsementToken, CapabilityFalsified,
   Challenge, ChallengeSpend, DefaultJudgment,
   DistributeOutcome, Endorsement, EndorsementDatum,
   EndorsementMintAction,
   EndorsementSpend, EndorsementValidatorAction, EndorsementValidatorDatum,
-  Escalated, EscalateToAudit, IncreaseEndorsement, MintChallengeToken,
-  MintEndorsementToken, Open, ReputationChallengeDatum,
+  EscalateToAudit, ExpireChallenge, IncreaseEndorsement,
+  MintChallengeToken, MintEndorsementToken, Open, ReputationChallengeDatum,
   ResolveChallenge, ResolveEscalation, Resolved, RespondToChallenge,
   SlashEndorsement,
   WithdrawChallenge, WithdrawEndorsement, challenge_token_prefix,
   endorsement_token_prefix,
 }
 use reputation_staking/utils.{
-  count_script_inputs, derive_challenge_token_name, derive_endorsement_token_name,
-  get_ap3x_amount, has_credential_signed, has_script_input, starts_with,
+  ap3x_paid_to, bound_stake, count_script_inputs, derive_challenge_token_name,
+  derive_endorsement_token_name, exit_paid, get_ap3x_amount, has_script_input,
+  payee, single_token_change, starts_with, treasury_paid,
 }
+use shared/identity
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers (must come before validator for Aiken parser)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Extract the lower bound of the validity range.
-fn get_validity_lower_bound(tx: Transaction) -> Option<Int> {
-  when tx.validity_range.lower_bound.bound_type is {
-    Finite(slot) -> Some(slot)
-    _ -> None
-  }
-}
-
-/// Find an endorsement output at the endorsement validator.
-fn find_endorsement_output(
+/// Find an output at the endorsement validator that holds one token of the
+/// policy whose name starts with `prefix` (a new endorsement or challenge).
+fn find_output_with_prefix(
   tx: Transaction,
   endorsement_policy_id: PolicyId,
+  prefix: ByteArray,
 ) -> Option<Output> {
   list.find(
     tx.outputs,
     fn(output) {
-      let is_at_endorsement =
-        when output.address.payment_credential is {
-          Script(hash) -> hash == endorsement_policy_id
-          _ -> False
-        }
-      let has_endorsement_token =
-        list.any(
-          assets.flatten(output.value),
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == endorsement_policy_id && starts_with(name,endorsement_token_prefix) && qty == 1
-          },
-        )
-      is_at_endorsement && has_endorsement_token
+      output.address.payment_credential == Script(endorsement_policy_id) && list.any(
+        assets.flatten(output.value),
+        fn(entry) {
+          let (pid, name, qty) = entry
+          pid == endorsement_policy_id && starts_with(name, prefix) && qty == 1
+        },
+      )
     },
   )
 }
 
-/// Find a challenge output at the endorsement validator.
-fn find_challenge_output(
+/// Find the output at the endorsement validator that holds the token
+/// `token_name` (the continuing endorsement or challenge).
+fn find_output_with_token(
   tx: Transaction,
   endorsement_policy_id: PolicyId,
+  token_name: ByteArray,
 ) -> Option<Output> {
   list.find(
     tx.outputs,
     fn(output) {
-      let is_at_endorsement =
-        when output.address.payment_credential is {
-          Script(hash) -> hash == endorsement_policy_id
-          _ -> False
-        }
-      let has_challenge_token =
-        list.any(
-          assets.flatten(output.value),
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == endorsement_policy_id && starts_with(name,challenge_token_prefix) && qty == 1
-          },
-        )
-      is_at_endorsement && has_challenge_token
+      output.address.payment_credential == Script(endorsement_policy_id) && assets.quantity_of(
+        output.value,
+        endorsement_policy_id,
+        token_name,
+      ) == 1
     },
   )
 }
 
-/// Find the continuing endorsement output for a specific endorser-target pair.
-fn find_continuing_endorsement(
-  tx: Transaction,
-  endorsement_policy_id: PolicyId,
-  endorser_did: ByteArray,
-  target_did: ByteArray,
-) -> Option<Output> {
-  let token_name = derive_endorsement_token_name(endorser_did, target_did)
-  list.find(
-    tx.outputs,
-    fn(output) {
-      let is_at_endorsement =
-        when output.address.payment_credential is {
-          Script(hash) -> hash == endorsement_policy_id
-          _ -> False
-        }
-      let has_token =
-        assets.quantity_of(output.value, endorsement_policy_id, token_name) == 1
-      is_at_endorsement && has_token
-    },
-  )
-}
-
-/// Find the continuing challenge output for a specific challenge.
-fn find_continuing_challenge(
-  tx: Transaction,
-  endorsement_policy_id: PolicyId,
-  challenger_did: ByteArray,
-  target_did: ByteArray,
-  capability: ByteArray,
-) -> Option<Output> {
-  let token_name =
-    derive_challenge_token_name(challenger_did, target_did, capability)
-  list.find(
-    tx.outputs,
-    fn(output) {
-      let is_at_endorsement =
-        when output.address.payment_credential is {
-          Script(hash) -> hash == endorsement_policy_id
-          _ -> False
-        }
-      let has_token =
-        assets.quantity_of(output.value, endorsement_policy_id, token_name) == 1
-      is_at_endorsement && has_token
-    },
-  )
-}
-
-/// Derive own script hash from the spent UTXO's address.
-fn resolve_own_hash(own_ref: OutputReference, tx: Transaction) -> ByteArray {
+/// The input that the transaction spends at `own_ref`.
+fn find_own_input(own_ref: OutputReference, tx: Transaction) -> Input {
   expect Some(own_input) =
     list.find(tx.inputs, fn(i) { i.output_reference == own_ref })
-  expect Script(hash) = own_input.output.address.payment_credential
-  hash
+  own_input
+}
+
+/// True when the continuing challenge output stays at the address of the
+/// spent challenge and keeps its AP3X, less at most `allowed_decrease`.
+fn keeps_challenge_value(
+  cfg: ReputationConfig,
+  own_input: Input,
+  output: Output,
+  allowed_decrease: Int,
+) -> Bool {
+  let input_ap3x =
+    get_ap3x_amount(
+      own_input.output.value,
+      cfg.ap3x_policy_id,
+      cfg.ap3x_asset_name,
+    )
+  let output_ap3x =
+    get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
+  output.address == own_input.output.address && output_ap3x >= input_ap3x - allowed_decrease
 }
 
 /// Validate endorsement slashing triggered by a resolved challenge.
 ///
 /// F-A1 fix: Read challenge from REFERENCE INPUTS (not consumed inputs) to
 /// prevent fake-datum exploit. Verify the challenge UTxO is at the endorsement
-/// validator address and carries a valid challenge token. Parse as the
-/// EndorsementValidatorDatum::Challenge wrapper for type safety.
+/// validator address and holds the challenge token of its datum. Parse as
+/// the EndorsementValidatorDatum::Challenge wrapper for type safety.
+///
+/// A resolved challenge slashes an endorsement at most once: the name of its
+/// challenge token must not be in slashed_by, and the continuing endorsement
+/// adds it to slashed_by.
+///
+/// The challenge locks the bound stake of the endorsement: the bound stake
+/// (`utils.bound_stake`, the target stake whose stake_id is target_stake) is
+/// a reference input, and its challenge_locks contain the challenge token
+/// name. So a challenge slashes only the endorsements of the stake that it
+/// challenged, and these endorsements cannot leave while it is open.
+///
+/// slash = stake_amount × slash_rate_endorser, remaining = stake_amount − slash,
+/// fee = slash × protocol_fee_rate.
+///   - The challenger's payee receives at least slash − fee AP3X and the
+///     treasury at least fee AP3X (MODULE-3 spec: the challenger receives the
+///     endorser slashes less the protocol fee).
+///   - remaining >= min_endorsement: one output continues the endorsement at
+///     the same address with the endorsement token, the same datum except
+///     stake_amount = remaining and the challenge token name added to
+///     slashed_by, and at least remaining AP3X.
+///   - remaining < min_endorsement: the endorsement token is burned and the
+///     endorser's payee receives at least remaining AP3X.
+/// A payee is the stored credential while the agent's record declares it,
+/// else the record's controller key (`utils.payee`; the record is a
+/// reference input). When the two payees are equal, the outputs to that
+/// payee hold both amounts in total.
 fn validate_endorsement_slash(
   tx: Transaction,
   cfg: ReputationConfig,
   refs: CrossValidatorRefs,
   params: ProtocolParams,
+  own_input: Input,
   endorsement_datum: EndorsementDatum,
   challenge_ref: OutputReference,
 ) -> Bool {
@@ -176,98 +158,156 @@ fn validate_endorsement_slash(
       fn(input) { input.output_reference == challenge_ref },
     )
 
-  // F-A1 fix: Verify challenge is at endorsement validator address
-  expect Script(challenge_hash) =
-    challenge_input.output.address.payment_credential
-  let at_endorsement = challenge_hash == refs.endorsement_policy_id
-
-  // F-A1 fix: Verify challenge token present (proves legitimate minting flow)
-  let has_challenge_token =
-    list.any(
-      assets.flatten(challenge_input.output.value),
-      fn(entry) {
-        let (pid, name, _qty) = entry
-        pid == refs.endorsement_policy_id && starts_with(
-          name,
-          challenge_token_prefix,
-        )
-      },
-    )
-
   // F-A1 fix: Parse as EndorsementValidatorDatum wrapper for type safety
   expect InlineDatum(raw_challenge) = challenge_input.output.datum
   expect Challenge(challenge_datum): EndorsementValidatorDatum = raw_challenge
 
-  let same_target = challenge_datum.target_did == endorsement_datum.target_did
-  let is_falsified =
-    challenge_datum.state == Resolved { outcome: CapabilityFalsified }
-  let capability_endorsed =
-    list.has(
-      endorsement_datum.endorsed_capabilities,
+  // The challenge token of the challenge (it also names the challenge in
+  // slashed_by)
+  let challenge_token =
+    derive_challenge_token_name(
+      challenge_datum.challenger_did,
+      challenge_datum.target_did,
       challenge_datum.challenged_capability,
     )
 
   let slash_amount =
     endorsement_datum.stake_amount * params.slash_rate_endorser / 10_000
   let remaining = endorsement_datum.stake_amount - slash_amount
+  let fee = slash_amount * params.protocol_fee_rate / 10_000
+  let token_name =
+    derive_endorsement_token_name(
+      endorsement_datum.endorser_did,
+      endorsement_datum.target_did,
+    )
+  let continues = remaining >= params.min_endorsement
 
   let output_valid =
-    if remaining >= params.min_endorsement {
-      let token_name =
-        derive_endorsement_token_name(
-          endorsement_datum.endorser_did,
-          endorsement_datum.target_did,
+    if continues {
+      let expected_datum: Data =
+        Endorsement(
+          EndorsementDatum {
+            ..endorsement_datum,
+            stake_amount: remaining,
+            slashed_by: [challenge_token, ..endorsement_datum.slashed_by],
+          },
         )
       list.any(
         tx.outputs,
         fn(output) {
-          let has_token =
-            assets.quantity_of(
-              output.value,
-              refs.endorsement_policy_id,
-              token_name,
-            ) == 1
-          if has_token {
-            expect InlineDatum(raw_out) = output.datum
-            expect Endorsement(out_datum): EndorsementValidatorDatum = raw_out
-            // F-NEW-4 fix: Verify AP3X value matches datum claim
-            let ap3x =
-              get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
-            out_datum.stake_amount == remaining && ap3x >= remaining && out_datum.endorser_did == endorsement_datum.endorser_did && out_datum.target_did == endorsement_datum.target_did
-          } else {
-            False
-          }
+          // F-NEW-4 fix: Verify AP3X value matches datum claim
+          let ap3x =
+            get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
+          output.address == own_input.output.address && assets.quantity_of(
+            output.value,
+            refs.endorsement_policy_id,
+            token_name,
+          ) == 1 && output.datum == InlineDatum(expected_datum) && ap3x >= remaining
         },
       )
     } else {
-      let token_name =
-        derive_endorsement_token_name(
-          endorsement_datum.endorser_did,
-          endorsement_datum.target_did,
-        )
-      assets.quantity_of(
-        tx.mint,
-        refs.endorsement_policy_id,
-        token_name,
-      ) == -1
+      assets.quantity_of(tx.mint, refs.endorsement_policy_id, token_name) == -1
     }
 
-  at_endorsement && has_challenge_token && same_target && is_falsified && capability_endorsed && output_valid
+  // Slashed AP3X to the challenger (less the fee) and the fee to the treasury.
+  // When the endorsement closes, the endorser receives the remaining AP3X.
+  let challenger_due = slash_amount - fee
+  let endorser_due =
+    if continues {
+      0
+    } else {
+      remaining
+    }
+  expect Some(challenger_payee) =
+    payee(
+      cfg,
+      tx,
+      challenge_datum.challenger_did,
+      challenge_datum.challenger_credential,
+    )
+  let payouts_valid =
+    if endorser_due <= 0 {
+      ap3x_paid_to(cfg, tx.outputs, challenger_payee) >= challenger_due
+    } else {
+      expect Some(endorser_payee) =
+        payee(
+          cfg,
+          tx,
+          endorsement_datum.endorser_did,
+          endorsement_datum.endorser_credential,
+        )
+      if challenger_payee == endorser_payee {
+        ap3x_paid_to(cfg, tx.outputs, challenger_payee) >= challenger_due + endorser_due
+      } else {
+        and {
+          ap3x_paid_to(cfg, tx.outputs, challenger_payee) >= challenger_due,
+          ap3x_paid_to(cfg, tx.outputs, endorser_payee) >= endorser_due,
+        }
+      }
+    }
+
+  and {
+    // F-A1 fix: the challenge is at the endorsement validator and holds the
+    // challenge token of its datum (proves legitimate minting flow)
+    challenge_input.output.address.payment_credential == Script(
+      refs.endorsement_policy_id,
+    ),
+    assets.quantity_of(
+      challenge_input.output.value,
+      refs.endorsement_policy_id,
+      challenge_token,
+    ) == 1,
+    // P-3: this challenge did not slash this endorsement before
+    !list.has(endorsement_datum.slashed_by, challenge_token),
+    challenge_datum.target_did == endorsement_datum.target_did,
+    challenge_datum.state == Resolved { outcome: CapabilityFalsified },
+    list.has(
+      endorsement_datum.endorsed_capabilities,
+      challenge_datum.challenged_capability,
+    ),
+    // The challenge locks the bound stake of this endorsement
+    list.has(
+      bound_stake(
+        tx.reference_inputs,
+        refs.reputation_policy_id,
+        endorsement_datum.target_did,
+        endorsement_datum.target_stake,
+      ).challenge_locks,
+      challenge_token,
+    ),
+    output_valid,
+    payouts_valid,
+    treasury_paid(cfg, tx.outputs, fee),
+  }
 }
 
-/// Validate challenge withdrawal.
+/// Validate challenge withdrawal (an exit).
+///
+/// The upper bound of the validity range is before
+/// created_at + challenge_response_deadline. The controller of the
+/// challenger's identity record signs; the record can have any status (also
+/// a revoked or retired record), and the validity range is at most one hour
+/// long (Part 2 §7 of `docs/IDENTITY_REGISTRY.md` in agents-marketplace,
+/// Module-3 row). The outputs to the payee hold at least stake_amount AP3X
+/// in total: the payee is challenger_credential when the record still trusts
+/// it, else the controller key of the record (`utils.exit_paid`). The
+/// transaction spends the target's StakeUTXO, which removes the lock of the
+/// challenge (ReleaseChallenge).
 fn validate_challenge_withdrawal(
   tx: Transaction,
   cfg: ReputationConfig,
   refs: CrossValidatorRefs,
   params: ProtocolParams,
   challenge_datum: ReputationChallengeDatum,
-  current_slot: Int,
 ) -> Bool {
   let state_open = challenge_datum.state == Open
   // F-NEW-8 fix: Strict less-than to avoid race with respond at deadline slot
   let before_deadline =
-    current_slot < challenge_datum.created_at + params.challenge_response_deadline
+    when time.upper_bound(tx) is {
+      Some(hi) ->
+        hi < challenge_datum.created_at + params.challenge_response_deadline
+      None -> False
+    }
   let no_response = challenge_datum.response_submitted_at == 0
   let token_name =
     derive_challenge_token_name(
@@ -281,22 +321,28 @@ fn validate_challenge_withdrawal(
       refs.endorsement_policy_id,
       token_name,
     ) == -1
-  let signed = has_credential_signed(tx, challenge_datum.challenger_credential)
 
-  // Verify AP3X returned to challenger
-  let challenger_paid =
-    list.any(
-      tx.outputs,
-      fn(output) {
-        let is_to_challenger =
-          output.address.payment_credential == challenge_datum.challenger_credential
-        let ap3x =
-          get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name)
-        is_to_challenger && ap3x >= challenge_datum.stake_amount
-      },
-    )
-
-  state_open && before_deadline && no_response && token_burned && signed && challenger_paid
+  when identity.window(tx.validity_range) is {
+    Some(_) -> and {
+        exit_paid(
+          tx,
+          cfg,
+          challenge_datum.challenger_did,
+          challenge_datum.challenger_credential,
+          challenge_datum.stake_amount,
+        ),
+        state_open,
+        before_deadline,
+        no_response,
+        token_burned,
+        challenge_validation.spends_target_stake(
+          tx,
+          refs,
+          challenge_datum.target_did,
+        ),
+      }
+    None -> False
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -305,14 +351,20 @@ fn validate_challenge_withdrawal(
 
 validator endorsement(cfg: ReputationConfig) {
   /// Minting policy: controls endorsement and challenge token lifecycle.
+  /// Each redeemer accepts exactly one token of its kind and no other token
+  /// of the policy (the mint redeemers check the exact name).
   mint(
     redeemer: EndorsementMintAction,
     policy_id: PolicyId,
     tx: Transaction,
   ) {
     let params =
-      find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
-    let flat_mint = assets.flatten(tx.mint)
+      find_protocol_params(
+        tx.reference_inputs,
+        cfg.params_script_hash,
+        cfg.params_token_policy,
+      )
+    let own_mint = assets.tokens(tx.mint, policy_id)
 
     // Look up cross-validator refs for cross-reference checks
     let refs = get_cross_refs(cfg, tx.reference_inputs)
@@ -324,7 +376,7 @@ validator endorsement(cfg: ReputationConfig) {
       MintEndorsementToken -> {
         // Use policy_id (== own hash) for self-referential checks
         expect Some(output) =
-          find_endorsement_output(tx, policy_id)
+          find_output_with_prefix(tx, policy_id, endorsement_token_prefix)
         expect InlineDatum(raw_out) = output.datum
         expect Endorsement(out_datum): EndorsementValidatorDatum = raw_out
         endorsement_validation.validate_mint_endorsement(
@@ -333,16 +385,14 @@ validator endorsement(cfg: ReputationConfig) {
       }
       BurnEndorsementToken ->
         // F1 fix: Require script input to prevent orphan burns
-        script_input_exists && list.any(
-          flat_mint,
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == policy_id && starts_with(name,endorsement_token_prefix) && qty == -1
-          },
+        script_input_exists && single_token_change(
+          own_mint,
+          endorsement_token_prefix,
+          -1,
         )
       MintChallengeToken -> {
         expect Some(output) =
-          find_challenge_output(tx, policy_id)
+          find_output_with_prefix(tx, policy_id, challenge_token_prefix)
         expect InlineDatum(raw_out) = output.datum
         expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
         challenge_validation.validate_mint_challenge(
@@ -351,12 +401,10 @@ validator endorsement(cfg: ReputationConfig) {
       }
       BurnChallengeToken ->
         // F1 fix: Require script input to prevent orphan burns
-        script_input_exists && list.any(
-          flat_mint,
-          fn(entry) {
-            let (pid, name, qty) = entry
-            pid == policy_id && starts_with(name,challenge_token_prefix) && qty == -1
-          },
+        script_input_exists && single_token_change(
+          own_mint,
+          challenge_token_prefix,
+          -1,
         )
     }
   }
@@ -370,11 +418,16 @@ validator endorsement(cfg: ReputationConfig) {
   ) {
     expect Some(validator_datum) = datum
     let params =
-      find_protocol_params(tx.reference_inputs, cfg.params_script_hash)
-    expect Some(current_slot) = get_validity_lower_bound(tx)
+      find_protocol_params(
+        tx.reference_inputs,
+        cfg.params_script_hash,
+        cfg.params_token_policy,
+      )
+    expect Some(current_slot) = time.lower_bound(tx)
 
     // Derive own script hash at runtime (no circular dependency)
-    let own_hash = resolve_own_hash(own_utxo, tx)
+    let own_input = find_own_input(own_utxo, tx)
+    expect Script(own_hash) = own_input.output.address.payment_credential
 
     // Look up cross-validator refs from authenticated reference input
     let refs = get_cross_refs(cfg, tx.reference_inputs)
@@ -387,14 +440,16 @@ validator endorsement(cfg: ReputationConfig) {
         when action is {
           IncreaseEndorsement -> {
             expect Some(output) =
-              find_continuing_endorsement(
+              find_output_with_token(
                 tx,
                 own_hash,
-                endorsement_datum.endorser_did,
-                endorsement_datum.target_did,
+                derive_endorsement_token_name(
+                  endorsement_datum.endorser_did,
+                  endorsement_datum.target_did,
+                ),
               )
             expect InlineDatum(raw_out) = output.datum
-        expect Endorsement(out_datum): EndorsementValidatorDatum = raw_out
+            expect Endorsement(out_datum): EndorsementValidatorDatum = raw_out
             endorsement_validation.validate_increase_endorsement(
               tx, cfg, refs, endorsement_datum, out_datum, output,
             )
@@ -405,100 +460,71 @@ validator endorsement(cfg: ReputationConfig) {
             )
           SlashEndorsement { challenge_ref } ->
             validate_endorsement_slash(
-              tx, cfg, refs, params, endorsement_datum, challenge_ref,
+              tx, cfg, refs, params, own_input, endorsement_datum, challenge_ref,
             )
         }
 
-      (Challenge(challenge_datum), ChallengeSpend(action)) ->
+      (Challenge(challenge_datum), ChallengeSpend(action)) -> {
+        // The challenge output that continues this challenge, when the action
+        // keeps the challenge open. It stays at the same address and keeps
+        // the challenge stake.
+        let continuing_challenge =
+          fn(allowed_decrease: Int) {
+            expect Some(output) =
+              find_output_with_token(
+                tx,
+                own_hash,
+                derive_challenge_token_name(
+                  challenge_datum.challenger_did,
+                  challenge_datum.target_did,
+                  challenge_datum.challenged_capability,
+                ),
+              )
+            expect keeps_challenge_value(cfg, own_input, output, allowed_decrease)
+            expect InlineDatum(raw_out) = output.datum
+            expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
+            out_datum
+          }
+
         when action is {
           WithdrawChallenge ->
-            validate_challenge_withdrawal(
-              tx, cfg, refs, params, challenge_datum, current_slot,
-            )
-          RespondToChallenge { counter_evidence_hash, counter_evidence_uri } -> {
-            expect Some(output) =
-              find_continuing_challenge(
-                tx,
-                own_hash,
-                challenge_datum.challenger_did,
-                challenge_datum.target_did,
-                challenge_datum.challenged_capability,
-              )
-            expect InlineDatum(raw_out) = output.datum
-        expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
+            validate_challenge_withdrawal(tx, cfg, refs, params, challenge_datum)
+          RespondToChallenge { counter_evidence_hash, counter_evidence_uri } ->
             challenge_validation.validate_respond_to_challenge(
-              tx, params, challenge_datum, out_datum,
-              counter_evidence_hash, counter_evidence_uri, current_slot,
+              tx, params, challenge_datum, continuing_challenge(0),
+              counter_evidence_hash, counter_evidence_uri,
             )
-          }
-          EscalateToAudit -> {
-            expect Some(output) =
-              find_continuing_challenge(
-                tx,
-                own_hash,
-                challenge_datum.challenger_did,
-                challenge_datum.target_did,
-                challenge_datum.challenged_capability,
-              )
-            expect InlineDatum(raw_out) = output.datum
-            expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
-            // Extract the audit_claim_ref from the output's Escalated state
-            expect Escalated { audit_claim_ref } = out_datum.state
+          EscalateToAudit ->
             challenge_validation.validate_escalate_to_audit(
-              tx, cfg, params, challenge_datum, out_datum,
-              audit_claim_ref, current_slot,
+              tx, cfg, params, challenge_datum, continuing_challenge(0),
             )
-          }
-          ResolveEscalation -> {
-            expect Some(output) =
-              find_continuing_challenge(
-                tx,
-                own_hash,
-                challenge_datum.challenger_did,
-                challenge_datum.target_did,
-                challenge_datum.challenged_capability,
-              )
-            expect InlineDatum(raw_out) = output.datum
-            expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
+          ResolveEscalation ->
             challenge_validation.validate_resolve_escalation(
-              tx, cfg, challenge_datum, out_datum,
+              tx, cfg, challenge_datum, continuing_challenge(0),
             )
-          }
-          ResolveChallenge { outcome } -> {
-            expect Some(output) =
-              find_continuing_challenge(
-                tx,
-                own_hash,
-                challenge_datum.challenger_did,
-                challenge_datum.target_did,
-                challenge_datum.challenged_capability,
-              )
-            expect InlineDatum(raw_out) = output.datum
-        expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
+          ResolveChallenge { outcome } ->
             challenge_validation.validate_resolve_challenge(
-              tx, cfg, challenge_datum, out_datum, outcome,
+              tx, cfg, challenge_datum, continuing_challenge(0), outcome,
             )
-          }
           DefaultJudgment -> {
-            expect Some(output) =
-              find_continuing_challenge(
-                tx,
-                own_hash,
-                challenge_datum.challenger_did,
-                challenge_datum.target_did,
-                challenge_datum.challenged_capability,
-              )
-            expect InlineDatum(raw_out) = output.datum
-        expect Challenge(out_datum): EndorsementValidatorDatum = raw_out
+            // The default judgment fee may leave the challenge output.
+            let fee =
+              challenge_datum.stake_amount * params.default_judgment_fee / 10_000
             challenge_validation.validate_default_judgment(
-              tx, cfg, challenge_datum, out_datum, params, current_slot,
+              tx, cfg, challenge_datum, continuing_challenge(fee), params,
+              current_slot,
             )
           }
           DistributeOutcome ->
             challenge_validation.validate_distribute_outcome(
+              tx, cfg, refs, params, own_input, challenge_datum,
+            )
+          ExpireChallenge ->
+            challenge_validation.validate_expire_challenge(
               tx, cfg, refs, params, challenge_datum,
             )
         }
+      }
 
       _ -> fail @"Datum and redeemer type mismatch"
     }

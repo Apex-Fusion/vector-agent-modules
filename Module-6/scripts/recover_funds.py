@@ -5,7 +5,9 @@ Scans every deploy_state*.json in wallets/ to find all unique holder and
 validator addresses, then sweeps recoverable funds back to the wallet.
 
 Recoverable:
-  - Holder script UTxOs (params/oracle/treasury — always-succeeds validators)
+  - Holder script UTxOs (params/oracle/treasury). An owner-gated holder
+    accepts the spend only with the owner signature, so every sweep lists the
+    wallet key hash as a required signer.
 
 Not recoverable:
   - Proposal UTxOs — require burning proposal tokens that were never minted
@@ -70,7 +72,11 @@ def collect_all_addresses():
 
 
 async def sweep_holder(agent, label: str, script_cbor_hex: str, script_addr_str: str):
-    """Sweep all UTXOs from an always-succeeds holder script address."""
+    """Sweep all UTXOs from a holder script address.
+
+    The wallet key hash is a required signer: an owner-gated holder needs the
+    owner signature, and an always-succeeds holder ignores it.
+    """
     from pycardano import (
         TransactionBuilder, PlutusV3Script,
         Redeemer, ExecutionUnits, PlutusData,
@@ -88,6 +94,7 @@ async def sweep_holder(agent, label: str, script_cbor_hex: str, script_addr_str:
     print(f"  [{label}] {len(utxos)} UTXOs, {total_lovelace / 1_000_000:.1f} ADA")
 
     script = PlutusV3Script(bytes.fromhex(script_cbor_hex))
+    owner_vkh = agent._wallet.payment_verification_key.hash()
     recovered = 0
 
     batch_size = 8
@@ -109,6 +116,7 @@ async def sweep_holder(agent, label: str, script_cbor_hex: str, script_addr_str:
                 builder.collaterals = [wu]
                 break
 
+        builder.required_signers = [owner_vkh]
         builder.fee_buffer = 300_000
 
         try:
@@ -148,6 +156,7 @@ async def sweep_holder(agent, label: str, script_cbor_hex: str, script_addr_str:
                         if (isinstance(val, int) and val >= 5_000_000) or (hasattr(val, 'coin') and val.coin >= 5_000_000):
                             b2.collaterals = [wu]
                             break
+                    b2.required_signers = [owner_vkh]
                     b2.fee_buffer = 300_000
                     t2 = b2.build_and_sign(
                         signing_keys=[agent._wallet.payment_signing_key],
@@ -199,10 +208,10 @@ async def recover():
         total_locked = 0
 
         # ============================================================
-        # Phase 1: Sweep holders (always-succeeds)
+        # Phase 1: Sweep holders (wallet key hash as required signer)
         # ============================================================
         print(f"\n{'─' * 60}")
-        print("Phase 1: Holder Scripts (always-succeeds)")
+        print("Phase 1: Holder Scripts")
         print(f"{'─' * 60}")
 
         for addr, info in sorted(holders.items(), key=lambda x: x[1]["name"]):

@@ -2,7 +2,9 @@
 
 Public read-only frontend for the Module 3 reputation index. Shows a
 leaderboard of staked agents, per-agent score breakdowns, active
-challenges, sybil-detection flags, and aggregate network stats.
+challenges, sybil-detection flags, and aggregate network stats. Each agent
+is a did:vector identity record; the dashboard shows its canonical DID
+(`did:vector:<64 hex>`) and the effective status of its record.
 
 ## Local development
 
@@ -45,20 +47,54 @@ the dashboard only reads.
 | `INDEXER_DB`         | `reputation_index.db` | Path to the SQLite file populated by the indexer |
 | `MODULE3_ROOT`       | parent dir | Path to `Module-3/` (for deploy state lookup) |
 
+## Deploy state
+
+The server and the indexer read the deploy state that the deploy scripts
+write: `deploy/deploy_state.json` (testnet) or
+`deploy/mainnet/deploy_state.json` (mainnet). The state must belong to a
+new deployment. It must have `identity_hash`, `params_token_policy`, the
+params and treasury holders (`params_holder_hash`/`_address`,
+`treasury_holder_hash`/`_address`), the validator hashes and addresses, the
+Module-1 values and the `tx_hashes` of a complete deploy run. The server
+does not start with a missing or old state (an old state has
+`agent_registry_hash` and no `identity_hash`); the error tells you to move
+the old file. Deployment order: identity registry, Module-1, Module-3,
+Module-6.
+
 ## Tabs
 
-- **Leaderboard** — all indexed agents ranked by net score, filterable by
-  tier and capability. Click a row for the full profile.
+- **Leaderboard** — the agents whose identity record is Active, ranked by
+  net score, filterable by tier and capability. The **Identity** column
+  shows the effective status at the last index time: `active`,
+  `suspended`, `revoked`, `retired`, or `missing` (no record, or a missing
+  ancestor record). An agent that is not Active has the tier Unverified and
+  its amounts stay. The leaderboard leaves it out; the toggle "Show agents
+  that are not Active" (`include_all=true`) shows all agents. Click a row
+  for the full profile.
 - **Challenges** — every challenge across all agents (Open / Escalated /
   Resolved), filterable by state.
 - **Sybil Detection** — flags produced by `indexer.sybil.analyze_sybil`
   (cycles + mutual-endorsement clusters), sorted by severity.
-- **Stats** — network-wide totals, tier distribution, last poll time.
+- **Stats** — network-wide totals, tier and identity status distribution,
+  `identity_hash`, last poll time.
 
-The agent detail modal shows the full score breakdown (self-stake,
-endorsement total, challenge total, history bonus, decay) plus every
-endorsement received/given, every challenge, and every history bonus for
-the selected DID.
+The agent detail modal shows the canonical DID, the identity status, the
+full score breakdown (self-stake, endorsement total, challenge total,
+history bonus, decay) plus every stake, every endorsement received/given,
+every challenge, and every history bonus for the selected agent. Each stake
+shows its `stake_id` (the seed output reference of CreateStake; an agent can
+have more than one stake) and its challenge locks (the challenge tokens of
+the open challenges that lock it). Times are POSIX milliseconds, shown as
+local dates.
+
+## Agent identifiers in the API
+
+The `{did}` path of `/v1/reputation/*` accepts the canonical DID
+(`did:vector:<64 lowercase hex>`) or the 64-hex identifier (any case);
+another value gets HTTP 400. Each agent identifier in a response is the
+64-hex identifier (`agent_did`, `endorser_did`, `target_did`,
+`challenger_did`) and the canonical DID (`agent_did_uri`, ...). Sybil flags
+also have `related_did_uris`.
 
 ## Production deployment
 
@@ -123,7 +159,7 @@ Traefik instance, no Module 6 changes.
 
 ### Mainnet deployment checklist
 
-- [x] Contracts deployed — hashes in `deploy/mainnet/deploy_state.json`
+- [ ] Contracts deployed (new deployment with `identity_hash`) — hashes in `deploy/mainnet/deploy_state.json`
 - [x] Indexer runs clean on Vector mainnet (`--network mainnet`)
 - [x] `/api/config`, `/v1/reputation/*`, `/v1/tools/*`, `/health` all live
 - [x] Sybil detection (cycles + clusters) wired into the indexer loop
@@ -164,26 +200,16 @@ the same FastAPI app as external API consumers.
 
 ## Contract addresses (driven by `/api/config`)
 
-These come from `deploy/<network>/deploy_state.json` at server start and are surfaced to the frontend for explorer links.
+These come from `deploy/<network>/deploy_state.json` at server start and
+are surfaced to the frontend for explorer links. `/api/config` returns
+`network`, `explorer`, `reputation_address`, `endorsement_address`,
+`reputation_validator_hash`, `endorsement_validator_hash`, `identity_hash`
+and `identity_address` (the enterprise script address of `identity_hash`).
 
-**Mainnet:**
-```
-reputation_validator:   5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093
-endorsement_validator:  77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf
-refs_token_policy:      09dce01a3c2f2fddeda34a547bb4a5ef9f156feae6c4f45d6d74af84
-reputation_address:     addr1w9gk3cv8rn7mre2urrhpwwkteh8qjgzy5j9u9c3l8w34pyc76uluq
-endorsement_address:    addr1w9m3j6ld07uy2asssqxvwfqu73ykuqxhjqw7jpulkqera0cjm7mmz
-Ogmios:                 https://ogmios.vector.mainnet.apexfusion.org
-Explorer:               https://explorer.vector.mainnet.apexfusion.org
-```
+The values change with each deployment, so this README lists none. Read
+them from the deploy state file or from `/api/config`.
 
-**Testnet:**
-```
-reputation_validator:   7e0d53b6797cd7707eb923b0ab044d4e03ef54cf115a6c14fadfb38e
-endorsement_validator:  715726f3670743b145b92d859cc5025128a99de88cd5ac42120258b4
-refs_token_policy:      b07ad1a1244a388d54463fce3c68aa8d4ddc5a3297159d20590d574f
-Ogmios:                 https://ogmios.vector.testnet.apexfusion.org
-Explorer:               https://explorer.vector.testnet.apexfusion.org
-```
-
-Shared (both networks): `agent_registry` `be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01`, `params_holder` `f98f1dace1ac805615ccc0357b4ecb363a43b947fc99f1a661850867`.
+Ogmios: `https://ogmios.vector.mainnet.apexfusion.org` (mainnet),
+`https://ogmios.vector.testnet.apexfusion.org` (testnet). Explorer:
+`https://explorer.vector.mainnet.apexfusion.org`,
+`https://explorer.vector.testnet.apexfusion.org`.

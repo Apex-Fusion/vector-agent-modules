@@ -2,9 +2,9 @@
 Wallet Factory — Generate, fund, and register simulation agent wallets.
 
 Creates N independent wallets, funds each with ADA + AP3X from the deploy wallet,
-and registers each as an agent in the Agent Registry.
+and registers each as an agent in the identity registry (one identity record
+per wallet; the wallet key is the record's controller).
 """
-import cbor2
 import hashlib
 import json
 import os
@@ -14,22 +14,23 @@ from pathlib import Path
 from pycardano import (
     Address, PaymentSigningKey, PaymentVerificationKey,
     TransactionBuilder, TransactionOutput, TransactionInput,
-    UTxO, RawCBOR, RawPlutusData, Redeemer, PlutusV3Script,
+    UTxO, RawPlutusData,
     MultiAsset, Asset, AssetName, ScriptHash, Value,
-    ExecutionUnits,
 )
 from pycardano.hash import TransactionId
 
 from simulation.config import (
-    NETWORK, REGISTRY_POLICY, REGISTRY_ADDR,
-    AP3X_POLICY_ID, AP3X_ASSET_NAME, WALLET_SKEY,
-    TESTNET_DIR, SIM_DIR, SYSTEM_START_UNIX,
+    NETWORK,
+    AP3X_POLICY_ID, AP3X_ASSET_NAME, WALLET_SKEY, DEPLOYMENT_PATH,
+    SIM_DIR,
 )
 from simulation.chain import (
     OgmiosContext, submit_tx, tx_to_bytes, wait_confirm,
     ensure_collateral, get_wallet_utxos_no_collateral,
-    evaluate_and_rebuild, agent_did_name, resolve_utxo,
+    resolve_utxo,
 )
+from simulation.tx_builder import DeploymentState, build_register_identity
+from simulation.vector_identity import did_from_id
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -189,134 +190,51 @@ def fund_wallets(wallets: list, ada_per_wallet: int = 50_000_000,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# DID REGISTRATION
+# IDENTITY REGISTRATION
 # ═══════════════════════════════════════════════════════════════════════
 
-def register_agents(wallets: list, context: OgmiosContext = None) -> list:
-    """Register each wallet as an agent in the Agent Registry.
-    
-    Returns list of {id, did_hex, tx_hash, reg_utxo_ref}.
+def register_agents(wallets: list, deployment: DeploymentState,
+                    context: OgmiosContext = None) -> list:
+    """Register each wallet as an agent in the identity registry
+    (``tx_builder.build_register_identity``, Part 2 §3.4).
+
+    The deploy wallet pays the fees and the deposit and gives the seed UTxO.
+    The wallet key is the record's controller and signs, so it is the
+    declared credential of the agent's claims. The record has the default
+    Accountable party (the controller). ``deployment`` holds the identity
+    values (``DeploymentState.identity``).
+
+    Returns list of {id, did_hex, did, wallet_address, tx_hash}; did_hex is
+    the 32-byte identifier in hex.
     """
     if context is None:
         context = OgmiosContext()
 
-    # Load deploy wallet (signs all registrations — oracle/admin key)
+    # Load deploy wallet (pays the fees and the deposits of all records)
     deploy_skey = PaymentSigningKey.load(WALLET_SKEY)
     deploy_vkey = PaymentVerificationKey.from_signing_key(deploy_skey)
     deploy_addr = Address(deploy_vkey.hash(), network=NETWORK)
-
-    # Load registry mint script
-    registry_blueprint = Path(TESTNET_DIR / "agent-registry-plutus.json")
-    if not registry_blueprint.exists():
-        # Fallback: use from contracts
-        from simulation.config import CONTRACTS_DIR
-        alt = CONTRACTS_DIR.parent / "agent-registry" / "plutus.json"
-        if alt.exists():
-            registry_blueprint = alt
-
-    registry_script = None
-    if registry_blueprint.exists():
-        with open(registry_blueprint) as f:
-            bp = json.load(f)
-        for v in bp.get("validators", []):
-            if "mint" in v.get("title", ""):
-                registry_script = PlutusV3Script(bytes.fromhex(v["compiledCode"]))
-                break
-
-    registry_policy = ScriptHash(bytes.fromhex(REGISTRY_POLICY))
-    registry_addr = Address.from_primitive(REGISTRY_ADDR)
 
     results = []
 
     for w in wallets:
         print(f"\n  Registering agent {w['id'] + 1}/{len(wallets)}...")
 
-        ensure_collateral(context, deploy_skey, deploy_vkey, deploy_addr)
-        current_slot = context.last_block_slot
-        wallet_utxos = get_wallet_utxos_no_collateral(context, deploy_addr)
-
-        # Sort UTxOs deterministically for seed
-        sorted_utxos = sorted(wallet_utxos,
-            key=lambda u: (bytes(u.input.transaction_id).hex(), u.input.index))
-        seed_utxo = sorted_utxos[0]
-        seed_tx_hash = bytes(seed_utxo.input.transaction_id)
-        seed_tx_idx = seed_utxo.input.index
-
-        did_bytes = agent_did_name(seed_tx_hash, seed_tx_idx)
-        did_hex = did_bytes.hex()
-
-        seed_ref_cbor = cbor2.CBORTag(121, [seed_tx_hash, seed_tx_idx])
-        register_redeemer_cbor = RawCBOR(cbor2.dumps(cbor2.CBORTag(121, [seed_ref_cbor])))
-        register_redeemer = Redeemer(register_redeemer_cbor,
-                                     ExecutionUnits(mem=500_000, steps=200_000_000))
-
-        agent_nft_an = AssetName(did_bytes)
-        mint_ma = MultiAsset()
-        mint_a = Asset()
-        mint_a[agent_nft_an] = 1
-        mint_ma[registry_policy] = mint_a
-
-        # Agent datum: credential = wallet's VKH
-        agent_datum = cbor2.CBORTag(121, [
-            cbor2.CBORTag(121, [bytes(w["vkey"].hash())]),
-            f"SimAgent{w['id']}".encode(),
-            b"Simulation agent",
-            [],
-            b"Vector-Agent",
-            b"",
-            (SYSTEM_START_UNIX + current_slot) * 1000,
-        ])
-
-        nft_ma = MultiAsset()
-        na = Asset()
-        na[agent_nft_an] = 1
-        nft_ma[registry_policy] = na
-
-        if registry_script is not None:
-            builder = TransactionBuilder(context)
-            builder.fee_buffer = 500_000
-            for u in wallet_utxos:
-                builder.add_input(u)
-            builder.mint = mint_ma
-            builder.add_minting_script(registry_script, register_redeemer)
-            builder.add_output(TransactionOutput(
-                registry_addr, Value(15_000_000, nft_ma),
-                datum=RawCBOR(cbor2.dumps(agent_datum))))
-            builder.required_signers = [deploy_vkey.hash()]
-            builder.validity_start = current_slot - 60
-            builder.ttl = current_slot + 3600
-
-            _, budgets = evaluate_and_rebuild(builder, deploy_skey, deploy_vkey,
-                                              deploy_addr, context)
-            for key, b in budgets.items():
-                if "mint" in key:
-                    register_redeemer = Redeemer(register_redeemer_cbor,
-                        ExecutionUnits(mem=b["mem"], steps=b["cpu"]))
-
-            builder2 = TransactionBuilder(context)
-            builder2.fee_buffer = 500_000
-            for u in wallet_utxos:
-                builder2.add_input(u)
-            builder2.mint = mint_ma
-            builder2.add_minting_script(registry_script, register_redeemer)
-            builder2.add_output(TransactionOutput(
-                registry_addr, Value(15_000_000, nft_ma),
-                datum=RawCBOR(cbor2.dumps(agent_datum))))
-            builder2.required_signers = [deploy_vkey.hash()]
-            builder2.validity_start = current_slot - 60
-            builder2.ttl = current_slot + 3600
-
-            tx = builder2.build_and_sign([deploy_skey], change_address=deploy_addr)
-            tx_hash = submit_tx(tx_to_bytes(tx))
-        else:
-            raise RuntimeError("Agent registry mint script not found")
-
-        print(f"    DID: {did_hex[:20]}... TX: {tx_hash}")
+        tx, did_hex = build_register_identity(
+            context, deployment,
+            deploy_skey, deploy_vkey, deploy_addr,
+            w["skey"],
+            name=f"SimAgent{w['id']}".encode(),
+            description=b"Simulation agent",
+            framework=b"Vector-Agent",
+        )
+        tx_hash = submit_tx(tx_to_bytes(tx))
+        print(f"    DID: {did_from_id(did_hex)} TX: {tx_hash}")
 
         results.append({
             "id": w["id"],
             "did_hex": did_hex,
-            "did_bytes": did_bytes,
+            "did": did_from_id(did_hex),
             "wallet_address": w["address_str"],
             "tx_hash": tx_hash,
         })
@@ -328,6 +246,7 @@ def register_agents(wallets: list, context: OgmiosContext = None) -> list:
     save_data = [{
         "id": r["id"],
         "did_hex": r["did_hex"],
+        "did": r["did"],
         "wallet_address": r["wallet_address"],
         "tx_hash": r["tx_hash"],
     } for r in results]
@@ -343,11 +262,18 @@ def register_agents(wallets: list, context: OgmiosContext = None) -> list:
 
 def setup_simulation_wallets(n_agents: int = 50, n_jurors: int = 20,
                               ada_per_wallet: int = 50_000_000,
-                              ap3x_per_wallet: int = 1_000_000_000):
-    """Full setup: generate wallets, fund them, register DIDs.
-    
+                              ap3x_per_wallet: int = 1_000_000_000,
+                              deployment_path: str = DEPLOYMENT_PATH):
+    """Full setup: generate wallets, fund them, register identity records.
+
     n_jurors of the agents will also be registered as jurors (in Phase B).
+    ``deployment_path`` is the deployment manifest with the identity values
+    (see simulation/config.py).
     """
+    deployment = DeploymentState(json.loads(Path(deployment_path).read_text()))
+    # Fail before any transaction when an identity value is missing.
+    deployment.identity
+
     print("=" * 70)
     print(f"  SIMULATION WALLET SETUP — {n_agents} agents")
     print("=" * 70)
@@ -362,8 +288,8 @@ def setup_simulation_wallets(n_agents: int = 50, n_jurors: int = 20,
                            ap3x_per_wallet=ap3x_per_wallet)
 
     # Step 3: Register agents
-    print("\n--- Step 3: Register agents in Agent Registry ---")
-    registrations = register_agents(wallets)
+    print("\n--- Step 3: Register agents in the identity registry ---")
+    registrations = register_agents(wallets, deployment)
 
     # Save complete setup
     setup = {

@@ -529,11 +529,11 @@ def test_submit_claim_output_at_claim_script_addr(
     )
 
 
-def test_submit_claim_reference_inputs_include_cross_refs_and_params_and_registry(
+def test_submit_claim_reference_inputs_include_cross_refs_params_and_identity_record(
     patched_network, captured_builder, mock_ogmios_context,
     sample_deployment, sample_wallet, sample_did_hex,
     sample_claim_hash, default_stake_amount, default_challenge_window_ms,
-    sample_cross_refs_utxo, sample_params_utxo, sample_registry_did_utxo,
+    sample_cross_refs_utxo, sample_params_utxo, sample_identity_record_utxo,
 ):
     _, builder = _run_build_submit_claim(
         patched_network, captured_builder, mock_ogmios_context,
@@ -553,7 +553,7 @@ def test_submit_claim_reference_inputs_include_cross_refs_and_params_and_registr
     for name, utxo in [
         ("cross_refs", sample_cross_refs_utxo),
         ("params", sample_params_utxo),
-        ("registry_did", sample_registry_did_utxo),
+        ("identity_record", sample_identity_record_utxo),
     ]:
         key = (bytes(utxo.input.transaction_id), utxo.input.index)
         assert key in seen_refs, (
@@ -602,12 +602,16 @@ def test_submit_claim_validity_start_is_current_slot_minus_60(
     )
 
 
-def test_submit_claim_ttl_current_slot_plus_3600(
+def test_submit_claim_ttl_is_validity_start_plus_identity_window(
     patched_network, captured_builder, mock_ogmios_context,
     sample_deployment, sample_wallet, sample_did_hex,
     sample_claim_hash, default_stake_amount, default_challenge_window_ms,
 ):
+    """Identity rule (Part 2 §7): hi - lo <= 1 hour. The builder uses
+    ttl = validity_start + IDENTITY_WINDOW_SLOTS (1200 slots), not the old
+    current_slot + 3600."""
     from simulation.tests.conftest import CANNED_SLOT
+    from simulation.tx_builder import IDENTITY_WINDOW_SLOTS
 
     _, builder = _run_build_submit_claim(
         patched_network, captured_builder, mock_ogmios_context,
@@ -615,6 +619,5 @@ def test_submit_claim_ttl_current_slot_plus_3600(
         sample_claim_hash, default_stake_amount, default_challenge_window_ms,
     )
     assert builder.ttl is not None, "ttl must be set"
-    assert abs(builder.ttl - (CANNED_SLOT + 3600)) <= 5, (
-        f"ttl must be ~current_slot+3600 ({CANNED_SLOT + 3600}); got {builder.ttl}"
-    )
+    assert builder.ttl == CANNED_SLOT - 60 + IDENTITY_WINDOW_SLOTS
+    assert builder.ttl - builder.validity_start <= 3600

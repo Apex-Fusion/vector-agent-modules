@@ -30,6 +30,9 @@ use adversarial_auditing/utils.{
   challenge_token_name, claim_token_name, compute_selection_seed,
   select_jurors_prng, sort_dids,
 }
+use adversarial_auditing_tests/identity_fixtures.{
+  auditing_config, placeholder_verdict_policy,
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // TEST CONSTANTS (mirrors claim_tests)
@@ -43,12 +46,6 @@ const challenge_validator_hash: ByteArray =
 
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-
-const registry_policy_id: ByteArray =
-  #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
-
-const registry_script_hash: ByteArray =
-  #"e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
 
 const params_script_hash: ByteArray =
   #"f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
@@ -86,7 +83,7 @@ const valid_reasoning_hash: ByteArray =
 
 fn test_config() -> AuditingConfig {
   AuditingConfig {
-    registry_policy_id,
+    ..auditing_config(placeholder_verdict_policy()),
     oracle_vkh,
     refs_token_policy: #"9999999999999999999999999999999999999999999999999999999999",
   }
@@ -183,6 +180,7 @@ fn open_challenge_datum() -> ChallengeDatum {
     resolution_deadline: 5_400_000,
     eligible_jurors: [],
     state: PendingOracle,
+    claim_token: claim_tok_name(),
   }
 }
 
@@ -679,19 +677,36 @@ test exploit_backdated_challenged_at_blocked() {
 // Resolved{verdict} UTxO instead of burning the challenge token, and the
 // new CleanupResolved action that burns the token after DistributeRewards.
 
+/// The address that funds the AP3X kept in a Resolved output (refund_to).
+fn refund_address() -> Address {
+  Address {
+    payment_credential: VerificationKey(oracle_vkh),
+    stake_credential: None,
+  }
+}
+
 /// Resolved ChallengeDatum with ClaimerWins verdict
 fn resolved_claimer_wins_datum() -> ChallengeDatum {
-  ChallengeDatum { ..voting_challenge_datum(), state: Resolved { verdict: ClaimerWins } }
+  ChallengeDatum {
+    ..voting_challenge_datum(),
+    state: Resolved { verdict: ClaimerWins, refund_to: refund_address() },
+  }
 }
 
 /// Resolved ChallengeDatum with AuditorWins verdict
 fn resolved_auditor_wins_datum() -> ChallengeDatum {
-  ChallengeDatum { ..voting_challenge_datum(), state: Resolved { verdict: AuditorWins } }
+  ChallengeDatum {
+    ..voting_challenge_datum(),
+    state: Resolved { verdict: AuditorWins, refund_to: refund_address() },
+  }
 }
 
 /// Resolved ChallengeDatum with Inconclusive verdict
 fn resolved_inconclusive_datum() -> ChallengeDatum {
-  ChallengeDatum { ..voting_challenge_datum(), state: Resolved { verdict: Inconclusive } }
+  ChallengeDatum {
+    ..voting_challenge_datum(),
+    state: Resolved { verdict: Inconclusive, refund_to: refund_address() },
+  }
 }
 
 // ── A. ResolveJury → Resolved continuing output ─────────────────────
@@ -704,7 +719,7 @@ test test_resolve_jury_v10_claimer_wins_continuing_output() {
   // State transition: Voting → Resolved{ClaimerWins}
   let state_ok =
     when resolved.state is {
-      Resolved { verdict } ->
+      Resolved { verdict, .. } ->
         when verdict is {
           ClaimerWins -> True
           _ -> False
@@ -736,7 +751,7 @@ test test_resolve_jury_v10_auditor_wins_continuing_output() {
   let resolved = resolved_auditor_wins_datum()
   let state_ok =
     when resolved.state is {
-      Resolved { verdict } ->
+      Resolved { verdict, .. } ->
         when verdict is {
           AuditorWins -> True
           _ -> False
@@ -805,7 +820,7 @@ test exploit_resolve_jury_v10_change_auditor_credential_blocked() {
   let evil_cred = VerificationKey(#"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
   let tampered = ChallengeDatum {
     ..ch,
-    state: Resolved { verdict: ClaimerWins },
+    state: Resolved { verdict: ClaimerWins, refund_to: refund_address() },
     auditor_credential: evil_cred,
   }
   // The validator checks: updated.auditor_credential == ch.auditor_credential
@@ -817,7 +832,7 @@ test exploit_resolve_jury_v10_change_stake_amount_blocked() {
   let ch = voting_challenge_datum()
   let tampered = ChallengeDatum {
     ..ch,
-    state: Resolved { verdict: AuditorWins },
+    state: Resolved { verdict: AuditorWins, refund_to: refund_address() },
     stake_amount: 999_999_999,
   }
   // The validator checks: updated.stake_amount == ch.stake_amount
@@ -925,7 +940,7 @@ test test_cleanup_resolved_auditor_wins() {
   let ch = resolved_auditor_wins_datum()
   let state_ok =
     when ch.state is {
-      Resolved { verdict } ->
+      Resolved { verdict, .. } ->
         when verdict is {
           AuditorWins -> True
           _ -> False
@@ -940,7 +955,7 @@ test test_cleanup_resolved_inconclusive() {
   let ch = resolved_inconclusive_datum()
   let state_ok =
     when ch.state is {
-      Resolved { verdict } ->
+      Resolved { verdict, .. } ->
         when verdict is {
           Inconclusive -> True
           _ -> False

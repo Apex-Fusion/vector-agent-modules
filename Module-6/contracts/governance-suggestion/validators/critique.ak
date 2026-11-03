@@ -1,17 +1,15 @@
 // Module 6: Self-Improvement Module — Critique & Endorsement Multi-Validator
 // Handles minting (critique/endorsement tokens) and spending (critique/endorsement lifecycle)
 
-use aiken/collection/list
-use cardano/address.{Script as ScriptCredential}
+use cardano/assets.{PolicyId}
 use cardano/transaction.{OutputReference, Transaction}
-
 use governance_suggestion/critique_validation
 use governance_suggestion/params
 use governance_suggestion/types.{
   BurnCritiqueToken, BurnEndorsementToken, CritiqueAction, CritiqueDatum,
-  GovernanceConfig, GovernanceCrossRefs, GovernanceEndorsementAction,
-  GovernanceEndorsementDatum, IncorporateCritique, MintCritiqueToken,
-  MintEndorsementToken, RewardCritique, WithdrawCritique, WithdrawEndorsement,
+  GovernanceConfig, GovernanceEndorsementAction, GovernanceEndorsementDatum,
+  IncorporateCritique, MintCritiqueToken, MintEndorsementToken, RewardCritique,
+  WithdrawCritique, WithdrawEndorsement,
 }
 use governance_suggestion/utils
 
@@ -19,24 +17,15 @@ use governance_suggestion/utils
 // Multi-Validator: Minting Policy for Critique + Endorsement Tokens
 // ============================================================================
 
-/// Guarded mint policy: requires a spend from critique or endorsement validator.
+/// Mint policy of the critique and endorsement tokens
+/// (critique_validation.validate_critique_mint): the transaction spends a
+/// critique or endorsement input, and it mints exactly the derived tokens of
+/// the critiques and endorsements that it creates. The spend validator hashes
+/// come from GovernanceCrossRefs, because they differ from this policy's hash.
 validator critique_mint(config: GovernanceConfig) {
-  mint(_redeemer: Data, _policy_id: ByteArray, tx: Transaction) {
-    // Guard: a UTXO at the critique or endorsement spend validator must be spent.
-    // This ensures the spend validator's full validation runs.
-    // Uses GovernanceCrossRefs to find the critique_spend hash (different from
-    // this mint policy's own hash since they are separate validators).
+  mint(_redeemer: Data, policy_id: PolicyId, tx: Transaction) {
     let refs = utils.get_cross_refs(config, tx.reference_inputs)
-    list.any(
-      tx.inputs,
-      fn(input) {
-        when input.output.address.payment_credential is {
-          ScriptCredential(hash) ->
-            hash == refs.critique_validator_hash
-          _ -> False
-        }
-      },
-    )
+    critique_validation.validate_critique_mint(refs, policy_id, tx)
   }
 
   else(_) {
@@ -52,66 +41,57 @@ validator critique_spend(config: GovernanceConfig) {
   spend(
     datum_opt: Option<Data>,
     redeemer: CritiqueAction,
-    _own_ref: OutputReference,
+    own_ref: OutputReference,
     tx: Transaction,
   ) {
-    let gov_params =
-      params.read_governance_params(config, tx.reference_inputs)
-    let refs =
-      utils.get_cross_refs(config, tx.reference_inputs)
+    let gov_params = params.read_governance_params(config, tx.reference_inputs)
+    let refs = utils.get_cross_refs(config, tx.reference_inputs)
+    expect Some(raw_datum) = datum_opt
+    expect datum: CritiqueDatum = raw_datum
 
     when redeemer is {
-      MintCritiqueToken -> {
-        // Minting a new critique — validate from the output datum
-        // Find the new critique UTXO in outputs and validate
-        expect Some(raw_datum) = datum_opt
-        expect datum: CritiqueDatum = raw_datum
-
+      MintCritiqueToken ->
+        // A new critique: the checks read the datum of the created output;
+        // `datum` (the spent UTxO) only binds its owner.
         critique_validation.validate_submit_critique(
           config,
           refs,
           gov_params,
           datum,
-          tx.reference_inputs,
-          tx.extra_signatories,
+          own_ref,
+          tx,
         )
-      }
 
-      WithdrawCritique -> {
-        expect Some(raw_datum) = datum_opt
-        expect datum: CritiqueDatum = raw_datum
-
+      WithdrawCritique ->
         critique_validation.validate_withdraw_critique(
           datum,
           tx.reference_inputs,
           refs,
           tx.extra_signatories,
         )
-      }
 
-      IncorporateCritique -> {
-        expect Some(raw_datum) = datum_opt
-        expect datum: CritiqueDatum = raw_datum
+      IncorporateCritique ->
+        // Only inside an amendment of the proposal that the critique names,
+        // which lists this critique; the critique continues unchanged except
+        // incorporated = True.
+        critique_validation.validate_incorporate_critique(
+          refs,
+          datum,
+          own_ref,
+          tx,
+        )
 
-        critique_validation.validate_incorporate_critique(datum, tx.outputs)
-      }
+      RewardCritique { reward_share: _ } ->
+        // Only inside the adoption of the proposal that the critique names;
+        // the critique tokens are burned and the critic receives at least the
+        // returned lovelace.
+        critique_validation.validate_reward_critique(refs, datum, own_ref, tx)
 
-      RewardCritique { reward_share: _ } -> {
-        // Reward distribution happens during AdoptProposal
-        // The proposal validator handles the overall validation;
-        // here we just verify the critique is being consumed properly
-        expect Some(raw_datum) = datum_opt
-        expect datum: CritiqueDatum = raw_datum
-
-        // Must be incorporated to receive reward
-        datum.incorporated
-      }
-
-      BurnCritiqueToken -> {
-        // Burning during proposal finalization — always allowed
-        // The proposal validator ensures this only happens during adopt/reject/expire
-        True
-      }
+      BurnCritiqueToken ->
+        // Only inside the finalisation of the proposal that the critique
+        // names, or of any proposal when the critic signs; the critique tokens
+        // are burned and the critic receives at least the returned lovelace.
+        critique_validation.validate_burn_critique(refs, datum, own_ref, tx)
     }
   }
 
@@ -128,43 +108,39 @@ validator endorsement_spend(config: GovernanceConfig) {
   spend(
     datum_opt: Option<Data>,
     redeemer: GovernanceEndorsementAction,
-    _own_ref: OutputReference,
+    own_ref: OutputReference,
     tx: Transaction,
   ) {
-    let gov_params =
-      params.read_governance_params(config, tx.reference_inputs)
-    let refs =
-      utils.get_cross_refs(config, tx.reference_inputs)
+    let gov_params = params.read_governance_params(config, tx.reference_inputs)
+    let refs = utils.get_cross_refs(config, tx.reference_inputs)
+    expect Some(raw_datum) = datum_opt
+    expect datum: GovernanceEndorsementDatum = raw_datum
 
     when redeemer is {
-      MintEndorsementToken -> {
-        expect Some(raw_datum) = datum_opt
-        expect datum: GovernanceEndorsementDatum = raw_datum
-
+      MintEndorsementToken ->
+        // A new endorsement: the checks read the datum of the created
+        // output; `datum` (the spent UTxO) only binds its owner.
         critique_validation.validate_submit_endorsement(
           config,
           refs,
           gov_params,
           datum,
-          tx.reference_inputs,
-          tx.extra_signatories,
+          own_ref,
+          tx,
         )
-      }
 
-      WithdrawEndorsement -> {
-        expect Some(raw_datum) = datum_opt
-        expect datum: GovernanceEndorsementDatum = raw_datum
-
+      WithdrawEndorsement ->
         critique_validation.validate_withdraw_endorsement(
           datum,
           tx.extra_signatories,
         )
-      }
 
-      BurnEndorsementToken -> {
-        // Burning during proposal finalization — always allowed
-        True
-      }
+      BurnEndorsementToken ->
+        // Only inside the finalisation of the proposal that the endorsement
+        // names, or of any proposal when the endorser signs; the endorsement
+        // tokens are burned and the endorser receives at least the returned
+        // lovelace.
+        critique_validation.validate_burn_endorsement(refs, datum, own_ref, tx)
     }
   }
 

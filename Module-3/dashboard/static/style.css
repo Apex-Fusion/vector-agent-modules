@@ -171,6 +171,22 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .tier-novice      { background: rgba(210, 153, 34, 0.15); color: var(--yellow); border: 1px solid rgba(210, 153, 34, 0.4); }
 .tier-unverified  { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); border: 1px solid var(--border); }
 
+/* Identity status badges (effective status of the identity record) */
+.identity-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.identity-active    { background: rgba(63, 185, 80, 0.15); color: var(--green); border: 1px solid rgba(63, 185, 80, 0.4); }
+.identity-suspended { background: rgba(210, 153, 34, 0.15); color: var(--yellow); border: 1px solid rgba(210, 153, 34, 0.4); }
+.identity-revoked,
+.identity-retired   { background: rgba(248, 81, 73, 0.15); color: var(--red); border: 1px solid rgba(248, 81, 73, 0.4); }
+.identity-missing   { background: rgba(139, 148, 158, 0.15); color: var(--text-muted); border: 1px solid var(--border); }
+
+.filter-bar label.toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+
 /* Sybil severity */
 .sybil-flag {
   display: inline-block;

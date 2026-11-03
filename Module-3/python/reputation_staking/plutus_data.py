@@ -1,24 +1,28 @@
 """
 PyCardano PlutusData definitions matching the on-chain Aiken types.
 
-Source of truth: reputation_staking/lib/reputation_staking/types.ak
+Source of truth: reputation_staking/lib/reputation_staking/types.ak,
+params.ak (ProtocolParams) and config.ak (ReputationConfig).
 
 CONSTR_ID values and field order match the Aiken constructor indices.
-All types are Plutus V3 (Conway).
+All types are Plutus V3 (Conway). Every time is POSIX milliseconds.
 
 Encoding gotchas:
   - Sum type variants use NESTED Constr:
     EndorsementValidatorDatum.Challenge(datum) = Constr(1, [Constr(0, [13 fields])])
   - OutputReference: TransactionId is raw ByteArray in V3 (no Constr wrapper)
+
+An agent identifier in a `*_did` field is the 32-byte identifier of the
+agent's identity record (did:vector), not a DID string.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
+from typing import Any, Type, TypeVar, Union
 
 from pycardano import PlutusData
-from pycardano.serialization import IndefiniteList
+from pycardano.serialization import IndefiniteList, RawCBOR
 
 
 # ── Credential Types ─────────────────────────────────────────────────────────
@@ -41,6 +45,50 @@ class ScriptCredential(PlutusData):
 Credential = Union[VerificationKeyCredential, ScriptCredential]
 
 
+# ── Address (cardano/address) ────────────────────────────────────────────────
+
+
+@dataclass
+class InlineStakeCredential(PlutusData):
+    """Constructor 0 of StakeCredential: Inline(Credential)"""
+    CONSTR_ID = 0
+    credential: Credential
+
+
+@dataclass
+class PointerStakeCredential(PlutusData):
+    """Constructor 1 of StakeCredential: Pointer { slot_number,
+    transaction_index, certificate_index }"""
+    CONSTR_ID = 1
+    slot_number: int
+    transaction_index: int
+    certificate_index: int
+
+
+StakeCredential = Union[InlineStakeCredential, PointerStakeCredential]
+
+
+@dataclass
+class SomeStakeCredential(PlutusData):
+    """Option<StakeCredential>: Some (constructor 0)"""
+    CONSTR_ID = 0
+    stake_credential: StakeCredential
+
+
+@dataclass
+class NoStakeCredential(PlutusData):
+    """Option<StakeCredential>: None (constructor 1)"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class PlutusAddress(PlutusData):
+    """Address { payment_credential, stake_credential }"""
+    CONSTR_ID = 0
+    payment_credential: Credential
+    stake_credential: Union[SomeStakeCredential, NoStakeCredential]
+
+
 # ── OutputReference (Plutus V3) ──────────────────────────────────────────────
 
 
@@ -60,7 +108,19 @@ class OutputReference(PlutusData):
 
 @dataclass
 class StakeDatum(PlutusData):
-    """StakeDatum — one per agent at the reputation validator address."""
+    """StakeDatum — a self-stake at the reputation validator address (8
+    fields).
+
+    last_updated is the upper bound of the validity range of the last owner
+    action (CreateStake, IncreaseStake, DecreaseStake, UpdateCapabilities).
+    challenge_locks holds the challenge token names of the open challenges
+    against the stake (LockForChallenge adds one, ReleaseChallenge and
+    SlashStake remove one); it is empty at creation. stake_id is the output
+    reference of the seed input that CreateStake spent: it is unique and
+    every continuing stake keeps it. The stake token name comes from
+    agent_did, so stake_id tells two stakes of one agent apart. No action
+    burns a stake token: a stake that decays below min_self_stake continues
+    with stake_amount 0."""
     CONSTR_ID = 0
     agent_did: bytes
     owner_credential: Credential
@@ -68,6 +128,8 @@ class StakeDatum(PlutusData):
     staked_capabilities: IndefiniteList  # List<ByteArray>
     last_updated: int  # POSIX ms
     history_points: int
+    challenge_locks: IndefiniteList  # List<ByteArray>
+    stake_id: OutputReference
 
 
 # StakeAction redeemers (reputation spend)
@@ -106,12 +168,30 @@ class ClaimDecayRefundRedeemer(PlutusData):
 
 @dataclass
 class SlashStakeRedeemer(PlutusData):
-    """Constructor 5: SlashStake { challenge_ref }"""
+    """Constructor 5: SlashStake { challenge_ref } (also removes the lock
+    of that challenge)"""
     CONSTR_ID = 5
     challenge_ref: OutputReference
 
 
-# StakeMintAction redeemers (reputation mint)
+@dataclass
+class LockForChallengeRedeemer(PlutusData):
+    """Constructor 6: LockForChallenge (the transaction mints the challenge
+    token; the continuing stake adds its name first in challenge_locks)"""
+    CONSTR_ID = 6
+
+
+@dataclass
+class ReleaseChallengeRedeemer(PlutusData):
+    """Constructor 7: ReleaseChallenge { challenge_ref } (the challenge
+    closes without CapabilityFalsified; the continuing stake drops its
+    lock)"""
+    CONSTR_ID = 7
+    challenge_ref: OutputReference
+
+
+# StakeMintAction redeemers (reputation mint). No redeemer burns a stake
+# token.
 
 @dataclass
 class MintStakeTokenRedeemer(PlutusData):
@@ -120,21 +200,15 @@ class MintStakeTokenRedeemer(PlutusData):
 
 
 @dataclass
-class BurnStakeTokenRedeemer(PlutusData):
-    """Constructor 1: BurnStakeToken"""
+class MintHistoryBonusRedeemer(PlutusData):
+    """Constructor 1: MintHistoryBonus"""
     CONSTR_ID = 1
 
 
 @dataclass
-class MintHistoryBonusRedeemer(PlutusData):
-    """Constructor 2: MintHistoryBonus"""
-    CONSTR_ID = 2
-
-
-@dataclass
 class BurnGenesisBonusRedeemer(PlutusData):
-    """Constructor 3: BurnGenesisBonus"""
-    CONSTR_ID = 3
+    """Constructor 2: BurnGenesisBonus"""
+    CONSTR_ID = 2
 
 
 # ── Endorsement Types (Section 4.2) ─────────────────────────────────────────
@@ -142,7 +216,14 @@ class BurnGenesisBonusRedeemer(PlutusData):
 
 @dataclass
 class EndorsementDatum(PlutusData):
-    """EndorsementDatum — one per endorser-target pair."""
+    """EndorsementDatum — one per endorser-target pair (8 fields).
+    slashed_by holds the challenge token names of the resolved challenges
+    that slashed the endorsement (each one at most once); it is empty at
+    creation. target_stake is the stake_id of the target stake that the
+    endorsement backs (the bound stake): the stake that the creation read.
+    It never changes. A withdrawal needs the bound stake without challenge
+    locks, and a slash needs the bound stake with the lock of the
+    challenge."""
     CONSTR_ID = 0
     endorser_did: bytes
     endorser_credential: Credential
@@ -150,6 +231,8 @@ class EndorsementDatum(PlutusData):
     stake_amount: int
     endorsed_capabilities: IndefiniteList  # List<ByteArray>
     created_at: int  # POSIX ms
+    slashed_by: IndefiniteList  # List<ByteArray>
+    target_stake: OutputReference
 
 
 # EndorsementAction redeemers
@@ -212,9 +295,10 @@ class RepChallengeStateOpen(PlutusData):
 
 @dataclass
 class RepChallengeStateEscalated(PlutusData):
-    """Constructor 1: Escalated { audit_claim_ref }"""
+    """Constructor 1: Escalated { audit_claim_token } — the asset name of
+    the Module 1 claim token that the escalation minted"""
     CONSTR_ID = 1
-    audit_claim_ref: OutputReference
+    audit_claim_token: bytes
 
 
 @dataclass
@@ -322,6 +406,13 @@ class DistributeOutcomeRedeemer(PlutusData):
     CONSTR_ID = 6
 
 
+@dataclass
+class ExpireChallengeRedeemer(PlutusData):
+    """Constructor 7: ExpireChallenge (anybody closes an unresolved
+    challenge after the challenge timeout)"""
+    CONSTR_ID = 7
+
+
 # ── History Bonus Types (Section 4.4) ───────────────────────────────────────
 
 # HistoryBonusSource variants (constructors 0-8)
@@ -395,9 +486,138 @@ class HistoryBonusDatum(PlutusData):
     created_at: int  # POSIX ms
 
 
+# ── Module 1 mirror types (lib/reputation_staking/types.ak) ──────────────────
+# EscalateToAudit creates a Module 1 claim: the claim validator of Module 1
+# mints its claim token with ClaimAction.SubmitClaim, and the claim output
+# holds a Module 1 ClaimDatum (9 fields). ResolveEscalation reads the Module 1
+# challenge as a reference input. These types mirror the Module 1
+# ClaimDatum, ClaimState, ClaimAction.SubmitClaim, ChallengeDatum (11 fields)
+# and ChallengeState (Module-1/contracts/lib/adversarial_auditing/types.ak);
+# the field order of AuditResolved follows Module 1
+# Resolved { verdict, refund_to }.
+
+
+@dataclass
+class AuditOpen(PlutusData):
+    """Constructor 0 of AuditClaimState: Open"""
+    CONSTR_ID = 0
+
+
+@dataclass
+class AuditChallenged(PlutusData):
+    """Constructor 1 of AuditClaimState: Challenged"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class AuditValidated(PlutusData):
+    """Constructor 2 of AuditClaimState: Validated"""
+    CONSTR_ID = 2
+
+
+@dataclass
+class AuditInvalidated(PlutusData):
+    """Constructor 3 of AuditClaimState: Invalidated"""
+    CONSTR_ID = 3
+
+
+AuditClaimStateData = Union[AuditOpen, AuditChallenged, AuditValidated, AuditInvalidated]
+
+
+@dataclass
+class AuditClaimDatum(PlutusData):
+    """AuditClaimDatum — the Module 1 ClaimDatum (9 fields)."""
+    CONSTR_ID = 0
+    claimer_did: bytes
+    claimer_credential: Credential
+    claim_hash: bytes
+    claim_type: bytes
+    storage_uri: bytes
+    stake_amount: int
+    submitted_at: int  # POSIX ms
+    challenge_window: int  # ms
+    state: AuditClaimStateData
+
+
+@dataclass
+class AuditSubmitClaimRedeemer(PlutusData):
+    """Constructor 0 of the Module 1 ClaimAction: SubmitClaim (the mint
+    redeemer of the Module 1 claim validator)."""
+    CONSTR_ID = 0
+
+
+@dataclass
+class AuditClaimerWins(PlutusData):
+    """Constructor 0 of AuditVerdict: ClaimerWins"""
+    CONSTR_ID = 0
+
+
+@dataclass
+class AuditAuditorWins(PlutusData):
+    """Constructor 1 of AuditVerdict: AuditorWins"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class AuditInconclusive(PlutusData):
+    """Constructor 2 of AuditVerdict: AuditInconclusive"""
+    CONSTR_ID = 2
+
+
+AuditVerdictData = Union[AuditClaimerWins, AuditAuditorWins, AuditInconclusive]
+
+
+@dataclass
+class AuditPendingOracle(PlutusData):
+    """Constructor 0 of AuditChallengeState: PendingOracle"""
+    CONSTR_ID = 0
+
+
+@dataclass
+class AuditPendingJury(PlutusData):
+    """Constructor 1 of AuditChallengeState: PendingJury"""
+    CONSTR_ID = 1
+
+
+@dataclass
+class AuditVoting(PlutusData):
+    """Constructor 2 of AuditChallengeState: AuditVoting { selected_jurors }"""
+    CONSTR_ID = 2
+    selected_jurors: IndefiniteList  # List<PolicyId>
+
+
+@dataclass
+class AuditResolved(PlutusData):
+    """Constructor 3 of AuditChallengeState: AuditResolved { verdict,
+    refund_to }. Module 3 reads only the verdict."""
+    CONSTR_ID = 3
+    verdict: AuditVerdictData
+    refund_to: PlutusAddress
+
+
+AuditChallengeStateData = Union[AuditPendingOracle, AuditPendingJury, AuditVoting, AuditResolved]
+
+
+@dataclass
+class AuditChallengeDatum(PlutusData):
+    """AuditChallengeDatum — the Module 1 ChallengeDatum (11 fields)."""
+    CONSTR_ID = 0
+    claim_ref: OutputReference
+    auditor_did: bytes
+    auditor_credential: Credential
+    stake_amount: int
+    evidence_hash: bytes
+    evidence_uri: bytes
+    challenged_at: int  # POSIX ms
+    resolution_deadline: int  # ms
+    eligible_jurors: IndefiniteList  # List<PolicyId>
+    state: AuditChallengeStateData
+    claim_token: bytes
+
+
 # ── Endorsement Validator Wrapper Types ──────────────────────────────────────
 # These use NESTED Constr encoding:
-#   Endorsement(datum) = Constr(0, [Constr(0, [6 fields])])
+#   Endorsement(datum) = Constr(0, [Constr(0, [8 fields])])
 #   Challenge(datum) = Constr(1, [Constr(0, [13 fields])])
 
 
@@ -449,6 +669,7 @@ class ChallengeSpendRedeemer(PlutusData):
         ResolveChallengeRedeemer,
         DefaultJudgmentRedeemer,
         DistributeOutcomeRedeemer,
+        ExpireChallengeRedeemer,
     ]
 
 
@@ -457,27 +678,83 @@ class ChallengeSpendRedeemer(PlutusData):
 
 @dataclass
 class ProtocolParams(PlutusData):
-    """ProtocolParams datum — 22 fields."""
+    """ProtocolParams datum — 22 fields (params.ak).
+
+    The datum of the params record: the output at the params holder that
+    holds the `params` record token. Durations are POSIX milliseconds,
+    genesis_minting_window is an absolute POSIX time in milliseconds, and
+    activity_window counts epochs of epoch_length milliseconds.
+    """
     CONSTR_ID = 0
     min_self_stake: int
     min_endorsement: int
     min_challenge_stake: int
-    stake_cooldown: int
-    endorsement_cooldown: int
+    stake_cooldown: int  # ms
+    endorsement_cooldown: int  # ms
     decay_rate: int
-    activity_window: int
+    activity_window: int  # epochs
     decay_collector_fee: int
     history_multiplier: int
     max_endorsement_multiplier: int
     slash_rate_endorser: int
     protocol_fee_rate: int
-    challenge_response_deadline: int
-    min_agent_age: int
-    escalation_window: int
+    challenge_response_deadline: int  # ms
+    min_agent_age: int  # ms
+    escalation_window: int  # ms
     default_judgment_fee: int
     genesis_agent_cap: int
     genesis_bonus_amount: int
-    genesis_minting_window: int
-    genesis_protection_period: int
+    genesis_minting_window: int  # POSIX ms
+    genesis_protection_period: int  # ms
     valid_capabilities: IndefiniteList  # List<ByteArray>
-    epoch_length: int
+    epoch_length: int  # ms
+
+
+# ── ReputationConfig ─────────────────────────────────────────────────────────
+
+
+@dataclass
+class ReputationConfig(PlutusData):
+    """ReputationConfig — 12 fields (config.ak), the parameter of both
+    validators. identity_hash is the last field. The deploy scripts apply
+    it; the SDK reads its values from the deploy state
+    (reputation_staking.deployment)."""
+    CONSTR_ID = 0
+    refs_token_policy: bytes
+    audit_claim_validator_hash: bytes
+    audit_challenge_validator_hash: bytes
+    audit_jury_pool_hash: bytes
+    audit_refs_token_policy: bytes
+    params_script_hash: bytes
+    treasury_script_hash: bytes
+    ap3x_policy_id: bytes
+    ap3x_asset_name: bytes
+    oracle_credential: bytes
+    params_token_policy: bytes
+    identity_hash: bytes
+
+
+# ── Inline datums of UTxOs ───────────────────────────────────────────────────
+
+T = TypeVar("T", bound=PlutusData)
+
+
+def datum_cbor(datum: Any) -> bytes:
+    """The CBOR bytes of an inline datum: RawCBOR (Ogmios), a PlutusData
+    object, or bytes. Raises ValueError for an output without a datum."""
+    if datum is None:
+        raise ValueError("the output has no inline datum")
+    if isinstance(datum, RawCBOR):
+        return bytes(datum.cbor)
+    if isinstance(datum, (bytes, bytearray)):
+        return bytes(datum)
+    to_cbor = getattr(datum, "to_cbor", None)
+    if callable(to_cbor):
+        encoded = to_cbor()
+        return bytes.fromhex(encoded) if isinstance(encoded, str) else bytes(encoded)
+    raise ValueError(f"cannot read an inline datum from {type(datum).__name__}")
+
+
+def decode_datum(cls: Type[T], datum: Any) -> T:
+    """Decode an inline datum as `cls`."""
+    return cls.from_cbor(datum_cbor(datum))

@@ -25,8 +25,8 @@ Fixtures:
     sample_claim_hash            — blake2b_256(b"test claim") (32 bytes)
     sample_wallet_utxo_base_ap3x — one Path-B wallet UTxO holding base
                                    AP3X (coin field) and nothing else
-    sample_registry_did_utxo     — registry UTxO carrying the claimer's
-                                   DID NFT (for reference_inputs)
+    sample_identity_record_utxo  — the claimer's identity record at the
+                                   identity address (for reference_inputs)
     sample_ref_script_utxo       — fake claim minting script reference
                                    UTxO (has a script attached)
     captured_builder             — pytest fixture that patches
@@ -39,6 +39,8 @@ Fixtures:
 from __future__ import annotations
 
 import hashlib
+import sys
+from pathlib import Path
 from typing import List
 
 import cbor2
@@ -62,8 +64,15 @@ from pycardano import (
     TransactionOutput,
     UTxO,
     Value,
+    VerificationKeyHash,
 )
 from pycardano.backend.base import ProtocolParameters
+
+# The shared simulate harness (shared/python/aiken_simulate.py) runs the
+# applied validators of contracts/plutus.json on a built transaction.
+SHARED_PYTHON = Path(__file__).resolve().parents[3] / "shared" / "python"
+if str(SHARED_PYTHON) not in sys.path:
+    sys.path.insert(0, str(SHARED_PYTHON))
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -84,20 +93,58 @@ V13_DEPLOYMENT = {
         "challenge": "621e60f762e906df3b03c9290947aa501b3c2675f3a444db6722e3a0",
         "claim": "0be5a9707ba3b16ed22fb911131cb8632be755f45b7f00bfea0c420c",
         "jury_pool": "276d8a73af1afb659a9cdd668952bb8922efc7aaf9391883bceb6b60",
+        "identity_party": "e1" * 28,
     },
     "addresses": {
         "claim": "addr1wy97t2ts0w3mzmkj97u3zycuhp3jhe6473dh7q9lagxyyrqgfqlpd",
         "challenge": "addr1w93puc8hvt5sdhemq0yjjz284fgpk0pxwhe6g3xmvu3w8gqnhtfus",
         "jury_pool": "addr1wynkmznn4ud0kev6nnwkdz2jhwyj9m784tunjxyrhn4kkcq3j44ht",
     },
+    # Identity values (test hashes; see simulation/config.py).
+    "identity": {
+        "identity_hash": "1d" * 28,
+        "identity_ref": "a1" * 32 + "#0",
+        "config_policy": "cf" * 28,
+        "config_holder": "c4" * 28,
+    },
+    "identity_party_ref": "a2" * 32 + "#0",
+    "module1": {"oracle_vkh": "0a" * 28, "refs_token_policy": "99" * 28},
+    # The placeholder policy of deploy/identity/config.json.
+    "verdict_policy": {
+        "auditor_wins": {"action": "suspend", "duration_ms": 604_800_000},
+        "claimer_wins": None,
+    },
 }
 
-# Mainnet-style registry (matches config.REGISTRY_POLICY / REGISTRY_ADDR)
-REGISTRY_POLICY = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
-REGISTRY_ADDR_STR = "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42"
+IDENTITY_HASH = bytes.fromhex(V13_DEPLOYMENT["identity"]["identity_hash"])
+IDENTITY_PARTY_HASH = bytes.fromhex(V13_DEPLOYMENT["hashes"]["identity_party"])
+CONFIG_POLICY = bytes.fromhex(V13_DEPLOYMENT["identity"]["config_policy"])
+CONFIG_HOLDER = bytes.fromhex(V13_DEPLOYMENT["identity"]["config_holder"])
+IDENTITY_ADDR = Address(ScriptHash(IDENTITY_HASH), network=Network.MAINNET)
+CONFIG_HOLDER_ADDR = Address(ScriptHash(CONFIG_HOLDER), network=Network.MAINNET)
 
 # Canned slot used by the fake context (deterministic for all tests).
 CANNED_SLOT = 100_000_000
+
+# The wallet that funded the AP3X of a Resolved challenge output in
+# ResolveJury: ``Resolved { verdict, refund_to }`` names it, and
+# CleanupResolved pays that AP3X back to it.
+RESOLVE_FUNDER_KEY_HASH = hashlib.blake2b(b"resolve-jury-funder", digest_size=28).digest()
+RESOLVE_FUNDER_ADDR = Address(
+    payment_part=VerificationKeyHash(RESOLVE_FUNDER_KEY_HASH), network=Network.MAINNET,
+)
+# Plutus Data of RESOLVE_FUNDER_ADDR:
+# Address { payment_credential: VerificationKey(h), stake_credential: None }.
+RESOLVE_FUNDER_DATA = cbor2.CBORTag(121, [
+    cbor2.CBORTag(121, [RESOLVE_FUNDER_KEY_HASH]), cbor2.CBORTag(122, []),
+])
+
+
+def resolved_state_data(verdict_tag: int = 121) -> cbor2.CBORTag:
+    """``Resolved { verdict, refund_to }`` (CBORTag 124): the verdict
+    constructor ``verdict_tag`` (121 ClaimerWins, 122 AuditorWins, 123
+    Inconclusive) and refund_to = RESOLVE_FUNDER_ADDR."""
+    return cbor2.CBORTag(124, [cbor2.CBORTag(verdict_tag, []), RESOLVE_FUNDER_DATA])
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -185,6 +232,10 @@ class FakeOgmiosContext:
         self._pp = _fake_protocol_params()
         self._utxos_by_addr: dict[str, list[UTxO]] = {}
         self.submitted_txs: list[bytes] = []  # unused here — TX never submitted
+        # Reward balances by script hash (reward_account_balance).
+        self.reward_balances: dict[bytes, int] = {}
+        # The identity configuration record at CA (names the test M1).
+        self._utxos_by_addr[str(CONFIG_HOLDER_ADDR)] = [config_record_utxo()]
 
     @property
     def protocol_param(self):
@@ -197,11 +248,106 @@ class FakeOgmiosContext:
     def genesis_param(self):
         return None
 
+    @property
+    def network(self):
+        return Network.MAINNET
+
+    def reward_account_balance(self, script_hash: bytes) -> int:
+        """Fixed reward balances for the offline tests (default 0)."""
+        return self.reward_balances.get(bytes(script_hash), 0)
+
     def utxos(self, address):
         return list(self._utxos_by_addr.get(str(address), []))
 
     def register_utxos(self, address, utxos: List[UTxO]):
         self._utxos_by_addr[str(address)] = utxos
+
+
+def config_record_utxo(m1: bytes = None) -> UTxO:
+    """The identity configuration record at CA: the config_policy token
+    ``identity-config`` and the inline datum M1 (a 28-byte byte string)."""
+    ma = MultiAsset()
+    asset = Asset()
+    asset[AssetName(b"identity-config")] = 1
+    ma[ScriptHash(CONFIG_POLICY)] = asset
+    m1 = IDENTITY_PARTY_HASH if m1 is None else m1
+    to = TransactionOutput(
+        CONFIG_HOLDER_ADDR, Value(coin=2_000_000, multi_asset=ma),
+        datum=RawCBOR(cbor2.dumps(m1)),
+    )
+    return UTxO(TransactionInput(_fake_txid(b"config-record"), 0), to)
+
+
+def identity_record_utxo(tag: bytes, agent_id_hex: str, controller_vkey, *,
+                         keys=(), module1_role=None, status=None,
+                         coin: int = 12_000_000) -> UTxO:
+    """An authentic identity record at IA for the offline tests. The record
+    has the Accountable party ControllerSet (rights 3) and, with
+    ``module1_role``, a Module-1 party; both start one day before the
+    canned slot."""
+    from simulation import identity_party as ip
+    from simulation import vector_identity as vi
+    not_before = (1752057484 + CANNED_SLOT - 86_400) * 1000
+    parties = [vi.Party(
+        vi.Role.ACCOUNTABLE, vi.Signer.controller_set(), None, not_before,
+        None, 3, None,
+    )]
+    if module1_role is not None:
+        parties.append(ip.module1_party(IDENTITY_PARTY_HASH, module1_role, not_before))
+    datum = vi.IdentityDatum(
+        controller=bytes(controller_vkey.payload),
+        keys=tuple(keys),
+        parties=tuple(parties),
+        guardian_threshold=0,
+        pending_recovery=None,
+        lineage=vi.Lineage(),
+        subagent_epoch=0,
+        name=b"test agent",
+        description=b"",
+        framework=b"Vector-Agent",
+        endpoint=b"",
+        capabilities=(),
+        created_at=not_before,
+        status=status or vi.Status.active(),
+    )
+    ma = MultiAsset()
+    asset = Asset()
+    asset[AssetName(bytes.fromhex(agent_id_hex))] = 1
+    ma[ScriptHash(IDENTITY_HASH)] = asset
+    to = TransactionOutput(
+        IDENTITY_ADDR, Value(coin=coin, multi_asset=ma),
+        datum=RawCBOR(vi.identity_datum_cbor(datum)),
+    )
+    return UTxO(TransactionInput(_fake_txid(tag), 0), to)
+
+
+def sample_claim_token() -> bytes:
+    """The claim token of sample_claim_utxo / sample_claim_utxo_challenged:
+    b"clm_" || blake2b_256(OutputReference(claim-seed-txid, 0))[:28]."""
+    seed_txid = hashlib.blake2b(b"claim-seed-txid", digest_size=32).digest()
+    seed_ref_cbor = _output_reference_cbor(seed_txid, 0)
+    return b"clm_" + hashlib.blake2b(seed_ref_cbor, digest_size=32).digest()[:28]
+
+
+def identity_ref_script_utxo() -> UTxO:
+    """The reference-script UTxO of the identity validator (dummy script)."""
+    txid, idx = V13_DEPLOYMENT["identity"]["identity_ref"].split("#")
+    to = TransactionOutput(
+        IDENTITY_ADDR, Value(coin=2_000_000),
+        script=PlutusV3Script(b"\x46\x45\x01\x00\x00\x22\x31"),
+    )
+    return UTxO(TransactionInput(TransactionId(bytes.fromhex(txid)), int(idx)), to)
+
+
+def identity_party_ref_script_utxo() -> UTxO:
+    """The reference-script UTxO of identity_party (dummy script)."""
+    txid, idx = V13_DEPLOYMENT["identity_party_ref"].split("#")
+    to = TransactionOutput(
+        Address(ScriptHash(IDENTITY_PARTY_HASH), network=Network.MAINNET),
+        Value(coin=2_000_000),
+        script=PlutusV3Script(b"\x46\x45\x01\x00\x00\x22\x32"),
+    )
+    return UTxO(TransactionInput(TransactionId(bytes.fromhex(txid)), int(idx)), to)
 
 
 @pytest.fixture
@@ -235,14 +381,8 @@ def sample_wallet():
 
 @pytest.fixture
 def sample_did_hex() -> str:
-    """28-byte policy_id hex for the claimer's DID NFT.
-
-    NOTE: Registry DID NFTs use the PolicyId type (28 bytes). The upstream
-    ClaimDatum field `claimer_did: PolicyId` is therefore 28 bytes — NOT 32.
-    (The task brief says "32-byte hex" but the contract type is PolicyId
-    which is 28 bytes; we honour the contract.)
-    """
-    return hashlib.blake2b(b"sample-claimer-did", digest_size=28).hexdigest()
+    """32-byte identity identifier (hex) of the claimer."""
+    return hashlib.blake2b(b"sample-claimer-did", digest_size=32).hexdigest()
 
 
 @pytest.fixture
@@ -286,24 +426,16 @@ def sample_wallet_collateral_utxo(sample_wallet):
 
 
 @pytest.fixture
-def sample_registry_did_utxo(sample_wallet, sample_did_hex):
-    """Registry UTxO carrying the claimer's DID NFT (qty 1).
-
-    The claim validator's redeemer logic requires a reference input
-    proving the claimer actually owns their DID — so this UTxO MUST
-    appear in builder.reference_inputs.
-    """
-    reg_policy = ScriptHash(bytes.fromhex(REGISTRY_POLICY))
-    did_an = AssetName(bytes.fromhex(sample_did_hex))
-    ma = MultiAsset()
-    asset = Asset()
-    asset[did_an] = 1
-    ma[reg_policy] = asset
-
-    reg_addr = Address.from_primitive(REGISTRY_ADDR_STR)
-    ti = TransactionInput(_fake_txid(b"registry-did-utxo"), 0)
-    to = TransactionOutput(reg_addr, Value(coin=2_000_000, multi_asset=ma))
-    return UTxO(ti, to)
+def sample_identity_record_utxo(sample_wallet, sample_did_hex):
+    """The claimer's identity record at IA: controller = the claimer's
+    wallet key, Module-1 as an Accountable party. Claim submission reads it
+    as a reference input."""
+    from simulation.vector_identity import Role
+    _, vkey, _ = sample_wallet
+    return identity_record_utxo(
+        b"identity-claimer-record", sample_did_hex, vkey,
+        module1_role=Role.ACCOUNTABLE,
+    )
 
 
 @pytest.fixture
@@ -377,7 +509,7 @@ def sample_deployment(
 
 @pytest.fixture
 def patched_network(monkeypatch, sample_wallet, sample_wallet_utxo_base_ap3x,
-                    sample_wallet_collateral_utxo, sample_registry_did_utxo,
+                    sample_wallet_collateral_utxo, sample_identity_record_utxo,
                     mock_ogmios_context):
     """Patch network-touching helpers in simulation.tx_builder.
 
@@ -385,8 +517,8 @@ def patched_network(monkeypatch, sample_wallet, sample_wallet_utxo_base_ap3x,
     - `evaluate_and_rebuild` → returns canned (b"", {"mint:0": budget})
     - `submit_tx` → returns a fake tx hash
     - `get_wallet_utxos_no_collateral` → returns the fixture wallet UTxO
-    - `context.utxos(REGISTRY_ADDR)` → yields the claimer's registry DID
-      UTxO (so Catherine's Path-B impl can locate it)
+    - `context.utxos(IDENTITY_ADDR)` → yields the claimer's identity record
+      (the builder reads it as a reference input)
 
     Also registers the wallet UTxOs on the mock context so the builder can
     see them if it calls `context.utxos(wallet_addr)` directly.
@@ -400,11 +532,8 @@ def patched_network(monkeypatch, sample_wallet, sample_wallet_utxo_base_ap3x,
         wallet_addr,
         [sample_wallet_collateral_utxo, sample_wallet_utxo_base_ap3x],
     )
-    # Register the registry DID UTxO at REGISTRY_ADDR
-    mock_ogmios_context.register_utxos(
-        REGISTRY_ADDR_STR,
-        [sample_registry_did_utxo],
-    )
+    # The claimer's identity record at IA
+    mock_ogmios_context.register_utxos(IDENTITY_ADDR, [sample_identity_record_utxo])
 
     monkeypatch.setattr(tx_mod, "ensure_collateral", lambda *a, **kw: None)
     monkeypatch.setattr(
@@ -422,8 +551,8 @@ def patched_network(monkeypatch, sample_wallet, sample_wallet_utxo_base_ap3x,
     monkeypatch.setattr(tx_mod, "submit_tx", lambda tx_bytes: "fake_tx_hash_" + "00" * 16)
     monkeypatch.setattr(tx_mod, "tx_to_bytes", lambda tx: b"\x00" * 64)
     monkeypatch.setattr(tx_mod, "wait_confirm", lambda *a, **kw: None)
-    # resolve_utxo may be called to locate the claimer's registry DID UTxO.
-    monkeypatch.setattr(tx_mod, "resolve_utxo", lambda txid, idx: sample_registry_did_utxo)
+    # resolve_utxo may be called by the builder; return the record UTxO.
+    monkeypatch.setattr(tx_mod, "resolve_utxo", lambda txid, idx: sample_identity_record_utxo)
     return None
 
 
@@ -518,14 +647,10 @@ def sample_auditor_wallet():
 
 @pytest.fixture
 def sample_auditor_did_hex(sample_did_hex) -> str:
-    """28-byte PolicyId hex for the auditor's DID NFT — deterministic and
-    GUARANTEED distinct from `sample_did_hex` (the claimer's DID).
-
-    This fixture is the canonical "other party" DID for all
-    open-challenge tests; reuses blake2b with a different tag so the
-    resulting bytes differ from the claimer.
+    """32-byte identity identifier (hex) of the auditor — deterministic
+    and GUARANTEED distinct from `sample_did_hex` (the claimer's DID).
     """
-    auditor = hashlib.blake2b(b"sample-auditor-did", digest_size=28).hexdigest()
+    auditor = hashlib.blake2b(b"sample-auditor-did", digest_size=32).hexdigest()
     assert auditor != sample_did_hex, (
         "auditor DID must differ from claimer DID — fixture collision"
     )
@@ -547,7 +672,7 @@ def sample_eligible_jurors(sample_did_hex, sample_auditor_did_hex) -> list:
     jurors = []
     i = 0
     while len(jurors) < 15:
-        did = hashlib.blake2b(f"juror-{i}".encode(), digest_size=28).digest()
+        did = hashlib.blake2b(f"juror-{i}".encode(), digest_size=32).digest()
         if did not in exclude:
             jurors.append(did)
         i += 1
@@ -578,23 +703,14 @@ def sample_auditor_wallet_collateral_utxo(sample_auditor_wallet):
 
 
 @pytest.fixture
-def sample_auditor_registry_did_utxo(sample_auditor_did_hex):
-    """Registry UTxO bearing the auditor's DID NFT (qty 1) — must appear
-    in `builder.reference_inputs` of the OpenChallenge TX so the
-    challenge validator can authenticate the auditor via
-    `verify_active_did`.  See step4 v13 lines 881-893.
-    """
-    reg_policy = ScriptHash(bytes.fromhex(REGISTRY_POLICY))
-    did_an = AssetName(bytes.fromhex(sample_auditor_did_hex))
-    ma = MultiAsset()
-    asset = Asset()
-    asset[did_an] = 1
-    ma[reg_policy] = asset
-
-    reg_addr = Address.from_primitive(REGISTRY_ADDR_STR)
-    ti = TransactionInput(_fake_txid(b"registry-auditor-did-utxo"), 0)
-    to = TransactionOutput(reg_addr, Value(coin=2_000_000, multi_asset=ma))
-    return UTxO(ti, to)
+def sample_auditor_identity_record_utxo(sample_auditor_wallet, sample_auditor_did_hex):
+    """The auditor's identity record at IA (controller = the auditor's
+    wallet key) — must appear in `builder.reference_inputs` of the
+    OpenChallenge TX (identity_ok of the auditor)."""
+    _, vkey, _ = sample_auditor_wallet
+    return identity_record_utxo(
+        b"identity-auditor-record", sample_auditor_did_hex, vkey,
+    )
 
 
 @pytest.fixture
@@ -732,8 +848,8 @@ def patched_network_for_challenge(
     sample_auditor_wallet,
     sample_auditor_wallet_utxo_base_ap3x,
     sample_auditor_wallet_collateral_utxo,
-    sample_registry_did_utxo,
-    sample_auditor_registry_did_utxo,
+    sample_identity_record_utxo,
+    sample_auditor_identity_record_utxo,
     sample_claim_utxo,
     mock_ogmios_context,
 ):
@@ -749,8 +865,8 @@ def patched_network_for_challenge(
         catch an unexpected resolution)
       - `evaluate_and_rebuild` → returns canned mint + spend budgets
       - `submit_tx` / `tx_to_bytes` / `wait_confirm` → stubbed
-      - `context.utxos(REGISTRY_ADDR)` → yields BOTH the claimer's and
-        auditor's DID UTxOs (challenge validator needs both)
+      - `context.utxos(IDENTITY_ADDR)` → yields BOTH identity records (the
+        builder reads the auditor's record)
 
     Registers the auditor wallet UTxOs on the mock context.
     """
@@ -764,11 +880,10 @@ def patched_network_for_challenge(
         [sample_auditor_wallet_collateral_utxo,
          sample_auditor_wallet_utxo_base_ap3x],
     )
-    # BOTH DID UTxOs at the registry — builder must locate the auditor's
-    # DID (and reuse the claimer's from the claim UTxO's datum).
+    # BOTH identity records at IA — the builder reads the auditor's record.
     mock_ogmios_context.register_utxos(
-        REGISTRY_ADDR_STR,
-        [sample_registry_did_utxo, sample_auditor_registry_did_utxo],
+        IDENTITY_ADDR,
+        [sample_identity_record_utxo, sample_auditor_identity_record_utxo],
     )
 
     monkeypatch.setattr(tx_mod, "ensure_collateral", lambda *a, **kw: None)
@@ -969,6 +1084,7 @@ def sample_challenge_utxo_pending_jury(
         default_resolution_deadline_ms,
         list(sample_eligible_jurors),  # already sorted by the eligible-jurors fixture
         pending_jury_state,
+        sample_claim_token(),                            # [10] claim_token
     ])
     challenge_datum = RawCBOR(cbor2.dumps(datum_obj))
 
@@ -1273,6 +1389,7 @@ def sample_challenge_utxo_voting(
         default_resolution_deadline_ms,
         list(sample_eligible_jurors),
         voting_state,
+        sample_claim_token(),
     ])
     challenge_datum = RawCBOR(cbor2.dumps(datum_obj))
 
@@ -1668,6 +1785,7 @@ def sample_challenge_utxo_voting_for_reveal(
         default_resolution_deadline_ms,
         list(sample_eligible_jurors),
         voting_state,
+        sample_claim_token(),
     ])
     challenge_datum = RawCBOR(cbor2.dumps(datum_obj))
 
@@ -2293,7 +2411,7 @@ def patched_network_for_select_jury(
 #   validators/claim.ak     :: validate_forfeit_claim  (lines 419-495)
 #   types.ak :: ChallengeAction::ResolveJury  Constr3 -> CBORTag(124, [])
 #   types.ak :: ClaimAction::ForfeitClaim    Constr3 -> CBORTag(124, [])
-#   types.ak :: ChallengeState::Resolved     Constr3 -> CBORTag(124, [verdict])
+#   types.ak :: ChallengeState::Resolved     Constr3 -> CBORTag(124, [verdict, refund_to])
 #   types.ak :: Verdict enum —
 #         ClaimerWins   Constr0 -> CBORTag(121, [])
 #         AuditorWins   Constr1 -> CBORTag(122, [])
@@ -2727,6 +2845,8 @@ def sample_deployment_with_all_refs(
     dep._jury_pool_ref_utxo = sample_jury_pool_ref_script_utxo
     dep._cross_refs_resolved = sample_cross_refs_utxo
     dep._params_resolved = sample_params_utxo
+    dep._identity_ref_utxo = identity_ref_script_utxo()
+    dep._identity_party_ref_utxo = identity_party_ref_script_utxo()
     monkeypatch.setattr(dep, "resolve_refs", lambda: None)
     return dep
 
@@ -2945,7 +3065,7 @@ def sample_resolved_challenge_utxo(
       - coin = default_stake_amount (auditor stake preserved, NOT drained)
       - multi_asset = { challenge_policy: { challenge_token_bytes: 1 } }
       - field[9] state = Resolved { verdict = ClaimerWins }
-          CBORTag(124, [CBORTag(121, [])])
+          CBORTag(124, [CBORTag(121, []), refund_to])
 
     We pick ClaimerWins arbitrarily — the fee_per_juror math does not
     depend on the verdict constructor (validator L791-811 uses
@@ -2973,8 +3093,8 @@ def sample_resolved_challenge_utxo(
 
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
     # Resolved { verdict = ClaimerWins }
-    #   = CBORTag(124, [CBORTag(121, [])])
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    #   = CBORTag(124, [CBORTag(121, []), RESOLVE_FUNDER_DATA])
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [
@@ -2988,6 +3108,7 @@ def sample_resolved_challenge_utxo(
         default_resolution_deadline_ms,
         list(sample_eligible_jurors),
         resolved_state,                                 # [9] state = Resolved
+        sample_claim_token(),                           # [10] claim_token
     ])
     challenge_datum = RawCBOR(cbor2.dumps(datum_obj))
 
@@ -3015,8 +3136,8 @@ def sample_resolved_challenge_utxo_auditor_wins(
     raw = bytes(orig.output.datum.cbor) if hasattr(orig.output.datum, "cbor") else bytes(orig.output.datum)
     decoded = cbor2.loads(raw)
     fields = list(decoded.value)
-    # Flip verdict inside Resolved wrapper: CBORTag(124, [CBORTag(122, [])])
-    fields[9] = cbor2.CBORTag(124, [cbor2.CBORTag(122, [])])
+    # Flip verdict inside Resolved: CBORTag(124, [CBORTag(122, []), refund_to])
+    fields[9] = resolved_state_data(122)
     new_datum = RawCBOR(cbor2.dumps(cbor2.CBORTag(121, fields)))
 
     # Fresh txid so dispatchers can distinguish this variant.
@@ -3429,8 +3550,8 @@ def sample_resolved_challenge_utxo_for_cleanup(
     claim_ref_tag = cbor2.CBORTag(121, [claim_seed_txid, 0])
 
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
-    # Resolved { verdict = ClaimerWins } = CBORTag(124, [CBORTag(121, [])])
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    # Resolved { verdict = ClaimerWins, refund_to = RESOLVE_FUNDER_ADDR }
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [
@@ -3444,6 +3565,7 @@ def sample_resolved_challenge_utxo_for_cleanup(
         default_resolution_deadline_ms,                 # [7] resolution_deadline
         list(sample_eligible_jurors),
         resolved_state,                                 # [9] state = Resolved
+        sample_claim_token(),                           # [10] claim_token
     ])
     challenge_datum = RawCBOR(cbor2.dumps(datum_obj))
 
@@ -3490,7 +3612,7 @@ def sample_resolved_challenge_utxo_for_cleanup_too_early(
     claim_seed_txid = hashlib.blake2b(b"claim-utxo-txid", digest_size=32).digest()
     claim_ref_tag = cbor2.CBORTag(121, [claim_seed_txid, 0])
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [
@@ -3504,6 +3626,7 @@ def sample_resolved_challenge_utxo_for_cleanup_too_early(
         default_resolution_deadline_ms,
         list(sample_eligible_jurors),
         resolved_state,
+        sample_claim_token(),
     ])
     challenge_datum = RawCBOR(cbor2.dumps(datum_obj))
     challenge_addr = Address.from_primitive(V13_DEPLOYMENT["addresses"]["challenge"])
@@ -3539,7 +3662,7 @@ def sample_resolved_challenge_utxo_for_cleanup_no_nft(
     claim_seed_txid = hashlib.blake2b(b"claim-utxo-txid", digest_size=32).digest()
     claim_ref_tag = cbor2.CBORTag(121, [claim_seed_txid, 0])
     auditor_did_bytes = bytes.fromhex(sample_auditor_did_hex)
-    resolved_state = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    resolved_state = resolved_state_data(121)
     evidence_hash = hashlib.blake2b(b"claire-test-evidence", digest_size=32).digest()
 
     datum_obj = cbor2.CBORTag(121, [
@@ -3553,6 +3676,7 @@ def sample_resolved_challenge_utxo_for_cleanup_no_nft(
         default_resolution_deadline_ms,
         list(sample_eligible_jurors),
         resolved_state,
+        sample_claim_token(),
     ])
     challenge_datum = RawCBOR(cbor2.dumps(datum_obj))
     challenge_addr = Address.from_primitive(V13_DEPLOYMENT["addresses"]["challenge"])

@@ -1,8 +1,16 @@
 """Shared test fixtures for the Reputation Staking SDK."""
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from reputation_staking.models import ProtocolParamsInfo
+
+# The shared simulate harness (shared/python/aiken_simulate.py) of the repo.
+SHARED_PYTHON = Path(__file__).resolve().parents[3] / "shared" / "python"
+if str(SHARED_PYTHON) not in sys.path:
+    sys.path.insert(0, str(SHARED_PYTHON))
 
 
 @pytest.fixture

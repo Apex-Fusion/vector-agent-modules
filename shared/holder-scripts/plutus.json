@@ -1,7 +1,7 @@
 {
   "preamble": {
     "title": "vector/holder-scripts",
-    "description": "Simple always-succeeds holder scripts for params/oracle/treasury addresses",
+    "description": "Owner-gated holder scripts for params/oracle/treasury addresses and the one-shot record token policy",
     "version": "0.1.0",
     "plutusVersion": "v3",
     "compiler": {
@@ -31,10 +31,16 @@
           "schema": {
             "$ref": "#/definitions/Int"
           }
+        },
+        {
+          "title": "owner",
+          "schema": {
+            "$ref": "#/definitions/aiken~1crypto~1VerificationKeyHash"
+          }
         }
       ],
-      "compiledCode": "5865010100229800aba2aba1aab9eaab9dab9a9bad00248888896600264653001300700198039804000cc01c0092225980099b8748008c020dd500144c8cc88cdc42400001260160026016601800260126ea800a2c8038600e00260086ea801e29344d95900201",
-      "hash": "6fc1049a304e50ce43367457fd869f93e7bb79ae842f1a56cb64c9d0"
+      "compiledCode": "58af0101002229800aba2aba1aab9faab9eaab9dab9a9bad0039bae0024888888896600264646644b30013370e900118041baa00189919912cc004cdc424000013132330010013758601e60206020602060206020602060206020601a6ea8c03c020896600200314a115980099b8f375c602000201514a313300200230110014030807a294100a18060009806180680098049baa0018b200e30090013009300a001300900130053754013149a26cac8019",
+      "hash": "f151942aadcd2077d9f43b78d3f8eaea6ad33965b4ac5ee6e92dcf93"
     },
     {
       "title": "holder.holder.else",
@@ -47,19 +53,89 @@
           "schema": {
             "$ref": "#/definitions/Int"
           }
+        },
+        {
+          "title": "owner",
+          "schema": {
+            "$ref": "#/definitions/aiken~1crypto~1VerificationKeyHash"
+          }
         }
       ],
-      "compiledCode": "5865010100229800aba2aba1aab9eaab9dab9a9bad00248888896600264653001300700198039804000cc01c0092225980099b8748008c020dd500144c8cc88cdc42400001260160026016601800260126ea800a2c8038600e00260086ea801e29344d95900201",
-      "hash": "6fc1049a304e50ce43367457fd869f93e7bb79ae842f1a56cb64c9d0"
+      "compiledCode": "58af0101002229800aba2aba1aab9faab9eaab9dab9a9bad0039bae0024888888896600264646644b30013370e900118041baa00189919912cc004cdc424000013132330010013758601e60206020602060206020602060206020601a6ea8c03c020896600200314a115980099b8f375c602000201514a313300200230110014030807a294100a18060009806180680098049baa0018b200e30090013009300a001300900130053754013149a26cac8019",
+      "hash": "f151942aadcd2077d9f43b78d3f8eaea6ad33965b4ac5ee6e92dcf93"
+    },
+    {
+      "title": "record_token.record_token.mint",
+      "redeemer": {
+        "title": "_redeemer",
+        "schema": {
+          "$ref": "#/definitions/Data"
+        }
+      },
+      "parameters": [
+        {
+          "title": "seed",
+          "schema": {
+            "$ref": "#/definitions/cardano~1transaction~1OutputReference"
+          }
+        }
+      ],
+      "compiledCode": "590150010100229800aba2aba1aba0aab9faab9eaab9dab9a488888896600264653001300800198041804800cc0200092225980099b8748000c01cdd500144c8cc896600266002004466e2000520008a518acc004cc0040088cdc3800a4005132330010013758601e60186ea8014896600200314a115980099baf3010300d3754602000202714a31330020023011001402c80722941009201232330010013232330010013756601e602060206020602060186ea8014896600200300389919912cc004cdc8804001456600266e3c02000a20030064039133005005301400440386eb8c034004dd598070009808000a01c14bd6f7b630112cc004006297ae089980698059807000998010011807800a0182232330010010032259800800c528c56600260066eb4c040006266004004602200314a0805900e1bae300b30083754005164018300800130033754011149a26cac8009",
+      "hash": "c018242341b9c46b4936880549c47e307c29cac2f0bf7cceecdf50dc"
+    },
+    {
+      "title": "record_token.record_token.else",
+      "redeemer": {
+        "schema": {}
+      },
+      "parameters": [
+        {
+          "title": "seed",
+          "schema": {
+            "$ref": "#/definitions/cardano~1transaction~1OutputReference"
+          }
+        }
+      ],
+      "compiledCode": "590150010100229800aba2aba1aba0aab9faab9eaab9dab9a488888896600264653001300800198041804800cc0200092225980099b8748000c01cdd500144c8cc896600266002004466e2000520008a518acc004cc0040088cdc3800a4005132330010013758601e60186ea8014896600200314a115980099baf3010300d3754602000202714a31330020023011001402c80722941009201232330010013232330010013756601e602060206020602060186ea8014896600200300389919912cc004cdc8804001456600266e3c02000a20030064039133005005301400440386eb8c034004dd598070009808000a01c14bd6f7b630112cc004006297ae089980698059807000998010011807800a0182232330010010032259800800c528c56600260066eb4c040006266004004602200314a0805900e1bae300b30083754005164018300800130033754011149a26cac8009",
+      "hash": "c018242341b9c46b4936880549c47e307c29cac2f0bf7cceecdf50dc"
     }
   ],
   "definitions": {
+    "ByteArray": {
+      "title": "ByteArray",
+      "dataType": "bytes"
+    },
     "Data": {
       "title": "Data",
       "description": "Any Plutus data."
     },
     "Int": {
       "dataType": "integer"
+    },
+    "aiken/crypto/VerificationKeyHash": {
+      "title": "VerificationKeyHash",
+      "dataType": "bytes"
+    },
+    "cardano/transaction/OutputReference": {
+      "title": "OutputReference",
+      "description": "An `OutputReference` is a unique reference to an output on-chain. The `output_index`\n corresponds to the position in the output list of the transaction (identified by its id)\n that produced that output",
+      "anyOf": [
+        {
+          "title": "OutputReference",
+          "dataType": "constructor",
+          "index": 0,
+          "fields": [
+            {
+              "title": "transaction_id",
+              "$ref": "#/definitions/ByteArray"
+            },
+            {
+              "title": "output_index",
+              "$ref": "#/definitions/Int"
+            }
+          ]
+        }
+      ]
     }
   }
 }

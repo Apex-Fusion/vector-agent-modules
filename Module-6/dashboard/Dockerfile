@@ -11,8 +11,10 @@ WORKDIR /app
 COPY dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY dashboard/server.py .
+COPY dashboard/server.py dashboard/identity_view.py ./
+COPY scripts/vector_identity.py ./scripts/vector_identity.py
 COPY dashboard/static/ ./static/
+# MODULE6_DEPLOYMENT_FILE (docker-compose.yml) names one of these files.
 COPY deploy/testnet/deployment.json ./deploy/testnet/deployment.json
 COPY deploy/mainnet/deployment.json ./deploy/mainnet/deployment.json
 

@@ -321,8 +321,9 @@ def main() -> int:
         print(f"\n  master balance AFTER lifecycle: {after_balance/1_000_000:.3f} ADA")
         print(f"  master spend (NET, after withdraw + drain): {spent/1_000_000:.3f} ADA")
 
-        # Tolerate up to ~350 ADA — 15 + 2 = 17 unrecoverable DID locks
-        # (15 ADA each = 255 ADA) + lifecycle TX fees + slop.
+        # Tolerate up to ~350 ADA — 17 identity record deposits (at least
+        # 10 AP3X each, locked until a Retire and Reclaim) + lifecycle TX
+        # fees + slop.
         if spent > 350_000_000:
             print(f"  FAIL: spent {spent/1_000_000:.1f} ADA exceeds 350 ADA bound")
             return 1

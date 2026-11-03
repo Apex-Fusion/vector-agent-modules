@@ -430,15 +430,41 @@ pub type ProposerActivityAction {
 }
 ```
 
+Contract rule (activity list, W4-MODFIX2): the activity records form one list
+at the proposal validator, sorted by agent_did in ascending byte order. The
+head holds the `activity` record token (record_token_policy) and has
+agent_did = #"", count 0 and last_proposal_slot 0; the deploy record
+transaction creates it with the `params` and `oracle` records. A node holds
+exactly the activity token of its agent. ProposerActivityDatum has a fifth
+field, next_did: the agent_did of the next node, or #"" for the last entry.
+The first submission of agent X spends its predecessor P (the head or a
+node, P.agent_did < X and P.next_did == #"" or X < P.next_did), continues P
+with only next_did = X, and creates the node of X with next_did =
+P.next_did. An agent with a node cannot be inserted again: its predecessor
+names it, every entry before it has a smaller next_did, and every entry
+after it has a greater or equal agent_did.
+
+Contract rule (SpendActivity): the activity UTxO moves only in a transaction
+whose one proposal action is SubmitProposal or a finalisation of a proposal of
+the same agent. That action checks the continuing activity output: the same
+address and tokens, at least the same AP3X, and the exact new datum
+(active_proposal_count ± 1; at a submission, last_proposal_slot = the lower
+bound of the validity range; all other fields unchanged).
+
 ### 4.7 Proposal Token Lifecycle
 
 ```aiken
-/// Proposal token asset name = "prop_" ++ blake2b_256(proposal_utxo_ref)[0..28]
+/// Proposal token asset name = "prop_" ++ blake2b_256(seed)[0..27]
+/// The seed is the output reference that SubmitProposal spends.
 /// This token MUST travel with the proposal UTXO through state transitions.
 /// Burned when proposal is finalized (adopted, rejected, expired, or withdrawn).
 ///
-/// Critique token = "crit_" ++ blake2b_256(critique_utxo_ref)[0..28]
-/// Endorsement token = "gend_" ++ blake2b_256(endorser_did ++ proposal_ref)[0..28]
+/// CritiqueDatum.proposal_ref and GovernanceEndorsementDatum.proposal_ref hold
+/// the seed of the proposal. The proposal that they name is the UTxO with the
+/// token "prop_" ++ blake2b_256(seed)[0..27], also after amendments.
+///
+/// Critique token = "crit_" ++ blake2b_256(critique_seed)[0..27]
+/// Endorsement token = "gend_" ++ blake2b_256(endorser_did ++ proposal_ref)[0..27]
 /// (gend = governance endorsement, avoids collision with Module 3 endorsement tokens)
 ```
 
@@ -446,11 +472,38 @@ pub type ProposerActivityAction {
 
 ## 5. Validation Rules
 
+```
+COMMON RULES (contract):
+  - One proposal action per transaction: exactly one input at the proposal
+    validator is spent with an action other than SpendActivity.
+  - Stake return: the outputs to a credential are summed. They hold at least
+    the lovelace of every proposal, critique and endorsement input of that
+    credential that the transaction settles. One output never counts twice.
+  - Tokens under the proposal policy: SubmitProposal mints exactly the new
+    proposal token (and the activity token for a first proposal); a
+    finalisation burns exactly the token of the finalised proposal;
+    AmendProposal and ExtendReview mint and burn nothing.
+  - Tokens under the critique policy: the minted tokens are exactly the
+    tokens of the critiques and endorsements that the transaction creates,
+    each with quantity 1.
+  - A continuing output (amendment, extension, activity) has the address of
+    the input (with the same stake credential), the same tokens, at least
+    the same AP3X and the exact new datum.
+  - Settlement: a critique or endorsement settles (RewardCritique,
+    BurnCritiqueToken, BurnEndorsementToken) only in the finalisation of the
+    proposal that its proposal_ref names (RewardCritique: its adoption).
+    When the owner signs, the finalisation of any proposal is enough.
+```
+
 ### 5.1 Proposal Submission (`SubmitProposal`)
 
 ```
 MUST:
-  1. Proposer has active DID in Agent Registry (verified via reference input)
+  1. The checks read the datum of the new ProposalUTXO (the output with the
+     new proposal token). It names the proposer_did and proposer_credential
+     of the spent UTxO. The proposer's identity record is Active over a
+     validity range of at most one hour, and proposer_credential is the
+     controller or a listed transaction key of the record, and signs
   2. stake_amount >= MIN_PROPOSAL_STAKE (parameter, initially 25 AP3X)
   3. proposal_hash is exactly 32 bytes (blake2b_256)
   4. proposal_type is valid and well-formed:
@@ -462,16 +515,18 @@ MUST:
   5. storage_uri is non-empty
   6. review_window >= MIN_REVIEW_WINDOW (initially 64,800 slots = ~3 days)
   7. review_window <= MAX_REVIEW_WINDOW (initially 604,800 slots = ~28 days)
-  8. Output ProposalUTXO at proposal validator address contains:
+  8. Output ProposalUTXO at the address of the spent UTxO contains:
      - Inline datum with state = Open
-     - Value includes stake_amount AP3X + min UTXO
-     - Proposal tracking token (minted in same tx)
+     - At least stake_amount AP3X
+     - Exactly one token: the proposal token (minted in same tx)
   9. amendment_count = 0
   10. incorporated_critiques = []
-  11. Transaction signed by proposer_credential
+  11. submitted_at == the lower bound of the validity range
 
 RATE LIMITING (enforced via ProposerActivity UTXO):
-  12. ProposerActivity UTXO consumed as input (or InitActivity if first proposal)
+  12. The submission spends the lock and exactly one entry of the activity
+      list: the node of the proposer, or for a first proposal its
+      predecessor in the list (see §4.6)
   13. active_proposal_count < MAX_ACTIVE_PROPOSALS_PER_AGENT (initially 3)
   14. current_slot >= last_proposal_slot + COOLDOWN_BETWEEN_PROPOSALS (initially 21,600 slots)
   15. Continuing ProposerActivity UTXO with:
@@ -496,8 +551,11 @@ MUST (in addition to all SubmitProposal rules):
      (no emergency TreasurySpend or GeneralSuggestion — those can wait)
   2. stake_amount >= MIN_PROPOSAL_STAKE × EMERGENCY_STAKE_MULTIPLIER (initially 5x = 125 AP3X)
   3. review_window == EMERGENCY_REVIEW_WINDOW (initially 10,800 slots = ~12 hours)
-  4. Proposer reputation tier >= Established (100+ AP3X reputation score)
-     (verified via reference input to proposer's Module 3 StakeUTXO)
+  4. Proposer reputation tier >= Established (100+ AP3X self-stake):
+     a reference input at the Module 3 reputation validator holds the
+     proposer's own stake token "rstk_" ++ blake2b_256(proposer_did)[0..27],
+     its datum's agent_did is proposer_did, and it holds at least 100 AP3X.
+     The stake of another agent never counts.
   5. ProposalDatum.priority == Emergency
      (NOT encoded in proposal_type — uses separate ProposalPriority enum, §4.1)
 
@@ -535,17 +593,21 @@ MUST:
   1. Proposal state == Open OR Amended
   2. new_hash is exactly 32 bytes (different from current proposal_hash)
   3. new_uri is non-empty
-  4. incorporated list references valid CritiqueUTXOs at critique validator
+  4. Each listed critique is distinct and is spent at the critique validator
+     with IncorporateCritique
   5. Each referenced critique:
-     - References this proposal (critique.proposal_ref matches)
+     - Names this proposal (this proposal holds the token of the critique's
+       proposal_ref)
      - Has not been previously incorporated
      - Is updated: incorporated = True (continuing output)
-  6. Continuing ProposalUTXO with:
+  6. Continuing ProposalUTXO at the same address (same stake credential),
+     with the same tokens, at least the same AP3X and the datum:
      - state = Amended { previous_hash: old_hash }
      - proposal_hash = new_hash
      - storage_uri = new_uri
      - amendment_count += 1
      - incorporated_critiques extended with new references
+     - All other fields unchanged
   7. amendment_count <= MAX_AMENDMENTS (initially 5)
   8. Transaction signed by proposer_credential
 
@@ -630,8 +692,10 @@ CALLABLE BY: Any agent (permissionless — Phase 1.1+)
 MUST:
   1. Proposal state == Open OR Amended
   2. proposal_type == ParameterChange { param_name, current_value, proposed_value }
-  3. ProtocolParams UTXO referenced as reference input
-  4. Current on-chain value of param_name != current_value
+  3. param_name is one of the 17 Module-6 parameters, and the authenticated
+     GovernanceParams record (the `params` record token) holds its value
+  4. That value != current_value (other parameter names fail; no validator
+     reads protocol_params_hash)
      (the parameter was changed by another adopted proposal)
   5. Stake returned to proposer (no penalty — reality changed)
   6. All critic and endorsement stakes returned
@@ -656,7 +720,8 @@ MUST:
   4. additional_slots > 0
   5. submitted_at + review_window + additional_slots <= submitted_at + MAX_REVIEW_WINDOW
      (total review window cannot exceed MAX_REVIEW_WINDOW even with extensions)
-  6. Continuing ProposalUTXO with:
+  6. Continuing ProposalUTXO at the same address (same stake credential),
+     with the same tokens and at least the same AP3X:
      - review_window += additional_slots
      - All other fields unchanged
   7. No cost to Foundation (informational signal only)
@@ -671,18 +736,26 @@ that the Foundation is considering the proposal.
 
 ```
 MUST:
-  1. Critic has active DID in Agent Registry
-  2. Referenced proposal exists and state == Open OR Amended
-  3. critic_did != proposer_did (cannot self-critique)
+  1. The checks read the datum of the new CritiqueUTXO (the output with the
+     new critique token). It names the critic_did and critic_credential of
+     the spent UTxO. The critic's identity record is Active over a validity
+     range of at most one hour, and critic_credential is the controller or a
+     listed transaction key of the record, and signs
+  2. The proposal that proposal_ref names exists and state == Open OR Amended
+  3. Critic and proposer are different parties (cannot self-critique): the
+     proposer's record is a reference input, and the identifiers, the
+     controller keys and the credentials differ; neither record is a direct
+     subagent of the other; they are not subagents of the same parent
      EXCEPT: self-critique allowed for critique_type == Amendment
      (proposer can document their own improvements)
   4. stake_amount >= MIN_CRITIQUE_STAKE (initially 5 AP3X)
   5. critique_hash is exactly 32 bytes
   6. One critique per critic per proposal per type
      (can submit one Supportive + one Opposing + one Amendment)
-  7. CritiqueUTXO created at critique validator address
+  7. CritiqueUTXO created at the address of the spent UTxO, with at least
+     stake_amount AP3X and exactly one token: the critique token
   8. incorporated = False
-  9. Transaction signed by critic_credential
+  9. submitted_at == the lower bound of the validity range
 ```
 
 ### 5.8 Withdraw Critique (`WithdrawCritique`)
@@ -701,13 +774,22 @@ MUST:
 
 ```
 MUST:
-  1. Endorser has active DID in Agent Registry
-  2. Referenced proposal exists and state == Open OR Amended
-  3. endorser_did != proposer_did (cannot self-endorse)
+  1. The checks read the datum of the new endorsement output (the output
+     with the endorsement token). It names the endorser_did,
+     endorser_credential and proposal_ref of the spent UTxO. The endorser's
+     identity record is Active over a validity range of at most one hour,
+     and endorser_credential is the controller or a listed transaction key
+     of the record, and signs
+  2. The proposal that proposal_ref names exists and state == Open OR Amended
+  3. Endorser and proposer are different parties (cannot self-endorse): the
+     same rule as §5.7 item 3, with no exception
   4. stake_amount >= MIN_GOVERNANCE_ENDORSEMENT (10 AP3X)
-  5. Endorsement token = blake2b_256(endorser_did ++ proposal_ref) — one per pair
-  6. GovernanceEndorsementUTXO created at critique validator address
-  7. Transaction signed by endorser_credential
+  5. Endorsement token = "gend_" ++ blake2b_256(endorser_did ++ proposal_ref)
+     — one per pair
+  6. GovernanceEndorsementUTXO created at the address of the spent UTxO (the
+     endorsement validator), with at least stake_amount AP3X and exactly one
+     token: the endorsement token
+  7. created_at == the lower bound of the validity range
 
 NOTE: Endorsements are weighted signals, not votes. The Foundation
 considers them alongside reputation scores and proposal quality.

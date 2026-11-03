@@ -10,9 +10,13 @@ use cardano/transaction.{OutputReference}
 
 /// A governance proposal submitted by an agent
 pub type ProposalDatum {
-  /// DID of the proposing agent (policy_id of registry NFT)
+  /// Identifier of the proposing agent: the identifier of its identity record
+  /// (did:vector, 32 bytes; config.identity_hash)
   proposer_did: ByteArray,
-  /// Payment credential of proposer (for stake return + rewards)
+  /// Payment credential of proposer (for stake return + rewards). Submission
+  /// and amendment need a declared credential of the proposer's record: a
+  /// verification key whose hash is the hash of the controller or of a listed
+  /// key with the transaction purpose (utils.verify_active_agent)
   proposer_credential: Credential,
   /// blake2b_256 hash of the full proposal document (stored off-chain)
   proposal_hash: ByteArray,
@@ -22,7 +26,8 @@ pub type ProposalDatum {
   storage_uri: ByteArray,
   /// AP3X staked by proposer (skin in the game), in lovelace
   stake_amount: Int,
-  /// Slot when proposal was submitted
+  /// Time of the submission (POSIX ms): the lower bound of the validity range
+  /// of the submission transaction, which is at most one hour long
   submitted_at: Int,
   /// Review window: slots after submission during which Foundation can act
   review_window: Int,
@@ -30,7 +35,9 @@ pub type ProposalDatum {
   priority: ProposalPriority,
   /// Number of amendments made (tracks revision history)
   amendment_count: Int,
-  /// List of critique UTXOs incorporated in amendments (for reward sharing)
+  /// Output references of the critiques that amendments incorporated, in the
+  /// order of the amendments (for reward sharing). Each critique names this
+  /// proposal (its proposal_ref is the seed of this proposal)
   incorporated_critiques: List<OutputReference>,
   /// Current state
   state: ProposalState,
@@ -39,7 +46,11 @@ pub type ProposalDatum {
 /// Category of governance proposal
 pub type ProposalType {
   /// Change a protocol parameter (e.g., MIN_CLAIM_STAKE, JURY_SIZE)
-  ParameterChange { param_name: ByteArray, current_value: Int, proposed_value: Int }
+  ParameterChange {
+    param_name: ByteArray,
+    current_value: Int,
+    proposed_value: Int,
+  }
   /// Allocate treasury funds for a specific purpose
   TreasurySpend { amount: Int, recipient_description: ByteArray }
   /// Propose a protocol upgrade or new feature
@@ -94,13 +105,19 @@ pub type ProposalAction {
   RejectProposal { reasoning_hash: ByteArray }
   /// Expire proposal after review window (callable by anyone)
   ExpireProposal
-  /// Expire a stale ParameterChange proposal whose current_value no longer matches
-  /// on-chain ProtocolParams (callable by anyone, permissionless)
+  /// Expire a stale ParameterChange proposal of a Module-6 parameter: the
+  /// GovernanceParams record holds a value for param_name that differs from
+  /// current_value (callable by anyone, permissionless;
+  /// proposal_validation.validate_expire_stale_proposal)
   ExpireStaleProposal
   /// Foundation signals "under review" — extends review window
   ExtendReview { additional_slots: Int }
-  /// Allow activity UTXO to be consumed alongside a proposal finalization.
-  /// Validation is done by the proposal UTXO's evaluation (via validate_finalize_activity).
+  /// Spend an entry of the activity list: the node of an agent or the head
+  /// (§4.6). Only together with the one proposal action of the transaction:
+  /// SubmitProposal (any entry; the submission checks the continuing entry),
+  /// or a finalisation of a proposal of the agent of the node (never the
+  /// head). That action checks the continuing output
+  /// (proposal_validation.validate_spend_activity).
   SpendActivity
 }
 
@@ -110,11 +127,16 @@ pub type ProposalAction {
 
 /// A critique of an existing proposal
 pub type CritiqueDatum {
-  /// DID of the critiquing agent
+  /// Identifier of the critiquing agent: the identifier of its identity record
+  /// (did:vector, 32 bytes; config.identity_hash)
   critic_did: ByteArray,
-  /// Payment credential of critic (for potential reward sharing)
+  /// Payment credential of critic (for potential reward sharing). Submission
+  /// needs a declared credential of the critic's record
+  /// (utils.verify_active_agent)
   critic_credential: Credential,
-  /// Reference to the proposal being critiqued
+  /// The proposal that is critiqued: the seed of the proposal, the output
+  /// reference that its SubmitProposal spent. The proposal holds the token
+  /// utils.proposal_token_name(proposal_ref)
   proposal_ref: OutputReference,
   /// blake2b_256 hash of the critique document (stored off-chain)
   critique_hash: ByteArray,
@@ -124,7 +146,8 @@ pub type CritiqueDatum {
   critique_type: CritiqueType,
   /// AP3X staked by critic (skin in the game), in lovelace
   stake_amount: Int,
-  /// Slot when critique was submitted
+  /// Time of the submission (POSIX ms): the lower bound of the validity range
+  /// of the submission transaction, which is at most one hour long
   submitted_at: Int,
   /// Whether this critique was incorporated into a proposal amendment
   incorporated: Bool,
@@ -161,15 +184,19 @@ pub type CritiqueAction {
 /// An endorsement: Agent stakes AP3X signaling support for a proposal.
 /// Endorsements are weighted signals to the Foundation — they don't determine outcomes.
 pub type GovernanceEndorsementDatum {
-  /// DID of the endorsing agent
+  /// Identifier of the endorsing agent: the identifier of its identity record
+  /// (did:vector, 32 bytes; config.identity_hash)
   endorser_did: ByteArray,
-  /// Payment credential of endorser
+  /// Payment credential of endorser. Submission needs a declared credential
+  /// of the endorser's record (utils.verify_active_agent)
   endorser_credential: Credential,
-  /// Reference to the proposal being endorsed
+  /// The proposal that is endorsed: the seed of the proposal (see
+  /// CritiqueDatum.proposal_ref)
   proposal_ref: OutputReference,
   /// AP3X staked as endorsement signal, in lovelace
   stake_amount: Int,
-  /// Slot when endorsement was created
+  /// Time of the endorsement (POSIX ms): the lower bound of the validity
+  /// range of the endorsement transaction, which is at most one hour long
   created_at: Int,
 }
 
@@ -274,15 +301,11 @@ pub type GovernanceConfig {
   refs_token_policy: ByteArray,
   /// Script hash of the prediction validator (Phase 1.2, zeroed until deployed)
   prediction_validator_hash: ByteArray,
-  /// Policy ID of the Agent Registry
-  registry_policy_id: ByteArray,
-  /// Script hash of the Agent Registry
-  registry_script_hash: ByteArray,
   /// Script hash of Module 3 reputation validator (zeroed if not available)
   reputation_validator_hash: ByteArray,
   /// Script hash of Module 1 jury pool (zeroed if not available)
   jury_pool_hash: ByteArray,
-  /// Script hash of the governance oracle
+  /// Script hash of the governance oracle holder
   governance_oracle_hash: ByteArray,
   /// Script hash of governance parameters holder
   governance_params_hash: ByteArray,
@@ -290,8 +313,24 @@ pub type GovernanceConfig {
   governance_treasury_hash: ByteArray,
   /// Script hash of governance credibility pool (Phase 1.2, zeroed until deployed)
   credibility_pool_hash: ByteArray,
-  /// Script hash of protocol params (for parameter proposals + stale detection)
+  /// Script hash of a protocol params holder. No validator reads it:
+  /// ExpireStaleProposal reads the GovernanceParams record. The field stays,
+  /// so the GovernanceConfig layout (11 fields) does not change.
   protocol_params_hash: ByteArray,
+  /// Policy ID of the one-shot record token policy
+  /// (shared/holder-scripts/validators/record_token.ak). The GovernanceParams
+  /// record holds its `params` token, the oracle record holds its `oracle`
+  /// token and the head of the activity list holds its `activity` token
+  /// (utils.activity_head_token). Records without the token are ignored.
+  record_token_policy: ByteArray,
+  /// Script hash (= policy ID) of the identity registry contract `identity`
+  /// (did:vector, Part 2 §2 of docs/IDENTITY_REGISTRY.md in agents-marketplace).
+  /// An agent's record is the reference input at the exact identity address
+  /// (Script(identity_hash), no stake credential) that holds exactly one token
+  /// of this policy, named with the agent's identifier (vector_identity). The
+  /// hash is known after the identity deployment, which comes before the
+  /// Module-6 deployment (Part 2 §7).
+  identity_hash: ByteArray,
 }
 
 /// Runtime cross-validator references — stored as inline datum on a UTxO
@@ -305,6 +344,9 @@ pub type GovernanceCrossRefs {
   proposal_mint_hash: ByteArray,
   /// Policy ID (script hash) of the critique mint policy (for token minting/burning)
   critique_mint_hash: ByteArray,
+  /// Script hash of the endorsement spend validator. The critique mint policy
+  /// uses it to find the endorsement inputs of a transaction
+  endorsement_validator_hash: ByteArray,
 }
 
 // ============================================================================
@@ -312,16 +354,33 @@ pub type GovernanceCrossRefs {
 // ============================================================================
 
 /// Tracks a proposer's activity for rate limiting and cooldown enforcement.
-/// One ActivityUTXO per agent, consumed and re-created on every proposal lifecycle event.
+///
+/// The activity records form one list at the proposal validator, sorted by
+/// agent_did in ascending byte order (builtin.less_than_bytearray):
+///   - The head: the UTxO that holds the record token
+///     (config.record_token_policy, utils.activity_head_token) and no token
+///     of the proposal policy. Its datum has agent_did = #"",
+///     active_proposal_count = 0 and last_proposal_slot = 0. The deploy
+///     transaction of the records creates it.
+///   - A node: the UTxO of one agent. It holds exactly one token of the
+///     proposal policy: the activity token
+///     utils.activity_token_name(agent_did), quantity 1.
+/// next_did links each entry to the next node. The first submission of an
+/// agent inserts its node after its predecessor
+/// (activity_tracking.validate_submit_activity), so each agent has at most
+/// one node.
 pub type ProposerActivityDatum {
-  /// DID of the agent
+  /// DID of the agent (#"" for the head)
   agent_did: ByteArray,
   /// Payment credential of the agent
   agent_credential: Credential,
   /// Number of currently active (Open/Amended) proposals
   active_proposal_count: Int,
-  /// Slot of most recent proposal submission
+  /// Time of the most recent proposal submission (POSIX ms): the lower bound
+  /// of the validity range of that submission
   last_proposal_slot: Int,
+  /// agent_did of the next node of the list, or #"" for the last entry
+  next_did: ByteArray,
 }
 
 /// Activity tracking actions

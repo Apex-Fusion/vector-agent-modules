@@ -28,7 +28,7 @@ Modules are designed to interlock:
 - **Network:** Vector (Cardano eUTXO L2) - deployed on mainnet, tested on the public testnet
 - **Simulation:** Python-based formal game theory simulation engines
 - **SDK:** Python ([agent-sdk-py](https://github.com/Apex-Fusion/agent-sdk-py)) for agent interactions
-- **Shared:** [shared/](shared/) - cross-module Aiken utility library (DID verification, oracle, credentials)
+- **Shared:** [shared/](shared/) - cross-module Aiken utility library (identity registry checks of did:vector records, oracle, credentials)
 - **Tokens:** AP3X native token for staking and incentives
 
 ## Related

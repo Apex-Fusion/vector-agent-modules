@@ -9,7 +9,11 @@ use cardano/transaction.{
 }
 use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
-use shared/did_verification.{AgentDatum}
+use reputation_staking/types.{StakeDatum}
+use reputation_staking/utils.{derive_stake_token_name}
+use shared/identity_fixtures
+use shared/record_auth
+use vector_identity/types as identity_types
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Test constants
@@ -23,11 +27,7 @@ pub const test_endorsement_policy_id: ByteArray =
 
 pub const test_refs_token_policy: ByteArray = #"cc"
 
-pub const test_registry_policy_id: ByteArray =
-  #"cc00000000000000000000000000000000000000000000000000000000000003"
-
-pub const test_registry_script_hash: ByteArray =
-  #"dd00000000000000000000000000000000000000000000000000000000000004"
+// The identity registry hash of the tests is identity_fixtures.identity_hash.
 
 pub const test_params_script_hash: ByteArray =
   #"ee00000000000000000000000000000000000000000000000000000000000005"
@@ -42,6 +42,9 @@ pub const test_ap3x_asset_name: ByteArray = "AP3X"
 
 pub const test_oracle_credential: ByteArray =
   #"2200000000000000000000000000000000000000000000000000000000000008"
+
+pub const test_params_token_policy: ByteArray =
+  #"4400000000000000000000000000000000000000000000000000000044"
 
 // Module 1 deployed script hashes (from vector-agent-modules repo)
 pub const test_audit_claim_hash: ByteArray =
@@ -60,14 +63,35 @@ pub const test_agent_did: ByteArray = "agent_did_001"
 
 pub const test_agent_did_2: ByteArray = "agent_did_002"
 
+/// The owner key hash of test_agent_did: the hash of the listed transaction
+/// key `identity_fixtures.ed_key(1)` of its test record (a declared
+/// credential, not the controller key).
 pub const test_owner_key_hash: ByteArray =
-  #"aabb000000000000000000000000000000000000000000000000000000000009"
+  #"e1f283c8b88cc8a7c3c2686da4a56240a12dfd92717298155572dc83"
 
+/// The owner key hash of test_agent_did_2: the hash of the listed
+/// transaction key `identity_fixtures.ed_key(2)` of its test record.
 pub const test_owner_key_hash_2: ByteArray =
-  #"aabb00000000000000000000000000000000000000000000000000000000000a"
+  #"80230b45a9b6111656d73e1219966373ea23254337a9eb492a3daa57"
 
 pub const test_tx_hash: ByteArray =
   #"0000000000000000000000000000000000000000000000000000000000000000"
+
+/// The stake_id of the test stakes: the output reference of the seed input
+/// that their CreateStake spent. Test endorsements back this stake
+/// (target_stake).
+pub const test_stake_id: OutputReference =
+  OutputReference {
+    transaction_id: #"5eed000000000000000000000000000000000000000000000000000000000001",
+    output_index: 3,
+  }
+
+/// The stake_id of another stake of the same agent.
+pub const test_other_stake_id: OutputReference =
+  OutputReference {
+    transaction_id: #"5eed000000000000000000000000000000000000000000000000000000000002",
+    output_index: 0,
+  }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Config and params builders
@@ -76,8 +100,6 @@ pub const test_tx_hash: ByteArray =
 pub fn test_config() -> ReputationConfig {
   ReputationConfig {
     refs_token_policy: test_refs_token_policy,
-    registry_policy_id: test_registry_policy_id,
-    registry_script_hash: test_registry_script_hash,
     audit_claim_validator_hash: test_audit_claim_hash,
     audit_challenge_validator_hash: test_audit_challenge_hash,
     audit_jury_pool_hash: test_audit_jury_pool_hash,
@@ -87,6 +109,8 @@ pub fn test_config() -> ReputationConfig {
     ap3x_policy_id: test_ap3x_policy_id,
     ap3x_asset_name: test_ap3x_asset_name,
     oracle_credential: test_oracle_credential,
+    params_token_policy: test_params_token_policy,
+    identity_hash: identity_fixtures.identity_hash,
   }
 }
 
@@ -97,13 +121,14 @@ pub fn test_refs() -> CrossValidatorRefs {
   }
 }
 
+/// Protocol parameters with the deployment values (all times in POSIX ms).
 pub fn test_params() -> ProtocolParams {
   ProtocolParams {
     min_self_stake: 10_000_000,
     min_endorsement: 5_000_000,
     min_challenge_stake: 25_000_000,
-    stake_cooldown: 21_600,
-    endorsement_cooldown: 43_200,
+    stake_cooldown: 86_400_000,
+    endorsement_cooldown: 172_800_000,
     decay_rate: 100,
     activity_window: 180,
     decay_collector_fee: 500,
@@ -111,18 +136,22 @@ pub fn test_params() -> ProtocolParams {
     max_endorsement_multiplier: 3,
     slash_rate_endorser: 5_000,
     protocol_fee_rate: 500,
-    challenge_response_deadline: 10_800,
-    min_agent_age: 21_600,
-    escalation_window: 5_400,
+    challenge_response_deadline: 43_200_000,
+    min_agent_age: 86_400_000,
+    escalation_window: 21_600_000,
     default_judgment_fee: 100,
     genesis_agent_cap: 100,
     genesis_bonus_amount: 100_000_000,
-    genesis_minting_window: 604_800,
-    genesis_protection_period: 129_600,
+    genesis_minting_window: test_genesis_minting_end,
+    genesis_protection_period: 5_184_000_000,
     valid_capabilities: ["code_review", "testing", "deployment"],
-    epoch_length: 900,
+    epoch_length: 14_400_000,
   }
 }
+
+/// POSIX ms at which genesis minting closes in the test parameters
+/// (2025-01-01T00:00:00Z).
+pub const test_genesis_minting_end: Int = 1_735_689_600_000
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Address builders
@@ -175,38 +204,117 @@ pub fn make_input(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Agent registry reference input builder
+// Identity registry reference input builders
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub fn make_registry_ref_input(
+/// The capabilities of the test identity records.
+pub const test_capabilities: List<ByteArray> =
+  ["code_review", "testing", "deployment"]
+
+/// The key hash of controller key `n` of the identity fixtures. The record of
+/// test_agent_did uses controller 1, the record of test_agent_did_2 uses
+/// controller 2.
+pub fn test_controller_hash(n: Int) -> ByteArray {
+  identity_fixtures.controller_hash(n)
+}
+
+/// The authentic identity record of `agent_did` (Active, controller key `n`,
+/// the test capabilities, created_at 0) as a reference input. It lists
+/// `identity_fixtures.ed_key(n)` with the transaction purpose, so the owner
+/// key of the agent (test_owner_key_hash for n = 1, test_owner_key_hash_2
+/// for n = 2) is a declared credential.
+pub fn make_identity_ref_input(agent_did: ByteArray, n: Int) -> Input {
+  identity_fixtures.record_input(agent_did, test_record(n))
+}
+
+/// The Active test record with controller key `n`, the test capabilities and
+/// the listed transaction key `identity_fixtures.ed_key(n)`.
+pub fn test_record(n: Int) -> identity_types.IdentityDatum {
+  identity_fixtures.with_transaction_key(
+    identity_fixtures.record(n, test_capabilities),
+    n,
+  )
+}
+
+test owner_key_hashes_are_listed_transaction_keys() {
+  and {
+    test_owner_key_hash == identity_fixtures.ed_key_hash(1),
+    test_owner_key_hash_2 == identity_fixtures.ed_key_hash(2),
+  }
+}
+
+/// The signatures of the owner key and of the record controller of
+/// test_agent_did.
+pub fn agent_signers() -> List<ByteArray> {
+  [test_owner_key_hash, test_controller_hash(1)]
+}
+
+/// The signatures of the owner key and of the record controller of
+/// test_agent_did_2.
+pub fn agent_2_signers() -> List<ByteArray> {
+  [test_owner_key_hash_2, test_controller_hash(2)]
+}
+
+/// The identity records of test_agent_did (controller 1) and
+/// test_agent_did_2 (controller 2) as reference inputs. A payout to a party
+/// of a position goes to the party's payee, which needs the party's record
+/// (`utils.paid`).
+pub fn party_record_inputs() -> List<Input> {
+  [
+    make_identity_ref_input(test_agent_did, 1),
+    make_identity_ref_input(test_agent_did_2, 2),
+  ]
+}
+
+/// The stake of `agent_did` with `stake_id` and the challenge locks `locks`
+/// (20 AP3X, the test capabilities, owner key 2) at the exact reputation
+/// address with the stake token of the agent, as an input with output index
+/// 60. As a reference input it is the bound stake of the endorsements with
+/// target_stake = `stake_id`.
+pub fn stake_ref_input(
   agent_did: ByteArray,
-  owner_key_hash: ByteArray,
+  stake_id: OutputReference,
+  locks: List<ByteArray>,
 ) -> Input {
-  let agent_datum =
-    AgentDatum {
-      owner: VerificationKey(owner_key_hash),
-      name: "Test Agent",
-      description: "A test agent",
-      capabilities: ["code_review", "testing", "deployment"],
-      framework: "aiken",
-      endpoint: "https://example.com",
-      registered_at: 0,
+  let datum =
+    StakeDatum {
+      agent_did,
+      owner_credential: VerificationKey(test_owner_key_hash_2),
+      stake_amount: 20_000_000,
+      staked_capabilities: test_capabilities,
+      last_updated: 0,
+      history_points: 0,
+      challenge_locks: locks,
+      stake_id,
     }
-  let value =
-    assets.from_lovelace(2_000_000)
-      |> assets.add(test_registry_policy_id, agent_did, 1)
-  let output =
-    make_output(script_address(test_registry_script_hash), value, agent_datum)
-  make_input(test_tx_hash, 100, output)
+  make_input(
+    test_tx_hash,
+    60,
+    make_output(
+      script_address(test_reputation_policy_id),
+      assets.from_lovelace(2_000_000)
+        |> assets.add(test_ap3x_policy_id, test_ap3x_asset_name, 20_000_000)
+        |> assets.add(
+            test_reputation_policy_id,
+            derive_stake_token_name(agent_did),
+            1,
+          ),
+      datum,
+    ),
+  )
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Protocol params reference input builder
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// The ProtocolParams record: at the params holder, holding the `params`
+/// record token.
 pub fn make_params_ref_input() -> Input {
   let params = test_params()
-  let value = assets.from_lovelace(2_000_000)
+  let value =
+    assets.from_lovelace(2_000_000)
+      |> assets.add(test_params_token_policy, record_auth.params_token_name, 1)
   let output =
     make_output(script_address(test_params_script_hash), value, params)
   make_input(test_tx_hash, 200, output)

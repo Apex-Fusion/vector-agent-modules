@@ -31,6 +31,9 @@ use adversarial_auditing/types.{
 use adversarial_auditing/utils.{
   challenge_token_name, juror_token_name,
 }
+use adversarial_auditing_tests/identity_fixtures.{
+  auditing_config, placeholder_verdict_policy,
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // TEST CONSTANTS
@@ -45,14 +48,12 @@ const challenge_validator_hash: ByteArray =
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
-const registry_policy_id: ByteArray =
-  #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
-
-const registry_script_hash: ByteArray =
-  #"e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
-
 const params_script_hash: ByteArray =
   #"f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
+
+/// Claim token name named in the test challenge datums.
+const test_claim_token: ByteArray =
+  #"636c6d5f01010101010101010101010101010101010101010101010101010101"
 
 const oracle_vkh: ByteArray =
   #"0000000000000000000000000000000000000000000000000000000000000001"
@@ -84,7 +85,7 @@ const valid_reasoning_hash: ByteArray =
 
 fn test_config() -> AuditingConfig {
   AuditingConfig {
-    registry_policy_id,
+    ..auditing_config(placeholder_verdict_policy()),
     oracle_vkh,
     refs_token_policy: #"9999999999999999999999999999999999999999999999999999999999",
   }
@@ -206,26 +207,6 @@ fn juror_input(datum: JurorDatum) -> Input {
   }
 }
 
-/// Registry ref input for juror DID verification
-fn juror_registry_ref() -> Input {
-  Input {
-    output_reference: OutputReference {
-      transaction_id: #"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-      output_index: 0,
-    },
-    output: Output {
-      address: Address {
-        payment_credential: Script(registry_script_hash),
-        stake_credential: None,
-      },
-      value: assets.from_lovelace(2_000_000)
-        |> assets.add(registry_policy_id, juror1_did, 1),
-      datum: NoDatum,
-      reference_script: None,
-    },
-  }
-}
-
 /// A resolved challenge datum (for DistributeRewards ref input)
 fn resolved_challenge_datum() -> ChallengeDatum {
   ChallengeDatum {
@@ -243,7 +224,18 @@ fn resolved_challenge_datum() -> ChallengeDatum {
     challenged_at: 5_000_000,
     resolution_deadline: 5_400_000,
     eligible_jurors: [],
-    state: Resolved { verdict: ClaimerWins },
+    state: Resolved { verdict: ClaimerWins, refund_to: test_refund_address() },
+    claim_token: test_claim_token,
+  }
+}
+
+/// The address that funds the AP3X kept in a Resolved output (refund_to).
+fn test_refund_address() -> Address {
+  Address {
+    payment_credential: VerificationKey(
+      #"3333333333333333333333333333333333333333333333333333333333333333",
+    ),
+    stake_credential: None,
   }
 }
 
@@ -279,6 +271,7 @@ fn pending_jury_challenge_ref_input() -> Input {
     resolution_deadline: 5_400_000,
     eligible_jurors: [juror1_did, juror2_did],
     state: PendingJury,
+    claim_token: test_claim_token,
   }
   Input {
     output_reference: challenge_ref(),
@@ -537,6 +530,7 @@ test exploit_g1_zr_09_select_jury_spoofed_ref_blocked() {
         resolution_deadline: 5_400_000,
         eligible_jurors: [juror1_did],
         state: PendingJury,
+        claim_token: test_claim_token,
       }),
       reference_script: None,
     },
@@ -694,6 +688,7 @@ fn voting_challenge_datum() -> ChallengeDatum {
     state: Voting {
       selected_jurors: [juror1_did, juror2_did],
     },
+    claim_token: test_claim_token,
   }
 }
 
@@ -1467,7 +1462,7 @@ test test_commit_vote_fail_pending_jury_state() {
 test test_commit_vote_fail_resolved_state() {
   let ch = ChallengeDatum {
     ..voting_challenge_datum(),
-    state: Resolved { verdict: ClaimerWins },
+    state: Resolved { verdict: ClaimerWins, refund_to: test_refund_address() },
   }
   let state_ok =
     when ch.state is {

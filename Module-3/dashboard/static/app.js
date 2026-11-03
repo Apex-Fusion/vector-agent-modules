@@ -3,6 +3,7 @@
 let pollInterval = null;
 const POLL_MS = 30000;
 let EXPLORER = '';
+let IDENTITY_HASH = '';
 let leaderboardCache = [];
 let challengesCache = [];
 let capabilityDebounce = null;
@@ -36,6 +37,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     const cfg = await api('/api/config');
     EXPLORER = cfg.explorer || '';
+    IDENTITY_HASH = cfg.identity_hash || '';
     document.getElementById('network-badge').textContent = cfg.network || 'unknown';
   } catch (e) {
     console.error('Config load failed', e);
@@ -75,9 +77,20 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Canonical DID of an agent field: the API sends `<field>_uri`
+// (did:vector:<64 hex>) next to the 64-hex identifier `<field>`.
+function didOf(row, field) {
+  if (!row) return '';
+  return row[field + '_uri'] || row[field] || '';
+}
+
 function shortDid(did) {
   if (!did) return 'unknown';
   const s = String(did);
+  if (s.startsWith('did:vector:')) {
+    const id = s.slice('did:vector:'.length);
+    return 'did:vector:' + (id.length > 14 ? id.slice(0, 8) + '…' + id.slice(-6) : id);
+  }
   return s.length > 20 ? s.slice(0, 12) + '…' + s.slice(-6) : s;
 }
 
@@ -91,15 +104,21 @@ function tierClass(tier) {
   return `tier-${t || 'unverified'}`;
 }
 
+function identityBadge(status) {
+  const s = (status || 'missing').toLowerCase();
+  return `<span class="identity-badge identity-${escapeHtml(s)}">${escapeHtml(s)}</span>`;
+}
+
 function severityClass(sev) {
   if (sev >= 0.7) return 'severity-high';
   if (sev >= 0.4) return 'severity-mid';
   return 'severity-low';
 }
 
-function slotToRelative(slot) {
-  if (!slot) return '—';
-  return `slot ${Number(slot).toLocaleString()}`;
+// Times in the index are POSIX milliseconds.
+function formatTime(ms) {
+  if (!ms) return '—';
+  return new Date(Number(ms)).toLocaleString();
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────
@@ -111,8 +130,7 @@ async function loadHealth() {
     if (h.status === 'ok') {
       el.className = 'status ok';
       const agents = h.agents_indexed || '0';
-      const slot  = h.last_poll_slot ? Number(h.last_poll_slot).toLocaleString() : '—';
-      el.textContent = `Indexed ${agents} agents · last slot ${slot}`;
+      el.textContent = `Indexed ${agents} agents · last poll ${formatTime(h.last_poll_ms)}`;
     } else {
       el.className = 'status error';
       el.textContent = 'Indexer disconnected';
@@ -129,11 +147,13 @@ async function loadLeaderboard() {
   const el = document.getElementById('leaderboard-content');
   const cap  = document.getElementById('filter-capability').value.trim();
   const tier = document.getElementById('filter-tier').value.trim();
+  const includeAll = document.getElementById('filter-include-all').checked;
 
   const params = new URLSearchParams();
   params.set('limit', '200');
   if (cap)  params.set('capability', cap);
   if (tier) params.set('min_tier', tier);
+  if (includeAll) params.set('include_all', 'true');
 
   try {
     leaderboardCache = await api('/v1/reputation/leaderboard?' + params.toString());
@@ -149,7 +169,9 @@ function renderLeaderboard() {
 
   let rows = leaderboardCache;
   if (search) {
-    rows = rows.filter(r => (r.agent_did || '').toLowerCase().includes(search));
+    rows = rows.filter(r =>
+      (r.agent_did || '').toLowerCase().includes(search) ||
+      didOf(r, 'agent_did').toLowerCase().includes(search));
   }
 
   if (rows.length === 0) {
@@ -163,6 +185,7 @@ function renderLeaderboard() {
         <tr>
           <th>#</th>
           <th>Agent DID</th>
+          <th>Identity</th>
           <th>Tier</th>
           <th>Score</th>
           <th>Self-stake</th>
@@ -179,7 +202,8 @@ function renderLeaderboard() {
     html += `
       <tr class="${rankClass}" onclick="viewAgent('${escapeHtml(a.agent_did)}')">
         <td class="rank-cell">${rank}</td>
-        <td class="did-cell">${escapeHtml(shortDid(a.agent_did))}</td>
+        <td class="did-cell" title="${escapeHtml(didOf(a, 'agent_did'))}">${escapeHtml(shortDid(didOf(a, 'agent_did')))}</td>
+        <td>${identityBadge(a.identity_status)}</td>
         <td><span class="tier-badge ${tierClass(a.tier)}">${escapeHtml(a.tier || 'Unverified')}</span></td>
         <td class="score-cell">${dfmToAp3x(a.net_score)} AP3X</td>
         <td>${dfmToAp3x(a.self_stake)}</td>
@@ -198,11 +222,9 @@ function renderLeaderboard() {
 async function loadChallenges() {
   const el = document.getElementById('challenges-content');
   try {
-    // There's no cross-agent challenges endpoint; derive from leaderboard.
-    // For each indexed agent, fetch their challenges and flatten.
-    const scores = leaderboardCache.length > 0
-      ? leaderboardCache
-      : await api('/v1/reputation/leaderboard?limit=200');
+    // There's no cross-agent challenges endpoint; derive from the scores of
+    // all indexed agents (also agents that are not Active).
+    const scores = await api('/v1/reputation/leaderboard?limit=500&include_all=true');
     const results = await Promise.all(
       scores.map(s => api(`/v1/reputation/challenges/${encodeURIComponent(s.agent_did)}`).catch(() => []))
     );
@@ -233,10 +255,10 @@ function renderChallenges() {
         <div>
           <div class="c-title">${escapeHtml(c.capability || 'unknown capability')}</div>
           <div class="c-meta">
-            <span>Target: <span class="mono">${shortDid(c.target_did)}</span></span>
-            <span>Challenger: <span class="mono">${shortDid(c.challenger_did)}</span></span>
+            <span>Target: <span class="mono">${escapeHtml(shortDid(didOf(c, 'target_did')))}</span></span>
+            <span>Challenger: <span class="mono">${escapeHtml(shortDid(didOf(c, 'challenger_did')))}</span></span>
             <span>Stake: ${dfmToAp3x(c.stake_amount)} AP3X</span>
-            <span>${slotToRelative(c.created_at)}</span>
+            <span>${formatTime(c.created_at)}</span>
           </div>
         </div>
         <div class="c-state">
@@ -260,16 +282,16 @@ async function loadSybil() {
       return;
     }
     el.innerHTML = flags.map(f => {
-      const related = (f.related_dids || '').split(',').filter(Boolean);
+      const related = f.related_did_uris || (f.related_dids || '').split(',').filter(Boolean);
       return `
         <div class="sybil-card">
           <div class="s-row">
             <div class="s-type">${escapeHtml(f.flag_type || 'unknown')}</div>
             <span class="sybil-flag ${severityClass(f.severity)}">severity ${Number(f.severity).toFixed(2)}</span>
           </div>
-          <div class="s-agent">Agent: ${shortDid(f.agent_did)}</div>
+          <div class="s-agent">Agent: ${escapeHtml(shortDid(didOf(f, 'agent_did')))}</div>
           ${f.details ? `<div class="s-details">${escapeHtml(f.details)}</div>` : ''}
-          ${related.length ? `<div class="s-related">Related: ${related.map(shortDid).join(' · ')}</div>` : ''}
+          ${related.length ? `<div class="s-related">Related: ${related.map(d => escapeHtml(shortDid(d))).join(' · ')}</div>` : ''}
           <div style="margin-top:8px"><button onclick="viewAgent('${escapeHtml(f.agent_did)}')">Inspect agent</button></div>
         </div>
       `;
@@ -302,10 +324,12 @@ async function loadStats() {
       `;
     }
 
+    const identities = s.identity_status_distribution || {};
+    const identityHtml = ['active', 'suspended', 'revoked', 'retired', 'missing']
+      .map(name => `<span style="margin-right:12px">${identityBadge(name)} ${identities[name] || 0}</span>`)
+      .join('');
+
     const lastPollSlot = s.last_poll_slot ? Number(s.last_poll_slot).toLocaleString() : '—';
-    const lastPollTime = s.last_poll_time
-      ? new Date(Number(s.last_poll_time) * 1000).toLocaleString()
-      : '—';
 
     el.innerHTML = `
       <div class="stat-grid">
@@ -336,12 +360,17 @@ async function loadStats() {
       <div class="tier-bars">${tierHtml}</div>
 
       <hr class="section-divider">
+      <div class="section-label">Identity status at the last poll</div>
+      <div>${identityHtml}</div>
+      <div class="small-did" style="margin-top:8px">Identity registry (identity_hash): <span class="mono">${escapeHtml(IDENTITY_HASH || '—')}</span></div>
+
+      <hr class="section-divider">
       <div class="section-label">Indexer status</div>
       <div class="stat-grid">
         <div class="stat-card">
-          <div class="label">Last poll slot</div>
-          <div class="value" style="font-size:18px">${lastPollSlot}</div>
-          <div class="sub">${lastPollTime}</div>
+          <div class="label">Last poll</div>
+          <div class="value" style="font-size:18px">${formatTime(s.last_poll_ms)}</div>
+          <div class="sub">slot ${lastPollSlot}</div>
         </div>
       </div>
     `;
@@ -368,13 +397,15 @@ async function viewAgent(did) {
   const content = document.getElementById('modal-content');
   const title   = document.getElementById('modal-title');
 
-  title.textContent = 'Agent ' + shortDid(did);
+  title.textContent = 'Agent';
   content.innerHTML = '<div class="loading">Loading...</div>';
   overlay.classList.add('active');
 
   try {
     const d = await api(`/v1/reputation/agent/${encodeURIComponent(did)}`);
     const s = d.score || {};
+    const agentDid = didOf(s, 'agent_did') || did;
+    title.textContent = 'Agent ' + shortDid(agentDid);
     const caps = new Set();
     (d.stakes || []).forEach(st => (st.capabilities || []).forEach(c => caps.add(c)));
 
@@ -403,19 +434,33 @@ async function viewAgent(did) {
       </div>
     `;
 
-    const stakeRows = (d.stakes || []).map(st => `
+    // A stake: stake_id (the seed output reference of CreateStake) tells
+    // the stakes of an agent apart; challenge_locks are the challenge tokens
+    // of the open challenges that lock it (no decrease, decay or withdrawal
+    // of its endorsements while one is there).
+    const stakeRows = (d.stakes || []).map(st => {
+      const locks = st.challenge_locks || [];
+      const lockBadge = locks.length
+        ? `<span class="state-open" style="margin-left:8px">locked by ${locks.length} challenge${locks.length > 1 ? 's' : ''}</span>`
+        : '';
+      const lockList = locks.length
+        ? locks.map(l => `<span title="${escapeHtml(l)}">${escapeHtml(shortDid(l))}</span>`).join(', ')
+        : 'none';
+      return `
       <div class="list-row">
-        <div>Stake: <strong>${dfmToAp3x(st.stake_amount)} AP3X</strong> · history ${st.history_points || 0} pts</div>
-        <div class="small-did">UTXO ${shortDid(st.utxo_ref)} · last updated slot ${Number(st.last_updated || 0).toLocaleString()}</div>
+        <div>Stake: <strong>${dfmToAp3x(st.stake_amount)} AP3X</strong> · history ${st.history_points || 0} pts${lockBadge}</div>
+        <div class="small-did" title="${escapeHtml(st.stake_id || '')}">Stake ID ${escapeHtml(shortDid(st.stake_id))} · UTXO ${escapeHtml(shortDid(st.utxo_ref))} · last updated ${formatTime(st.last_updated)}</div>
+        <div class="small-did">Challenge locks: ${lockList}</div>
         <div class="caps-list" style="margin-top:4px">${
           (st.capabilities || []).map(c => `<span class="capability-chip">${escapeHtml(c)}</span>`).join('') || '<span class="small-did">no capabilities</span>'
         }</div>
       </div>
-    `).join('') || '<div class="empty">No active stake.</div>';
+    `;
+    }).join('') || '<div class="empty">No active stake.</div>';
 
     const recvRows = (d.endorsements_received || []).map(e => `
       <div class="list-row">
-        <div><strong>${dfmToAp3x(e.stake_amount)} AP3X</strong> from <span class="mono">${shortDid(e.endorser_did)}</span></div>
+        <div><strong>${dfmToAp3x(e.stake_amount)} AP3X</strong> from <span class="mono">${escapeHtml(shortDid(didOf(e, 'endorser_did')))}</span></div>
         <div class="caps-list" style="margin-top:4px">${
           (e.capabilities || []).map(c => `<span class="capability-chip">${escapeHtml(c)}</span>`).join('') || ''
         }</div>
@@ -424,7 +469,7 @@ async function viewAgent(did) {
 
     const givenRows = (d.endorsements_given || []).map(e => `
       <div class="list-row">
-        <div><strong>${dfmToAp3x(e.stake_amount)} AP3X</strong> to <span class="mono">${shortDid(e.target_did)}</span></div>
+        <div><strong>${dfmToAp3x(e.stake_amount)} AP3X</strong> to <span class="mono">${escapeHtml(shortDid(didOf(e, 'target_did')))}</span></div>
         <div class="caps-list" style="margin-top:4px">${
           (e.capabilities || []).map(c => `<span class="capability-chip">${escapeHtml(c)}</span>`).join('') || ''
         }</div>
@@ -439,7 +484,7 @@ async function viewAgent(did) {
             <span class="${stateCls}" style="margin-left:8px">${escapeHtml(c.state || 'Open')}</span>
             ${c.outcome ? `<span class="tier-badge tier-novice" style="margin-left:4px">${escapeHtml(c.outcome)}</span>` : ''}
           </div>
-          <div class="small-did">By ${shortDid(c.challenger_did)} · ${dfmToAp3x(c.stake_amount)} AP3X · slot ${Number(c.created_at || 0).toLocaleString()}</div>
+          <div class="small-did">By ${escapeHtml(shortDid(didOf(c, 'challenger_did')))} · ${dfmToAp3x(c.stake_amount)} AP3X · ${formatTime(c.created_at)}</div>
         </div>
       `;
     }).join('') || '<div class="empty">No challenges.</div>';
@@ -447,7 +492,7 @@ async function viewAgent(did) {
     const bonusRows = (d.history_bonuses || []).map(b => `
       <div class="list-row">
         <div><strong>${escapeHtml(b.source)}</strong> · ${b.bonus_points || 0} bonus points</div>
-        <div class="small-did">Source ref: ${shortDid(b.source_ref)} · slot ${Number(b.created_at || 0).toLocaleString()}</div>
+        <div class="small-did">Source ref: ${escapeHtml(shortDid(b.source_ref))} · ${formatTime(b.created_at)}</div>
       </div>
     `).join('') || '<div class="empty">No history bonuses.</div>';
 
@@ -462,11 +507,12 @@ async function viewAgent(did) {
 
     content.innerHTML = `
       <dl class="detail-grid">
-        <dt>Agent DID</dt><dd class="mono">${escapeHtml(did)}</dd>
+        <dt>Agent DID</dt><dd class="mono">${escapeHtml(agentDid)}</dd>
+        <dt>Identity</dt><dd>${identityBadge(s.identity_status)}</dd>
         <dt>Tier</dt><dd><span class="tier-badge ${tierClass(s.tier)}">${escapeHtml(s.tier || 'Unverified')}</span></dd>
         <dt>Net score</dt><dd><strong>${dfmToAp3x(s.net_score)} AP3X</strong></dd>
         <dt>Capabilities</dt><dd>${caps.size ? [...caps].map(c => `<span class="capability-chip">${escapeHtml(c)}</span>`).join(' ') : '<span class="small-did">none</span>'}</dd>
-        <dt>Last updated</dt><dd>slot ${Number(s.last_updated_slot || 0).toLocaleString()}</dd>
+        <dt>Indexed</dt><dd>${formatTime(s.indexed_at_ms)} · slot ${Number(s.last_updated_slot || 0).toLocaleString()}</dd>
       </dl>
 
       <div class="section-label">Score breakdown</div>

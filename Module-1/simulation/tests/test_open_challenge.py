@@ -229,7 +229,7 @@ def _run_build_open_challenge(
 # Datum structure tests — ChallengeDatum has 10 fields
 # ═════════════════════════════════════════════════════════════════════════
 
-def test_challenge_datum_has_10_fields(
+def test_challenge_datum_has_11_fields(
     patched_network_for_challenge, captured_builder, mock_ogmios_context,
     sample_deployment_with_challenge_ref,
     sample_auditor_wallet, sample_auditor_did_hex,
@@ -248,9 +248,9 @@ def test_challenge_datum_has_10_fields(
         f"ChallengeDatum outer tag must be 121 (Constr0); got {decoded.tag}"
     )
     fields = decoded.value
-    assert len(fields) == 10, (
-        f"ChallengeDatum must have 10 fields (see types.ak ChallengeDatum); "
-        f"got {len(fields)}. Fields: {fields!r}"
+    assert len(fields) == 11, (
+        f"ChallengeDatum must have 11 fields, claim_token last (see types.ak "
+        f"ChallengeDatum); got {len(fields)}. Fields: {fields!r}"
     )
 
 
@@ -308,8 +308,8 @@ def test_challenge_datum_auditor_did_at_index_1(
         f"Field[1] must be auditor_did bytes ({sample_auditor_did_hex}); "
         f"got {fields[1]!r}"
     )
-    assert isinstance(fields[1], (bytes, bytearray)) and len(fields[1]) == 28, (
-        f"auditor_did must be 28-byte PolicyId; got "
+    assert isinstance(fields[1], (bytes, bytearray)) and len(fields[1]) == 32, (
+        f"auditor_did must be the 32-byte identity identifier; got "
         f"{len(fields[1]) if isinstance(fields[1], (bytes, bytearray)) else 'non-bytes'}"
     )
 
@@ -882,21 +882,21 @@ def test_claim_continuing_output_preserves_value(
 # Cross-validator references + signers + validity window
 # ═════════════════════════════════════════════════════════════════════════
 
-def test_reference_inputs_include_cross_refs_params_and_both_registry_dids(
+def test_reference_inputs_include_cross_refs_params_and_auditor_record(
     patched_network_for_challenge, captured_builder, mock_ogmios_context,
     sample_deployment_with_challenge_ref,
     sample_auditor_wallet, sample_auditor_did_hex,
     sample_claim_utxo, sample_eligible_jurors,
     default_stake_amount, default_resolution_deadline_ms, default_jury_size,
     sample_cross_refs_utxo, sample_params_utxo,
-    sample_registry_did_utxo, sample_auditor_registry_did_utxo,
+    sample_auditor_identity_record_utxo,
 ):
-    """reference_inputs must include: cross_refs_utxo, params_utxo,
-    claimer's registry DID UTxO, auditor's registry DID UTxO.
+    """reference_inputs must include: cross_refs_utxo, params_utxo and the
+    auditor's identity record (with its ancestors).
 
-    The challenge validator reads the claimer's DID from the spent
-    claim datum AND the auditor's DID for auth via verify_active_did.
-    v13 reference: deploy_and_run_v13.py:949-952.
+    The challenge validator checks the auditor's record with identity_ok
+    (effective status Active, declared credential). It does not read the
+    claimer's record.
     """
     _, builder, _ = _run_build_open_challenge(
         patched_network_for_challenge, captured_builder, mock_ogmios_context,
@@ -914,8 +914,7 @@ def test_reference_inputs_include_cross_refs_params_and_both_registry_dids(
     for name, u in [
         ("cross_refs", sample_cross_refs_utxo),
         ("params", sample_params_utxo),
-        ("claimer_registry_did", sample_registry_did_utxo),
-        ("auditor_registry_did", sample_auditor_registry_did_utxo),
+        ("auditor_identity_record", sample_auditor_identity_record_utxo),
     ]:
         key = (bytes(u.input.transaction_id), u.input.index)
         assert key in seen, (
@@ -995,12 +994,13 @@ def test_validity_window_bounded_correctly(
         (submitted_at_ms + default_challenge_window_ms) // 1000
         - SYSTEM_START_UNIX
     )
-    expected_ttl = min(CANNED_SLOT + 3600, window_end_slot - 1)
+    from simulation.tx_builder import IDENTITY_WINDOW_SLOTS
+    expected_ttl = min(CANNED_SLOT - 60 + IDENTITY_WINDOW_SLOTS, window_end_slot - 1)
 
     assert builder.ttl is not None, "ttl must be set"
     assert builder.ttl == expected_ttl, (
-        f"ttl must be min(current_slot+3600, window_end_slot-1) = "
-        f"min({CANNED_SLOT + 3600}, {window_end_slot - 1}) = {expected_ttl}; "
+        f"ttl must be min(validity_start + IDENTITY_WINDOW_SLOTS, "
+        f"window_end_slot-1) = {expected_ttl}; "
         f"got {builder.ttl}"
     )
 
@@ -1053,10 +1053,11 @@ def test_ttl_caps_at_claim_challenge_window_deadline(
         default_stake_amount, default_resolution_deadline_ms, default_jury_size,
     )
 
-    assert builder.ttl == window_end_slot - 1, (
-        f"ttl must be capped at window_end_slot - 1 = {window_end_slot - 1}; "
-        f"got {builder.ttl}. The old hardcoded current_slot+3600 = "
-        f"{CANNED_SLOT + 3600} would violate within_window on-chain."
+    from simulation.tx_builder import IDENTITY_WINDOW_SLOTS
+    assert builder.ttl == min(CANNED_SLOT - 60 + IDENTITY_WINDOW_SLOTS, window_end_slot - 1), (
+        f"ttl must be min(validity_start + IDENTITY_WINDOW_SLOTS, "
+        f"window_end_slot - 1); got {builder.ttl}. The old hardcoded "
+        f"current_slot+3600 = {CANNED_SLOT + 3600} would violate within_window."
     )
 
 

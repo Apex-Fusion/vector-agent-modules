@@ -101,13 +101,11 @@ Findings vs. the task brief (brief-first — each confirmation / correction):
       The validator dispatches through the spend handler which calls
       validate_cleanup_resolved with own_ref = the spent input's ref.
 
-    * CONFIRMED — Wallet recovers the auditor_stake coin that was
-      preserved through ResolveJury (i.e. the challenge UTxO's `coin`
-      field at cleanup time). v13 L1691: `for u in wallet_utxos: b.add_input(u)`
-      together with `change_address=wallet_addr` (L1710) means any
-      residual lovelace — including the spent Resolved UTxO's coin —
-      flows to the wallet as change. The builder reports this as
-      `recovered_coin`.
+    * CONFIRMED — The AP3X of the Resolved UTxO (the auditor stake that
+      the ResolveJury funder put there) goes to the `refund_to` address of
+      `Resolved { verdict, refund_to }`, in one output without datum
+      (validate_cleanup_resolved `refund_paid`). The builder reports this
+      amount as `recovered_coin`; the fee payer gets only its change.
 
     * CONFIRMED — NO reference input to the challenge UTxO. v13 step9
       does NOT call `b.reference_inputs.add(resolved_utxo)`; it adds
@@ -148,8 +146,11 @@ import pytest
 from pycardano import (
     Address,
     AssetName,
+    RawCBOR,
     ScriptHash,
     TransactionBuilder,
+    TransactionOutput,
+    UTxO,
 )
 
 
@@ -362,10 +363,14 @@ def test_recovered_coin_matches_resolved_challenge_utxo_coin(
     default_resolution_deadline_ms, default_cleanup_buffer_ms,
 ):
     """recovered_coin MUST equal the coin value sitting in the spent
-    Resolved challenge UTxO (the auditor's preserved stake). This is
-    what flows back to the wallet via change after cleanup.
+    Resolved challenge UTxO (the auditor's preserved stake). One output at
+    exactly the refund_to address of the Resolved state (the funder of
+    ResolveJury, not the fee payer) holds that coin, without datum
+    (validate_cleanup_resolved `refund_paid`).
     """
-    result, _ = _run_build_cleanup_resolved(
+    from simulation.tests.conftest import RESOLVE_FUNDER_ADDR
+
+    result, builder = _run_build_cleanup_resolved(
         patched_network_for_cleanup_resolved, captured_builder, mock_ogmios_context,
         sample_deployment_with_challenge_ref_only,
         sample_auditor_wallet,
@@ -378,6 +383,41 @@ def test_recovered_coin_matches_resolved_challenge_utxo_coin(
         f"(the auditor's preserved stake). Expected {expected_coin}, "
         f"got {result['recovered_coin']}."
     )
+    assert result["refund_to"] == str(RESOLVE_FUNDER_ADDR)
+    refunds = [o for o in builder.outputs if o.address == RESOLVE_FUNDER_ADDR]
+    assert len(refunds) == 1
+    assert refunds[0].amount.coin == expected_coin
+    assert not refunds[0].amount.multi_asset
+    assert refunds[0].datum is None and refunds[0].datum_hash is None
+    assert RESOLVE_FUNDER_ADDR != sample_auditor_wallet[2]
+
+
+def test_raises_for_resolved_state_without_refund_to(
+    patched_network_for_cleanup_resolved, captured_builder, mock_ogmios_context,
+    sample_deployment_with_challenge_ref_only,
+    sample_auditor_wallet,
+    sample_resolved_challenge_utxo_for_cleanup,
+    default_resolution_deadline_ms, default_cleanup_buffer_ms,
+):
+    """A one-field ``Resolved { verdict }`` comes from a deployment before
+    the refund rule: the builder refuses it before any side effect."""
+    orig = sample_resolved_challenge_utxo_for_cleanup
+    fields = list(cbor2.loads(orig.output.datum.cbor).value)
+    fields[9] = cbor2.CBORTag(124, [cbor2.CBORTag(121, [])])
+    old = UTxO(orig.input, TransactionOutput(
+        orig.output.address, orig.output.amount,
+        datum=RawCBOR(cbor2.dumps(cbor2.CBORTag(121, fields))),
+    ))
+    with pytest.raises(ValueError, match="refund_to"):
+        _run_build_cleanup_resolved(
+            patched_network_for_cleanup_resolved, captured_builder, mock_ogmios_context,
+            sample_deployment_with_challenge_ref_only,
+            sample_auditor_wallet,
+            sample_resolved_challenge_utxo_for_cleanup,
+            default_resolution_deadline_ms, default_cleanup_buffer_ms,
+            challenge_utxo_override=old,
+        )
+    assert not captured_builder
 
 
 # ═════════════════════════════════════════════════════════════════════════

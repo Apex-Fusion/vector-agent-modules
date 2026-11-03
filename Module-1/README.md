@@ -40,19 +40,26 @@ Register DID → Register as juror (bond AP3X)
 
 ## Contracts
 
-Three Aiken (Plutus V3) multi-validators — 4,047 lines total:
+Four Aiken (Plutus V3) multi-validators:
 
-| Validator | LOC | Purpose |
-|-----------|-----|---------|
-| `challenge.ak` | 1,793 | Challenge lifecycle, jury resolution, commit-reveal |
-| `claim.ak` | 503 | Claim submission, withdrawal, state transitions |
-| `jury_pool.ak` | 850 | Juror registration, PRNG selection, voting, rewards |
+| Validator | Purpose |
+|-----------|---------|
+| `challenge.ak` | Challenge lifecycle, jury resolution, commit-reveal; each oracle resolution that the verdict policy turns into a verdict mints one verdict token (jury resolutions give no verdict) |
+| `claim.ak` | Claim submission, withdrawal, state transitions |
+| `jury_pool.ak` | Juror registration, PRNG selection, voting, rewards |
+| `identity_party.ak` | Module-1 as a party of identity records: verdict tokens (oracle resolutions only, 30-day expiry with reclaim), Consent and verdict applications (identity registry, Part 2 §3.8) |
 
-**Tests:** 232/232 Aiken unit tests passing  
+Claim submission, challenge opening and juror registration need an identity
+registry record with effective status Active and a declared key that is the
+record's controller or a listed transaction key. The identity library
+`vector_identity` is vendored; see [VENDORED.md](VENDORED.md).
+
+**Tests:** `scripts/test-contracts.sh` (vendored-library checksum check, its self-test, then `aiken check`). Test map: [contracts/tests/identity-party.md](contracts/tests/identity-party.md)  
 **Testnet:** 13/13 lifecycle steps confirmed (v13 full Path B normal-verdict path); escape-hatch paths (TimeoutResolve + ResetStaleActiveCase) confirmed on-chain (v12)  
-**Mainnet:** v14 deployed to Vector mainnet 2026-04-16 (Phase 0 + Phase 1 complete; unseeded)
+**Mainnet:** v14 deployed to Vector mainnet 2026-04-16 (Phase 0 + Phase 1 complete; unseeded). The identity registry version is not deployed.
 
 ```bash
+scripts/test-contracts.sh   # checksum check + aiken check
 cd contracts/
 aiken check    # Compile + run all tests
 aiken build    # Compile only
@@ -64,14 +71,50 @@ Python-based simulation engine for testing module economics and agent strategies
 
 | Module | Purpose |
 |--------|---------|
-| `config.py` | Simulation parameters and module configuration |
-| `chain.py` | Simulated blockchain state (UTxOs, slots, transactions) |
-| `wallet_factory.py` | Agent wallet creation and management |
-| `tx_builder.py` | Transaction construction for all module actions |
+| `config.py` | Simulation parameters, module configuration and the identity deployment values (`load_identity_deployment`) |
+| `chain.py` | Simulated blockchain state (UTxOs, slots, transactions, reward balances) |
+| `wallet_factory.py` | Agent wallet creation and identity registration |
+| `tx_builder.py` | Transaction construction for all module actions, identity Register, Consent Update, OracleResolve (with the verdict mint), ApplyVerdict and the reclaim of an expired verdict |
+| `identity_party.py` | Module-1 as an identity party: verdict datum (with `deposit_to` and `expires_at`) and token name, verdict policy, AuditingConfig, the `identity_party` parameters, Plutus addresses, redeemers (also the OracleResolve redeemer) |
+| `vector_identity.py` | Shared identity record model (copy of `Module-3/python/reputation_staking/vector_identity.py`; do not edit) |
 | `agent_pool.py` | Agent behavior models and strategy implementations |
 | `world_state.py` | Aggregate module state tracking |
 | `metrics.py` | Data collection and analysis |
 | `sim_controller.py` | Simulation orchestration and scenario execution |
+
+**Identity registry (Part 2 §3.8, §7).** Each simulated agent has an
+identity record; its wallet key is the controller. Claim submission,
+challenge opening and juror registration read the record and its ancestors
+as reference inputs, use a validity range of at most one hour, and refuse
+before they build when the record is not Active or the signing key is not
+declared. Juror records list the master key with the transaction purpose,
+because the master key is the juror credential. The happy path registers
+the claimant with Module-1 as a party and adds Module-1 to the auditor with a
+Consent Update. A jury resolution (ResolveJury) gives no verdict; only an
+oracle resolution does. `build_oracle_resolve` builds the oracle resolution:
+the oracle key signs, the winner gets both stakes (no jury fee), and
+Inconclusive returns each stake. When the verdict policy gives a rule for the
+outcome, the transaction also reads the configuration record, mints one
+verdict token (`MintVerdict`) and creates the verdict output at the
+`identity_party` address; the funding wallet is `deposit_to`, and
+`expires_at` is the upper bound of the range (at most one hour) plus 30 days.
+The Resolved state of ResolveJury names the funding wallet as `refund_to`,
+and CleanupResolved pays the kept AP3X to it. A verdict applies until its
+`expires_at`; after that, `build_reclaim_verdict` pays the AP3X of the
+verdict output to its `deposit_to`. A withdrawal from `Script(M1)` takes the
+whole reward balance of that account (read from the chain). Only Consent and
+ApplyVerdict have this withdrawal; the verdict mint has no withdrawal. A
+record output holds at least the larger of 10 AP3X and the ledger minimum.
+
+The deployment manifest (`DEPLOYMENT_PATH`) must hold these values, with no
+defaults (deployment order: identity registry, Module-1, Module-3,
+Module-6): `identity.identity_hash`, `identity.identity_ref`,
+`identity.config_policy`, `identity.config_holder`, `hashes.identity_party`,
+`identity_party_ref`, `module1.oracle_vkh`, `module1.refs_token_policy` and
+`verdict_policy` (the format of `deploy/identity/config.json`). When the
+manifest also holds the `parameters` object of `plan.json`, it must name the
+three `identity_party` parameters in the apply order (AuditingConfig,
+challenge hash, claim hash) with the values of the manifest.
 
 **Status:** Phase A (infrastructure) + Phase B (engine) complete. Phase C (module logic + scenarios) in progress.
 

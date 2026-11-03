@@ -17,8 +17,10 @@ python3 ~/vector-agents/bin/pull_from_master.py --to "$(cat ~/vector-agents/wall
 
 `~/code/vector-agent-modules/Module-1/simulation/tx_builder.py` — Phase B is live as of 2026-04-22. Relevant builders:
 
-- `build_register_did(...)` — bootstrap DID.
-- `build_juror_bond(...)` — post 25 AP3X bond to enter the jury pool.
+- `build_register_identity(context, deployment, payer_skey, payer_vkey, payer_addr, controller_skey, *, name, description=b"", framework=b"", endpoint=b"", capabilities=(), transaction_keys=(), module1_role=None, window_slots=1200)` — bootstrap your identity record (master pays the fees and the deposit of max(10 AP3X, the ledger min-UTxO); your agent key is the controller; it and each key in `transaction_keys` sign). Pass `transaction_keys=(master_skey,)`: the juror bond declares the master key as `juror_credential`, so your record must list it. Returns `(transaction, did_hex)`; `did_hex` is the 64-hex identity identifier.
+- `identity_record(context, deployment, did_hex)` / `identity_chain(context, deployment, did_hex)` — read your record (and its ancestors); `RecordNotFoundError` when there is none.
+- `build_juror_bond(context, deployment, master_skey, master_vkey, master_addr, bond_amount, *, juror_did_hex, window_slots=1200)` — post the 25 AP3X bond to enter the jury pool. `juror_credential = VerificationKey(master)`, so the master key signs the bond, your votes and your withdrawal. Returns `(transaction, juror_token_hex)`.
+- Identity-reading builders take `window_slots` (default 1200, at most 3600 = one hour).
 - `build_commit_vote(context, deployment, challenge_utxo, juror_skey, juror_vkey, juror_addr, juror_did, commit_hash, ...)` — commit phase (hide verdict).
 - `build_reveal_vote(context, deployment, challenge_utxo, juror_skey, juror_vkey, juror_addr, juror_did, verdict, salt, ...)` — reveal phase (verify against commit).
 - `build_withdraw_juror(...)` — leave the pool when `active_case` is None.
@@ -55,17 +57,17 @@ CWD is `~/vector-agents/state/m1-juror/`. Keep `state.json`, `journal.md`, `even
 1. **Orient.** Read state + journal tail. Query wallet balance. Refresh world state from chain — list open disputes at `deployment.challenge_addr` and your JurorUTxO at `deployment.jury_pool_addr`.
 
 2. **Reconcile — chain truth beats state.json staleness.**
-   - Verify `did_hex` via registry before nulling.
+   - Verify `did_hex` with `identity_record(context, deployment, did_hex)` before nulling. If the call raises, keep the field and journal the exception.
    - For landed commit: move into `pending_reveals[]` (keep salt!).
    - For landed reveal: record outcome, clear reveal entry.
    - For `pending_tx` that's a commit: if >2h and chain says not there → discard. BUT if the salt was saved to state before broadcast, it's still safe to retry.
    - **Never discard a `pending_reveals[]` entry.** If the reveal window is still open, attempt the reveal. If it's missed, journal the slash but keep the entry as evidence.
 
 3. **Decide ONE action — priority order:**
-   a. **Bootstrap DID** — no DID → `build_register_did(...)`. STOP.
+   a. **Bootstrap DID** — no DID → `build_register_identity(context, deployment, master_skey, master_vkey, master_addr, agent_skey, name=b"vector-testnet juror", framework=b"Vector-Agent", transaction_keys=(master_skey,))`. STOP.
    b. **Reveal** — if any `pending_reveals[]` entry has its reveal window currently open, `build_reveal_vote(...)` using the stored salt. This is **non-optional** — missed reveals cost bond.
    c. **Commit** — if your JurorUTxO's `active_case` is `Some(challenge_ref)` and you haven't committed: pick a verdict, generate salt, write to state FIRST, then `build_commit_vote(...)`.
-   d. **Register juror bond** — if not `juror_registered`: `build_juror_bond(...)` (25 AP3X bond). STOP.
+   d. **Register juror bond** — if not `juror_registered`: `build_juror_bond(context, deployment, master_skey, master_vkey, master_addr, 25_000_000, juror_did_hex=state.did_hex)` (25 AP3X bond). STOP.
    e. **Noop is reserved for these specific cases only:** (i) no active case assigned to you and bond already posted, (ii) wallet balance insufficient for bond **AND master is drained**, (iii) a builder call returned a concrete error and you've journaled the stderr. "Phase B pending" is **NOT** valid (it's live as of 2026-04-22).
 
 4. **Record.** Atomic state write.
@@ -101,7 +103,7 @@ import sys, os, json, hashlib
 sys.path.insert(0, "/home/user/code/vector-agent-modules/Module-3/python")
 from reputation_staking.ogmios_backend import OgmiosHttpContext as _o  # warms up the import chain
 sys.path.insert(0, "/home/user/code/vector-agent-modules/Module-1")
-from simulation.tx_builder import build_register_did, build_submit_claim, DeploymentState
+from simulation.tx_builder import build_register_identity, build_juror_bond, identity_record, DeploymentState
 from simulation.config import DEPLOYMENT_PATH, NETWORK
 from simulation.chain import OgmiosContext
 from pycardano import Address, PaymentSigningKey, PaymentVerificationKey

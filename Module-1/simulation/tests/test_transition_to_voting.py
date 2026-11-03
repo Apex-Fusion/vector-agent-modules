@@ -217,17 +217,17 @@ def test_challenge_datum_preserves_fields_0_through_8(
     )
     input_fields = _decode_datum(sample_challenge_utxo_pending_jury.output).value
     output_fields = _decode_datum(_challenge_output(builder)).value
-    assert len(input_fields) == 10, (
-        f"Input ChallengeDatum should have 10 fields; got {len(input_fields)}"
+    assert len(input_fields) == 11, (
+        f"Input ChallengeDatum should have 11 fields; got {len(input_fields)}"
     )
-    assert len(output_fields) == 10, (
-        f"Continuing output datum must have 10 fields; got {len(output_fields)}"
+    assert len(output_fields) == 11, (
+        f"Continuing output datum must have 11 fields; got {len(output_fields)}"
     )
-    for idx in range(9):
+    for idx in list(range(9)) + [10]:
         assert output_fields[idx] == input_fields[idx], (
             f"Field[{idx}] must be preserved across TransitionToVoting "
-            f"(challenge.ak:788-796). Input: {input_fields[idx]!r}. "
-            f"Output: {output_fields[idx]!r}"
+            f"(challenge.ak:788-796, claim_token included). Input: "
+            f"{input_fields[idx]!r}. Output: {output_fields[idx]!r}"
         )
 
 

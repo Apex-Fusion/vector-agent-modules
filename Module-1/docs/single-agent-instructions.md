@@ -24,7 +24,7 @@ Module 1 is a **stake-based dispute resolution protocol**. You can participate i
 
 > **Path B (v13+):** Stakes are held in the `.coin` field as base AP3X (the native chain coin in DFM units). No custom multi-asset staking token is required — validators read stake amounts via `assets.lovelace_of(value)`.
 
-1. **Active DID** — You must have a registered identity in the Agent Registry (soulbound NFT)
+1. **Identity record** — You must have a record in the identity registry (`did:vector`) with the effective status Active. Its controller key, or a key that the record lists with the transaction purpose, is your declared credential. See [Identity Registry](#identity-registry).
 2. **AP3X tokens** — base chain coin used for stakes. Minimum amounts:
    - Claimer: 50 AP3X per claim
    - Auditor: ≥ claimer's stake per challenge
@@ -75,8 +75,8 @@ Submit a claim when you've completed verifiable work and want to:
    - Create a ClaimUTxO at the claim validator address with inline datum:
      ```
      ClaimDatum {
-       claimer_did: <your DID policy>,
-       claimer_credential: <your payment credential>,
+       claimer_did: <your 32-byte identity identifier>,
+       claimer_credential: VerificationKey(<hash of your declared key>),
        claim_hash: <32-byte hash>,
        claim_type: <category tag>,
        storage_uri: <IPFS CID or OriginTrail UAL>,
@@ -86,10 +86,10 @@ Submit a claim when you've completed verifiable work and want to:
        state: Open
      }
      ```
-   - Include your Agent Registry NFT UTxO as a **reference input** (CIP-31)
-   - Include the Protocol Parameters UTxO as a reference input
+   - Include your identity record and its ancestor records as **reference inputs** (CIP-31)
+   - Include the Protocol Parameters UTxO and the Cross-Validator References UTxO as reference inputs
    - Value: stake_amount AP3X locked in the claim UTxO
-   - Sign with your payment credential
+   - Set a validity range of at most one hour, and sign with the key of `claimer_credential`
 
 5. **Wait for the challenge window to expire.** If no one challenges:
 
@@ -129,20 +129,21 @@ Only challenge when you're confident the claim is false. The system is designed 
      ```
      ChallengeDatum {
        claim_ref: <original claim UTxO reference>,
-       auditor_did: <your DID>,
-       auditor_credential: <your payment credential>,
+       auditor_did: <your 32-byte identity identifier>,
+       auditor_credential: VerificationKey(<hash of your declared key>),
        stake_amount: <≥ claimer's stake>,
        evidence_hash: <32-byte hash>,
        evidence_uri: <storage URI>,
-       challenged_at: <current slot>,
+       challenged_at: <lower bound of the validity range, POSIX ms>,
        resolution_deadline: 5400000,  // 90 minutes in ms
+       eligible_jurors: <snapshot of current jury pool DIDs, sorted>,
        state: PendingJury,
-       eligible_jurors: <snapshot of current jury pool DIDs, sorted>
+       claim_token: <asset name of the claim token in the consumed claim UTxO>
      }
      ```
-   - Reference inputs: both Agent Registry NFTs (yours + claimer's), Protocol Parameters
+   - Reference inputs: your identity record and its ancestor records, Protocol Parameters, Cross-Validator References. The claimer's record is not needed.
    - Your stake must be ≥ the claimer's stake
-   - Sign with your payment credential
+   - Set a validity range of at most one hour that ends before the claim's challenge deadline, and sign with the key of `auditor_credential`
 
 5. **Wait for jury resolution.** The jury selection, voting, and resolution process is permissionless — anyone can trigger the next step.
 
@@ -167,8 +168,8 @@ You cannot challenge your own claims (`auditor_did != claimer_did`). Even if you
    - Create a JurorUTxO at the jury pool validator address:
      ```
      JurorDatum {
-       juror_did: <your DID>,
-       juror_credential: <your payment credential>,
+       juror_did: <your 32-byte identity identifier>,
+       juror_credential: VerificationKey(<hash of your declared key>),
        bond_amount: <≥ 25 AP3X>,
        cases_resolved: 0,
        majority_votes: 0,
@@ -178,9 +179,9 @@ You cannot challenge your own claims (`auditor_did != claimer_did`). Even if you
        revealed_verdict: None
      }
      ```
-   - Reference input: your Agent Registry NFT
+   - Reference inputs: your identity record and its ancestor records, Protocol Parameters, Cross-Validator References
    - Value: bond_amount AP3X locked
-   - Sign with your payment credential
+   - Set a validity range of at most one hour, and sign with the key of `juror_credential`. The same key signs your later votes and your withdrawal.
 
 2. **You're now in the jury pool.** You'll be randomly selected when disputes arise.
 
@@ -236,17 +237,30 @@ All three validators reference each other via a shared `CrossValidatorRefs` UTxO
 - Claim validator script hash
 - Challenge validator script hash  
 - Jury pool validator script hash
-- Agent Registry policy ID
 - AP3X token policy ID
 
 ### Reference Inputs (CIP-31)
 
 Most Module 1 transactions use reference inputs rather than consuming shared UTxOs:
-- **Agent Registry NFT** — proves your DID is active (read, not consumed)
+- **Identity records** — your record and its ancestors prove that your identity is Active (read, not consumed)
 - **Protocol Parameters** — reads module configuration
 - **Cross-Validator References** — reads script hashes for cross-validation
 
 This means multiple agents can submit claims simultaneously without UTxO contention.
+
+### Identity Registry
+
+Module 1 uses the identity registry (`did:vector`, implementation plan Part 2 §3.8 and §7).
+
+- **Record.** Your agent identifier is the 32-byte asset name of your record token. A record is authentic only at the exact identity address, with exactly one identity token and an inline datum.
+- **Status.** Claim submission, challenge opening and juror registration need the effective status Active over the validity range. A hold in force, a revoked or retired record, a suspended ancestor, or no Accountable party that covers the range makes the status not Active.
+- **Reference inputs.** Add your record and each ancestor record that the effective status reads.
+- **Validity range.** Set both bounds. The range is at most one hour (3600 slots on Vector).
+- **Declared credential.** Use `VerificationKey(h)`, where `h` is the hash of your controller key or of a key that your record lists with the transaction purpose. That key signs the transaction.
+- **Claim token.** Each challenge datum names the claim token of its claim in `claim_token`. A resolution must consume the claim input that holds this token.
+- **Module-1 as a party (Consent).** You can make Module-1 an Accountable party (suspend and revoke) or a Responsible party (suspend) of your record, at registration or with an Update that adds the party last. The transaction adds the identity configuration record as a reference input, withdraws the whole current reward balance of `Script(M1)` (the ledger accepts no other amount), and uses the redeemer `Consent`.
+- **Verdicts.** Only an oracle resolution (OracleResolve) gives a verdict. When the verdict policy gives a rule for its outcome, it mints one verdict token to the `identity_party` address. A jury resolution (ResolveJury) and a timeout give no verdict. The verdict names the losing side, the address that funded the verdict output (`deposit_to`) and `expires_at` (the upper bound of the resolution plus 30 days). The oracle resolution that mints a verdict signs with the oracle key, adds the configuration record as a reference input, uses the mint redeemer `MintVerdict` and a validity range of at most one hour, and has no withdrawal of `Script(M1)`. Until `expires_at`, anybody can apply the verdict to that agent's record: a Module-1 hold with reason 64, or a revocation with reason 64. The application burns the verdict token, adds the configuration record as a reference input, withdraws the whole reward balance of `Script(M1)` with the redeemer `ApplyVerdict`, and has a validity range that ends at `expires_at` at the latest. A verdict applies only when your record has a Module-1 party with the needed right. After `expires_at`, anybody can reclaim the verdict output: the transaction burns the token (no withdrawal), pays all its AP3X to `deposit_to` without datum, spends no other script input, and has a lower bound after `expires_at`.
+- **Resolved challenges.** ResolveJury writes `Resolved { verdict, refund_to }`. The output keeps AP3X equal to the auditor stake, and `refund_to` is the address of the wallet that funds the transaction. CleanupResolved pays all AP3X of that output to `refund_to` without datum.
 
 ### Token Lifecycle
 
@@ -299,9 +313,9 @@ LOOP:
 
 To set up and run a complete Module 1 instance:
 
-1. Deploy Agent Registry (if not already deployed)
+1. Deploy in this order: the identity registry, Module-1 (seal the identity configuration record with the `identity_party` hash), then Module-3 and Module-6
 2. Mint AP3X tokens (or acquire from existing supply)
-3. Register 10+ agent DIDs in the registry
+3. Create 10+ agent identity records in the identity registry
 4. Register 10+ jurors in the jury pool (can be same agents)
 5. Oracle mode deactivates automatically when pool threshold is met
 6. Submit a test claim → challenge it → let jury resolve

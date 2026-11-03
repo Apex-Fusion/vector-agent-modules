@@ -15,14 +15,14 @@ use cardano/transaction.{InlineDatum, Input}
 
 /// Compile-time configuration — baked into all validators via blueprint apply.
 /// Contains ONLY fields that do NOT create circular deployment dependencies.
+///
+/// The Module-1 hashes come from the Module-1 deployment that this
+/// deployment uses, so Module-1 is deployed first (Part 2 §7 of
+/// `docs/IDENTITY_REGISTRY.md` in agents-marketplace).
 pub type ReputationConfig {
   /// Policy ID of the NFT that authenticates the CrossValidatorRefs UTxO.
   /// Must be a NativeScript policy locked to oracle_credential (ScriptPubkey).
   refs_token_policy: PolicyId,
-  /// Policy ID of the Agent Registry (NFT policy for DID verification)
-  registry_policy_id: PolicyId,
-  /// Script hash of the Agent Registry validator (for address verification)
-  registry_script_hash: ByteArray,
   /// Script hash of Module 1 claim validator (= claim token policy_id)
   audit_claim_validator_hash: ByteArray,
   /// Script hash of Module 1 challenge validator (= challenge token policy_id)
@@ -41,6 +41,15 @@ pub type ReputationConfig {
   ap3x_asset_name: ByteArray,
   /// Foundation oracle credential (for Phase 1.0 challenge/decay resolution)
   oracle_credential: ByteArray,
+  /// Policy ID of the one-shot record token policy
+  /// (shared/holder-scripts/validators/record_token.ak). The ProtocolParams
+  /// record at params_script_hash holds its `params` token. Outputs at the
+  /// params holder without that token are ignored.
+  params_token_policy: PolicyId,
+  /// Script hash (= policy ID) of the identity registry contract `identity`.
+  /// An agent's record is a reference input at its exact address that holds
+  /// the token named with the agent's identifier (`vector_identity`).
+  identity_hash: ByteArray,
 }
 
 /// Runtime cross-validator references — stored as an inline datum on a UTxO

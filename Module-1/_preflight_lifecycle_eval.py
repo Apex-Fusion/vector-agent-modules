@@ -349,6 +349,14 @@ class SimulatingOgmiosContext:
     def genesis_param(self):
         return self._real.genesis_param()
 
+    @property
+    def network(self):
+        return self._real.network
+
+    def reward_account_balance(self, script_hash: bytes) -> int:
+        # Reward balances are not part of the overlay: read the chain value.
+        return self._real.reward_account_balance(script_hash)
+
     def utxos(self, address):
         """Return overlay-adjusted UTxOs at ``address``.
 

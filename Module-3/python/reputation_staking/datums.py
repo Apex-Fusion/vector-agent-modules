@@ -7,15 +7,20 @@ These produce the JSON dictionaries that cardano-cli expects for
 All encoding follows Aiken's Plutus V3 CBOR conventions:
   - Sum type variants use NESTED Constr
   - OutputReference: TransactionId is raw ByteArray (no Constr wrapper)
-  - Timestamps are POSIX milliseconds
+  - Timestamps are POSIX milliseconds. created_at (endorsements,
+    challenges, history bonuses) is the lower bound of the validity range of
+    the transaction (`slot_to_posix_ms(validity_start)`). last_updated of a
+    stake is the upper bound of the validity range of the last owner action
+    (`slot_to_posix_ms(ttl)`); the range lasts at most one hour.
+
+An agent identifier (`*_did`) is the 64-hex identifier of the agent's
+identity record (did:vector).
 """
 
 from __future__ import annotations
 
 import json
 from typing import Any, List
-
-from reputation_staking.utils import slot_to_posix_ms
 
 
 # ── Credential Helpers ───────────────────────────────────────────────────────
@@ -42,45 +47,19 @@ def output_reference_json(tx_hash: str, tx_ix: int) -> dict:
 # ── Datum Builders ───────────────────────────────────────────────────────────
 
 
-def build_agent_datum_json(
-    owner_vkey_hash: str,
-    name: str,
-    description: str,
-    capabilities: List[str],
-    framework: str,
-    current_slot: int,
-) -> dict:
-    """Build AgentDatum for Agent Registry registration."""
-    return {
-        "constructor": 0,
-        "fields": [
-            vk_credential_json(owner_vkey_hash),
-            {"bytes": name.encode().hex()},
-            {"bytes": description.encode().hex()},
-            {"list": [{"bytes": cap.encode().hex()} for cap in capabilities]},
-            {"bytes": framework.encode().hex()},
-            {"bytes": "".encode().hex()},  # endpoint (empty)
-            {"int": current_slot * 1000},  # registered_at as POSIX ms
-        ],
-    }
-
-
-def build_register_redeemer_json(seed_tx_hash: str, seed_tx_ix: int) -> dict:
-    """Build Register { seed: OutputReference } redeemer for Agent Registry."""
-    return {
-        "constructor": 0,  # Register
-        "fields": [output_reference_json(seed_tx_hash, seed_tx_ix)],
-    }
-
-
 def build_stake_datum_json(
     agent_did: str,
     owner_vkey_hash: str,
     stake_amount: int,
     capabilities: List[str],
-    current_slot: int,
+    last_updated_ms: int,
+    seed_tx_hash: str,
+    seed_tx_ix: int,
 ) -> dict:
-    """Build StakeDatum. last_updated uses POSIX ms."""
+    """Build a new StakeDatum (8 fields). last_updated is POSIX ms (the
+    upper bound of the validity range). history_points is 0 and
+    challenge_locks is empty at creation. stake_id (the last field) is the
+    output reference of the seed input that CreateStake spends."""
     return {
         "constructor": 0,
         "fields": [
@@ -88,8 +67,10 @@ def build_stake_datum_json(
             vk_credential_json(owner_vkey_hash),
             {"int": stake_amount},
             {"list": [{"bytes": cap.encode().hex()} for cap in capabilities]},
-            {"int": slot_to_posix_ms(current_slot)},
+            {"int": last_updated_ms},
             {"int": 0},  # history_points
+            {"list": []},  # challenge_locks
+            output_reference_json(seed_tx_hash, seed_tx_ix),  # stake_id
         ],
     }
 
@@ -100,11 +81,16 @@ def build_endorsement_datum_json(
     target_did: str,
     stake_amount: int,
     capabilities: List[str],
-    current_slot: int,
+    created_at_ms: int,
+    target_stake_tx_hash: str,
+    target_stake_tx_ix: int,
 ) -> dict:
     """Build EndorsementDatum wrapped in EndorsementValidatorDatum.Endorsement.
 
-    Aiken uses NESTED Constr encoding: Constr(0, [Constr(0, [6 fields])]).
+    Aiken uses NESTED Constr encoding: Constr(0, [Constr(0, [8 fields])]).
+    slashed_by is empty at creation. target_stake (the last field) is the
+    stake_id of the target stake that the endorsement backs (the bound
+    stake, a reference input of the creation).
     """
     return {
         "constructor": 0,  # Endorsement variant
@@ -117,7 +103,9 @@ def build_endorsement_datum_json(
                     {"bytes": target_did},
                     {"int": stake_amount},
                     {"list": [{"bytes": cap.encode().hex()} for cap in capabilities]},
-                    {"int": slot_to_posix_ms(current_slot)},
+                    {"int": created_at_ms},
+                    {"list": []},  # slashed_by
+                    output_reference_json(target_stake_tx_hash, target_stake_tx_ix),
                 ],
             },
         ],
@@ -128,16 +116,18 @@ def build_challenge_datum_json(
     challenger_did: str,
     challenger_vkey_hash: str,
     target_did: str,
-    target_vkey_hash: str,
+    target_credential: dict,
     capability: str,
     stake_amount: int,
     evidence_hash: str,
     evidence_uri: str,
-    current_slot: int,
+    created_at_ms: int,
 ) -> dict:
     """Build ReputationChallengeDatum wrapped in EndorsementValidatorDatum.Challenge.
 
     Aiken uses NESTED Constr encoding: Constr(1, [Constr(0, [13 fields])]).
+    target_credential (vk_credential_json or script_credential_json) must be
+    the owner_credential of the target's StakeUTXO; the contract checks it.
     """
     return {
         "constructor": 1,  # Challenge variant
@@ -148,12 +138,12 @@ def build_challenge_datum_json(
                     {"bytes": challenger_did},
                     vk_credential_json(challenger_vkey_hash),
                     {"bytes": target_did},
-                    vk_credential_json(target_vkey_hash),
+                    target_credential,
                     {"bytes": capability.encode().hex()},
                     {"int": stake_amount},
                     {"bytes": evidence_hash},
                     {"bytes": evidence_uri.encode().hex()},
-                    {"int": slot_to_posix_ms(current_slot)},
+                    {"int": created_at_ms},
                     {"bytes": ""},  # counter_evidence_hash (empty)
                     {"bytes": ""},  # counter_evidence_uri (empty)
                     {"int": 0},     # response_submitted_at
@@ -190,7 +180,7 @@ def build_history_bonus_datum_json(
     bonus_points: int,
     source_tx_hash: str,
     source_tx_ix: int,
-    current_slot: int,
+    created_at_ms: int,
 ) -> dict:
     """Build HistoryBonusDatum.
 
@@ -204,7 +194,7 @@ def build_history_bonus_datum_json(
             {"constructor": source_constructor, "fields": []},
             {"int": bonus_points},
             output_reference_json(source_tx_hash, source_tx_ix),
-            {"int": slot_to_posix_ms(current_slot)},
+            {"int": created_at_ms},
         ],
     }
 
@@ -216,11 +206,10 @@ def redeemer_json(constructor: int, fields: Any = None) -> dict:
     return {"constructor": constructor, "fields": fields or []}
 
 
-# Reputation mint redeemers
+# Reputation mint redeemers (no redeemer burns a stake token)
 MINT_STAKE_TOKEN = redeemer_json(0)
-BURN_STAKE_TOKEN = redeemer_json(1)
-MINT_HISTORY_BONUS = redeemer_json(2)
-BURN_GENESIS_BONUS = redeemer_json(3)
+MINT_HISTORY_BONUS = redeemer_json(1)
+BURN_GENESIS_BONUS = redeemer_json(2)
 
 # Reputation spend redeemers
 CREATE_STAKE = redeemer_json(0)
@@ -236,6 +225,23 @@ def update_capabilities_redeemer(capabilities: List[str]) -> dict:
 
 
 CLAIM_DECAY_REFUND = redeemer_json(4)
+
+
+def slash_stake_redeemer(challenge_tx_hash: str, challenge_tx_ix: int) -> dict:
+    """SlashStake { challenge_ref } (constructor 5)."""
+    return redeemer_json(5, [output_reference_json(challenge_tx_hash, challenge_tx_ix)])
+
+
+# LockForChallenge (constructor 6): the transaction opens a challenge
+# against the stake.
+LOCK_FOR_CHALLENGE = redeemer_json(6)
+
+
+def release_challenge_redeemer(challenge_tx_hash: str, challenge_tx_ix: int) -> dict:
+    """ReleaseChallenge { challenge_ref } (constructor 7): the challenge
+    closes without CapabilityFalsified."""
+    return redeemer_json(7, [output_reference_json(challenge_tx_hash, challenge_tx_ix)])
+
 
 # Endorsement mint redeemers
 MINT_ENDORSEMENT_TOKEN = redeemer_json(0)
@@ -321,5 +327,13 @@ DISTRIBUTE_OUTCOME = {
     "constructor": 1,  # ChallengeSpend
     "fields": [
         {"constructor": 6, "fields": []}  # DistributeOutcome
+    ],
+}
+
+# ChallengeSpend(ExpireChallenge)
+EXPIRE_CHALLENGE = {
+    "constructor": 1,  # ChallengeSpend
+    "fields": [
+        {"constructor": 7, "fields": []}  # ExpireChallenge
     ],
 }

@@ -1,33 +1,30 @@
 // Module 6: Self-Improvement Module — Parameter Reading
 // Read GovernanceParams from reference input UTXO
 
-use aiken/collection/list
-use cardano/address.{Script as ScriptCredential}
-use cardano/transaction.{InlineDatum, Input}
+use cardano/transaction.{Input}
 
 use governance_suggestion/types.{GovernanceConfig, GovernanceParams}
+
+use shared/record_auth
 
 // ============================================================================
 // GovernanceParams Reading
 // ============================================================================
 
-/// Read GovernanceParams from a reference input at the governance params address.
-/// Returns the params or fails if not found.
+/// Read GovernanceParams from the params record: the reference input at the
+/// governance params holder that holds the `params` record token
+/// (config.record_token_policy). Fails if no such reference input exists.
 pub fn read_governance_params(
   config: GovernanceConfig,
   reference_inputs: List<Input>,
 ) -> GovernanceParams {
-  expect Some(params_input) =
-    list.find(
+  expect Some(raw_datum) =
+    record_auth.find_record(
       reference_inputs,
-      fn(input) {
-        when input.output.address.payment_credential is {
-          ScriptCredential(hash) -> hash == config.governance_params_hash
-          _ -> False
-        }
-      },
+      config.governance_params_hash,
+      config.record_token_policy,
+      record_auth.params_token_name,
     )
-  expect InlineDatum(raw_datum) = params_input.output.datum
   expect params: GovernanceParams = raw_datum
   params
 }
@@ -45,6 +42,38 @@ pub fn is_governable_param(param_name: ByteArray) -> Bool {
   param_name == "MIN_SELF_STAKE" || param_name == "MIN_ENDORSEMENT" || param_name == "DECAY_RATE" || param_name == "MAX_ENDORSEMENT_MULTIPLIER" || // Module 6 parameters (self-referential)
   param_name == "MIN_PROPOSAL_STAKE" || param_name == "MIN_CRITIQUE_STAKE" || param_name == "MIN_GOVERNANCE_ENDORSEMENT" || param_name == "MIN_REVIEW_WINDOW" || param_name == "MAX_REVIEW_WINDOW" || param_name == "MAX_AMENDMENTS" || param_name == "MAX_ACTIVE_PROPOSALS" || param_name == "COOLDOWN_BETWEEN_PROPOSALS" || param_name == "PROPOSER_REWARD_SHARE" || param_name == "CRITIC_REWARD_SHARE" || param_name == "PROTOCOL_FEE_RATE" || param_name == "MIN_ADOPTION_REWARD" || param_name == "MAX_ADOPTION_REWARD" || param_name == "MAX_INCORPORATED_CRITIQUES" || param_name == "MAX_TREASURY_REQUEST" || param_name == "EMERGENCY_STAKE_MULTIPLIER" || param_name == "EMERGENCY_REVIEW_WINDOW" || param_name == "TREASURY_BATCH_SIZE" || param_name == "MIN_TREASURY_BATCHES" || param_name == "ADOPTION_REWARD_BASE" || // System parameters
   param_name == "GAME_ACTIVATION"
+}
+
+/// The value that the GovernanceParams record holds for a Module-6
+/// parameter name, or None. 17 names map to the first 17 fields of
+/// GovernanceParams. The other governable names (Module 1, Module 3, the
+/// treasury batch names, ADOPTION_REWARD_BASE and GAME_ACTIVATION) have no
+/// value in the record. ExpireStaleProposal compares this value with the
+/// current_value of a ParameterChange proposal.
+pub fn module6_param_value(
+  params: GovernanceParams,
+  param_name: ByteArray,
+) -> Option<Int> {
+  when param_name is {
+    "MIN_PROPOSAL_STAKE" -> Some(params.min_proposal_stake)
+    "MIN_CRITIQUE_STAKE" -> Some(params.min_critique_stake)
+    "MIN_GOVERNANCE_ENDORSEMENT" -> Some(params.min_governance_endorsement)
+    "MIN_REVIEW_WINDOW" -> Some(params.min_review_window)
+    "MAX_REVIEW_WINDOW" -> Some(params.max_review_window)
+    "MAX_AMENDMENTS" -> Some(params.max_amendments)
+    "MAX_ACTIVE_PROPOSALS" -> Some(params.max_active_proposals)
+    "COOLDOWN_BETWEEN_PROPOSALS" -> Some(params.proposal_cooldown)
+    "PROPOSER_REWARD_SHARE" -> Some(params.proposer_reward_share)
+    "CRITIC_REWARD_SHARE" -> Some(params.critic_reward_share)
+    "PROTOCOL_FEE_RATE" -> Some(params.protocol_fee_rate)
+    "MIN_ADOPTION_REWARD" -> Some(params.min_adoption_reward)
+    "MAX_ADOPTION_REWARD" -> Some(params.max_adoption_reward)
+    "MAX_INCORPORATED_CRITIQUES" -> Some(params.max_incorporated_critiques)
+    "MAX_TREASURY_REQUEST" -> Some(params.max_treasury_request)
+    "EMERGENCY_STAKE_MULTIPLIER" -> Some(params.emergency_stake_multiplier)
+    "EMERGENCY_REVIEW_WINDOW" -> Some(params.emergency_review_window)
+    _ -> None
+  }
 }
 
 // ============================================================================

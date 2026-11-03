@@ -14,7 +14,8 @@ use reputation_staking/config.{CrossValidatorRefs, ReputationConfig}
 use reputation_staking/params.{ProtocolParams}
 use reputation_staking/types.{StakeDatum}
 use reputation_staking/utils.{
-  derive_stake_token_name, get_ap3x_amount, has_key_signed,
+  derive_stake_token_name, exact_address, get_ap3x_amount, has_key_signed,
+  no_challenge_change, paid,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -54,17 +55,33 @@ pub fn calculate_collector_fee(decay_amount: Int, collector_fee_rate: Int) -> In
 ///
 /// Phase 1.0: Foundation oracle attests inactivity via signature.
 ///
+/// remaining = stake_amount - decay_amount. When remaining is at least
+/// MIN_SELF_STAKE, the stake continues with stake_amount = remaining. Else
+/// the decay consumes the whole stake: the stake continues with
+/// stake_amount = 0 and its owner receives remaining (owner_due). The stake
+/// token is never burned, so the stake (and its stake_id) stays readable
+/// for the endorsements that back it.
+///
 /// MUST:
 ///   1. Target StakeUTXO consumed (with stake token)
 ///   2. Foundation oracle attests inactivity (signed by oracle_credential)
-///   3. decay_amount correctly calculated
+///   3. decay_amount correctly calculated and positive
 ///   4. collector_fee = decay_amount × DECAY_COLLECTOR_FEE
 ///   5. treasury_amount = decay_amount - collector_fee
 ///   6. Outputs:
-///      - Continuing StakeUTXO with reduced stake (if above MIN_SELF_STAKE)
+///      - The continuing StakeUTXO at the exact reputation address, with
+///        exactly one stake token of the agent, at least the new
+///        stake_amount AP3X, and the spent datum with the new stake_amount
+///        (last_updated can change; all other fields stay, also stake_id)
 ///      - Collector payout
 ///      - Treasury payout
-///   7. If stake drops below MIN_SELF_STAKE: stake token burned
+///      - When owner_due > 0: the payee of the owner (`utils.paid`: the
+///        owner_credential while the agent's record declares it, else the
+///        record's controller key) receives at least owner_due AP3X. The
+///        agent's record is a reference input (any status)
+///   7. No challenge locks the stake (challenge_locks is empty), and the
+///      transaction opens or closes no challenge. Decay cannot lower the
+///      stake that an open challenge can slash
 pub fn validate_claim_decay_refund(
   tx: Transaction,
   cfg: ReputationConfig,
@@ -73,125 +90,76 @@ pub fn validate_claim_decay_refund(
   input_datum: StakeDatum,
   inactive_epochs: Int,
 ) -> Bool {
-  // Phase 1.0: Oracle must sign to attest inactivity
-  let oracle_signed = has_key_signed(tx, cfg.oracle_credential)
-
   // Calculate expected amounts
   let decay_amount =
     calculate_decay(input_datum.stake_amount, inactive_epochs, params.decay_rate)
   let collector_fee =
     calculate_collector_fee(decay_amount, params.decay_collector_fee)
   let treasury_amount = decay_amount - collector_fee
-  let remaining_stake = input_datum.stake_amount - decay_amount
-
-  // Decay must be positive
-  let positive_decay = decay_amount > 0
-  let valid_inactive_epochs = inactive_epochs > 0
-
-  // Verify outputs based on whether stake survives
-  let outputs_valid =
-    if remaining_stake >= params.min_self_stake {
-      // Stake continues with reduced amount
-      validate_decay_continuing(
-        tx,
-        cfg,
-        refs,
-        input_datum,
-        remaining_stake,
-        collector_fee,
-        treasury_amount,
-      )
+  let remaining = input_datum.stake_amount - decay_amount
+  let new_amount =
+    if remaining >= params.min_self_stake {
+      remaining
     } else {
-      // Stake fully consumed — token must be burned
-      validate_decay_full_consumption(
-        tx,
-        cfg,
-        refs,
-        input_datum,
-        collector_fee,
-        treasury_amount,
-      )
+      0
     }
+  let owner_due = remaining - new_amount
 
-  oracle_signed && positive_decay && valid_inactive_epochs && outputs_valid
+  and {
+    // Phase 1.0: Oracle must sign to attest inactivity
+    has_key_signed(tx, cfg.oracle_credential),
+    decay_amount > 0,
+    inactive_epochs > 0,
+    input_datum.challenge_locks == [],
+    no_challenge_change(tx, refs.endorsement_policy_id),
+    stake_continues(tx, cfg, refs, input_datum, new_amount),
+    verify_treasury_payment(tx.outputs, cfg, treasury_amount),
+    collector_fee <= 0 || verify_collector_payment(tx, cfg, refs, collector_fee),
+    owner_due <= 0 || paid(
+      cfg,
+      tx,
+      input_datum.agent_did,
+      input_datum.owner_credential,
+      owner_due,
+    ),
+  }
 }
 
-/// Validate decay when stake continues (remaining > MIN_SELF_STAKE).
-fn validate_decay_continuing(
+/// True when an output continues the stake after a decay: at the exact
+/// reputation address, with exactly one stake token of the agent, at least
+/// `new_amount` AP3X, and the datum of the spent stake with
+/// stake_amount = new_amount. Only last_updated can change.
+fn stake_continues(
   tx: Transaction,
   cfg: ReputationConfig,
   refs: CrossValidatorRefs,
   input_datum: StakeDatum,
-  remaining_stake: Int,
-  collector_fee: Int,
-  treasury_amount: Int,
+  new_amount: Int,
 ) -> Bool {
   let stake_token = derive_stake_token_name(input_datum.agent_did)
-
-  // Continuing StakeUTXO with reduced stake
-  let stake_continues =
-    list.any(
-      tx.outputs,
-      fn(output) {
-        let is_at_reputation =
-          when output.address.payment_credential is {
-            Script(hash) -> hash == refs.reputation_policy_id
-            _ -> False
-          }
-        let has_token =
-          assets.quantity_of(output.value, refs.reputation_policy_id, stake_token) == 1
-        let ap3x =
-          get_ap3x_amount(
-            output.value,
-            cfg.ap3x_policy_id,
-            cfg.ap3x_asset_name,
-          )
-        if is_at_reputation && has_token {
-          expect InlineDatum(raw_out) = output.datum
-          expect out_datum: StakeDatum = raw_out
-          out_datum.agent_did == input_datum.agent_did && out_datum.owner_credential == input_datum.owner_credential && out_datum.stake_amount == remaining_stake && ap3x >= remaining_stake
-        } else {
-          False
+  let address = exact_address(refs.reputation_policy_id)
+  list.any(
+    tx.outputs,
+    fn(output) {
+      if and {
+        output.address == address,
+        assets.quantity_of(output.value, refs.reputation_policy_id, stake_token) == 1,
+      } {
+        expect InlineDatum(raw_out) = output.datum
+        expect out_datum: StakeDatum = raw_out
+        and {
+          out_datum == StakeDatum {
+            ..input_datum,
+            stake_amount: new_amount,
+            last_updated: out_datum.last_updated,
+          },
+          get_ap3x_amount(output.value, cfg.ap3x_policy_id, cfg.ap3x_asset_name) >= new_amount,
         }
-      },
-    )
-
-  // Treasury payment
-  let treasury_paid = verify_treasury_payment(tx.outputs, cfg, treasury_amount)
-
-  // Collector payment (any output not at reputation/treasury/endorsement validators)
-  // The collector fee just needs to exist as an output with sufficient AP3X
-  let collector_paid = collector_fee <= 0 || verify_collector_payment(tx, cfg, refs, collector_fee)
-
-  stake_continues && treasury_paid && collector_paid
-}
-
-/// Validate decay when stake is fully consumed (burn token).
-fn validate_decay_full_consumption(
-  tx: Transaction,
-  cfg: ReputationConfig,
-  refs: CrossValidatorRefs,
-  input_datum: StakeDatum,
-  collector_fee: Int,
-  treasury_amount: Int,
-) -> Bool {
-  let stake_token = derive_stake_token_name(input_datum.agent_did)
-
-  // Stake token must be burned
-  let token_burned =
-    assets.quantity_of(
-      tx.mint,
-      refs.reputation_policy_id,
-      stake_token,
-    ) == -1
-
-  // Treasury payment
-  let treasury_paid = verify_treasury_payment(tx.outputs, cfg, treasury_amount)
-
-  // Collector payment
-  let collector_paid = collector_fee <= 0 || verify_collector_payment(tx, cfg, refs, collector_fee)
-
-  token_burned && treasury_paid && collector_paid
+      } else {
+        False
+      }
+    },
+  )
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

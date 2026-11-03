@@ -1,6 +1,10 @@
 """
 Redeploy consumed reference scripts (CIP-33) to unspendable addresses.
 
+For the previous deployment only (wallets/deploy_state.json). The deployment
+on the identity registry publishes its reference scripts at the reference
+address of the identity deployment (scripts/deploy.py).
+
 Reference script UTxOs are sent to script-hash-derived addresses so they
 cannot be accidentally consumed as coin inputs by subsequent transactions.
 

@@ -22,8 +22,11 @@ been purged from every callsite — use the constants defined below
 from dataclasses import dataclass, field
 import os
 from pathlib import Path
+from typing import Any, Mapping
 
 from pycardano import Network
+
+from simulation.identity_party import AuditingConfig, VerdictPolicy, identity_party_parameters
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -75,11 +78,15 @@ NETWORK_MAGIC = 764824073
 if IS_MAINNET:
     OGMIOS_URL = "https://ogmios.vector.mainnet.apexfusion.org"
     TX_SUBMIT_URL = "https://submit.vector.mainnet.apexfusion.org/api/submit/tx"
+    # Koios: the reward account of a stake credential without a delegation
+    # (Ogmios rewardAccountSummaries lists only delegated accounts).
+    KOIOS_URL = "https://v2.koios.vector.mainnet.apexfusion.org/api/v1"
     # Vector mainnet genesis: 2025-08-29 16:40:00 UTC
     SYSTEM_START_UNIX = 1756485600
 else:
     OGMIOS_URL = "https://ogmios.vector.testnet.apexfusion.org"
     TX_SUBMIT_URL = "https://submit.vector.testnet.apexfusion.org/api/submit/tx"
+    KOIOS_URL = "https://v2.koios.vector.testnet.apexfusion.org/api/v1"
     # Vector testnet genesis (unchanged from v14)
     SYSTEM_START_UNIX = 1752057484
 
@@ -88,8 +95,6 @@ else:
 # ON-CHAIN REFERENCES (identical on both Vector chains)
 # ═══════════════════════════════════════════════════════════════════════
 
-REGISTRY_POLICY = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
-REGISTRY_ADDR = "addr1wxlp5z3fztdpsp6ha57dvx6khw82kqvgcxwu8s8rjykjcqghprf42"
 AP3X_POLICY_ID = "cb20555235cc1630cba8f36027b145bea0d928131431e20854e57609"
 # Legacy — Path A only; Path B (v13+) uses base AP3X held in .coin field, no asset name
 # needed. Constant retained here for backward compatibility with simulation code
@@ -134,6 +139,219 @@ else:
     DEPLOYMENT_PATH = str(TESTNET_DIR / "game1-sim-deployment.json")
     WALLET_INDEX_FILE = _SIM_PACKAGE_DIR / ".wallet_index_testnet.json"
     SIM_METRICS_DIR = Path("/tmp/apex-sim-metrics-testnet")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# IDENTITY DEPLOYMENT VALUES (Part 2 §3.8, §7)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# The deployment manifest (DEPLOYMENT_PATH) holds the identity values next
+# to the Module-1 references. There are no defaults: a missing value stops
+# the simulation with IdentityConfigError. The values come from the
+# deployments, in this order: identity registry, Module-1, Module-3,
+# Module-6. The keys use the format of deploy/identity/config.json and of
+# the plan.json that scripts/identity_deploy.py writes:
+#
+#   "identity": {
+#     "identity_hash": "<56 hex>",       identity script hash = policy ID
+#     "identity_ref":  "<txid>#<index>", reference script of `identity`
+#     "config_policy": "<56 hex>",       policy ID of `config_seal`
+#     "config_holder": "<56 hex>"        script hash of `config_holder`
+#   },
+#   "hashes": { ..., "identity_party": "<56 hex>" },   M1 (plan.json)
+#   "identity_party_ref": "<txid>#<index>",  reference script of identity_party
+#   "module1": { "oracle_vkh": "<56 hex>", "refs_token_policy": "<56 hex>" },
+#   "verdict_policy": {
+#     "auditor_wins": {"action": "suspend" | "revoke", "duration_ms": int} | null,
+#     "claimer_wins": {"action": "suspend" | "revoke", "duration_ms": int} | null
+#   }
+#
+# identity_party takes three parameters, in this order: the AuditingConfig,
+# the hash of the challenge validator and the hash of the claim validator
+# (scripts/identity_deploy.py plan). A manifest that also holds the
+# "parameters" object of plan.json must name these three parameters
+# (IDENTITY_PARTY_PARAMETER_KEYS), with the values of this manifest. A plan
+# without "identity_party_claim_hash_cbor" comes from an identity_party with
+# two parameters, which the current contracts replace.
+
+#: The order of the deployments that give the identity values.
+IDENTITY_DEPLOYMENT_ORDER = "identity registry, Module-1, Module-3, Module-6"
+
+#: The manifest keys of the identity values, as dotted JSON paths.
+IDENTITY_MANIFEST_KEYS = (
+    "identity.identity_hash",
+    "identity.identity_ref",
+    "identity.config_policy",
+    "identity.config_holder",
+    "hashes.identity_party",
+    "identity_party_ref",
+    "module1.oracle_vkh",
+    "module1.refs_token_policy",
+    "verdict_policy",
+)
+
+#: The keys of the plan.json "parameters" object that hold the parameters of
+#: identity_party, in the apply order (AuditingConfig, challenge hash, claim
+#: hash).
+IDENTITY_PARTY_PARAMETER_KEYS = (
+    "auditing_config_cbor",
+    "identity_party_challenge_hash_cbor",
+    "identity_party_claim_hash_cbor",
+)
+
+
+class IdentityConfigError(ValueError):
+    """The deployment manifest has no identity value, or a value is not
+    valid."""
+
+
+@dataclass(frozen=True)
+class IdentityDeployment:
+    """The identity values of a Module-1 deployment."""
+
+    identity_hash: bytes          # identity script hash (= policy ID)
+    identity_ref: str             # "<txid>#<index>" of the identity reference script
+    config_policy: bytes          # config_seal policy ID
+    config_holder: bytes          # config_holder script hash (address CA)
+    identity_party_hash: bytes    # M1: hash of identity_party
+    identity_party_ref: str       # "<txid>#<index>" of the identity_party reference script
+    oracle_vkh: bytes
+    refs_token_policy: bytes
+    verdict_policy: VerdictPolicy
+
+    @property
+    def auditing_config(self) -> AuditingConfig:
+        """The AuditingConfig parameter of the Module-1 validators."""
+        return AuditingConfig(
+            identity_hash=self.identity_hash,
+            oracle_vkh=self.oracle_vkh,
+            refs_token_policy=self.refs_token_policy,
+            config_policy=self.config_policy,
+            config_holder=self.config_holder,
+            verdict_policy=self.verdict_policy,
+        )
+
+    def identity_party_parameters(
+        self, challenge_hash: bytes, claim_hash: bytes
+    ) -> tuple[bytes, bytes, bytes]:
+        """The CBOR of the parameters of identity_party, in the apply order:
+        (AuditingConfig, challenge hash, claim hash)."""
+        return identity_party_parameters(self.auditing_config, challenge_hash, claim_hash)
+
+
+def _missing(path: str) -> IdentityConfigError:
+    return IdentityConfigError(
+        f"the deployment manifest has no `{path}`. The identity values come "
+        f"from the deployments, in this order: {IDENTITY_DEPLOYMENT_ORDER}. "
+        f"Add `{path}` to the manifest (see simulation/config.py, identity "
+        f"deployment values) before you run the simulation."
+    )
+
+
+def _manifest_value(manifest: Mapping[str, Any], path: str) -> Any:
+    node: Any = manifest
+    for part in path.split("."):
+        if not isinstance(node, Mapping) or part not in node:
+            raise _missing(path)
+        node = node[part]
+    if node is None or node == "":
+        raise _missing(path)
+    return node
+
+
+def _hash28(manifest: Mapping[str, Any], path: str) -> bytes:
+    value = _manifest_value(manifest, path)
+    try:
+        raw = bytes.fromhex(value)
+    except (TypeError, ValueError):
+        raw = b""
+    if len(raw) != 28:
+        raise IdentityConfigError(f"`{path}` must be 28 bytes (56 hex characters)")
+    if raw == bytes(28):
+        raise IdentityConfigError(
+            f"`{path}` is the all-zero placeholder of deploy/identity/config.json; "
+            f"use the value of the deployment"
+        )
+    return raw
+
+
+def _out_ref(manifest: Mapping[str, Any], path: str) -> str:
+    value = _manifest_value(manifest, path)
+    txid, sep, index = str(value).partition("#")
+    try:
+        valid = sep == "#" and len(bytes.fromhex(txid)) == 32 and int(index) >= 0
+    except ValueError:
+        valid = False
+    if not valid:
+        raise IdentityConfigError(f"`{path}` must be \"<64 hex txid>#<index>\"")
+    return f"{txid.lower()}#{int(index)}"
+
+
+def load_identity_deployment(manifest: Mapping[str, Any]) -> IdentityDeployment:
+    """Read the identity values of a deployment manifest, in the order of
+    IDENTITY_MANIFEST_KEYS, and compare the identity_party parameters of a
+    plan.json "parameters" object. Raises IdentityConfigError when a value is
+    missing or not valid; the message names the deployment order."""
+    identity_hash = _hash28(manifest, "identity.identity_hash")
+    identity_ref = _out_ref(manifest, "identity.identity_ref")
+    config_policy = _hash28(manifest, "identity.config_policy")
+    config_holder = _hash28(manifest, "identity.config_holder")
+    identity_party_hash = _hash28(manifest, "hashes.identity_party")
+    identity_party_ref = _out_ref(manifest, "identity_party_ref")
+    oracle_vkh = _hash28(manifest, "module1.oracle_vkh")
+    refs_token_policy = _hash28(manifest, "module1.refs_token_policy")
+    try:
+        verdict_policy = VerdictPolicy.from_json(
+            _manifest_value(manifest, "verdict_policy")
+        )
+    except IdentityConfigError:
+        raise
+    except ValueError as exc:
+        raise IdentityConfigError(str(exc)) from exc
+    deployment = IdentityDeployment(
+        identity_hash=identity_hash,
+        identity_ref=identity_ref,
+        config_policy=config_policy,
+        config_holder=config_holder,
+        identity_party_hash=identity_party_hash,
+        identity_party_ref=identity_party_ref,
+        oracle_vkh=oracle_vkh,
+        refs_token_policy=refs_token_policy,
+        verdict_policy=verdict_policy,
+    )
+    _check_plan_parameters(manifest, deployment)
+    return deployment
+
+
+def _check_plan_parameters(manifest: Mapping[str, Any], deployment: IdentityDeployment) -> None:
+    """Compare the identity_party parameters of a plan.json "parameters"
+    object with the parameters of this manifest. A manifest without
+    "parameters" passes. Raises IdentityConfigError when a parameter is
+    missing (a plan for an identity_party with two parameters) or has
+    another value."""
+    plan = manifest.get("parameters")
+    if plan is None:
+        return
+    if not isinstance(plan, Mapping):
+        raise IdentityConfigError("`parameters` must be the object of plan.json")
+    expected = deployment.identity_party_parameters(
+        _hash28(manifest, "hashes.challenge"), _hash28(manifest, "hashes.claim"),
+    )
+    for key, value in zip(IDENTITY_PARTY_PARAMETER_KEYS, expected):
+        written = plan.get(key)
+        if not written:
+            raise IdentityConfigError(
+                f"the manifest has no `parameters.{key}`. identity_party takes "
+                f"(AuditingConfig, challenge hash, claim hash); make the plan "
+                f"again with scripts/identity_deploy.py plan and deploy its "
+                f"identity_party."
+            )
+        if str(written).lower() != value.hex():
+            raise IdentityConfigError(
+                f"`parameters.{key}` is not the value of this manifest "
+                f"({value.hex()}); the plan and the manifest are for different "
+                f"deployments."
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════

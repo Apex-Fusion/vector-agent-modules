@@ -23,10 +23,10 @@ from simulation.config import AP3X_POLICY_ID, AP3X_ASSET_NAME
 class ClaimState:
     """On-chain state of a claim UTxO."""
     utxo_ref: str                       # "txid#idx"
-    claimer_did: str                    # hex
+    claimer_did: str                    # hex of the 32-byte identity identifier
     claimer_credential: str             # hex (VKH)
     stake_amount: int                   # AP3X (6 decimals)
-    evidence_hash: str                  # hex
+    evidence_hash: str                  # hex (ClaimDatum.claim_hash)
     submitted_at: int                   # POSIX ms
     challenge_window: int               # ms
     state: str                          # "Open", "Challenged"
@@ -41,7 +41,7 @@ class ChallengeState:
     """On-chain state of a challenge UTxO."""
     utxo_ref: str
     claim_ref: str                      # reference to claim
-    auditor_did: str
+    auditor_did: str                    # hex of the 32-byte identity identifier
     auditor_credential: str
     stake_amount: int
     evidence_hash: str
@@ -52,6 +52,7 @@ class ChallengeState:
     selected_jurors: list = field(default_factory=list)  # if Voting
     verdict: str = ""                   # if Resolved
     challenge_token: str = ""
+    claim_token: str = ""               # hex (ChallengeDatum.claim_token)
     agent_id: int = -1
 
 
@@ -110,8 +111,11 @@ class WorldState:
                             if qty == 1:
                                 token_hex = bytes(an).hex()
 
-                # Parse state
-                state_raw = fields[7]
+                # ClaimDatum (types.ak): [0] claimer_did, [1] claimer_credential,
+                # [2] claim_hash, [3] claim_type, [4] storage_uri,
+                # [5] stake_amount, [6] submitted_at, [7] challenge_window,
+                # [8] state.
+                state_raw = fields[8]
                 if state_raw.tag == 121:
                     state_str = "Open"
                 elif state_raw.tag == 122:
@@ -122,12 +126,12 @@ class WorldState:
                 ref = f"{u.input.transaction_id}#{u.input.index}"
                 self.claims[ref] = ClaimState(
                     utxo_ref=ref,
-                    claimer_did=bytes(fields[1]).hex() if isinstance(fields[1], (bytes, bytearray)) else str(fields[1]),
-                    claimer_credential=_extract_credential(fields[0]),
-                    stake_amount=fields[2],
-                    evidence_hash=bytes(fields[3]).hex() if isinstance(fields[3], (bytes, bytearray)) else "",
-                    submitted_at=fields[5],
-                    challenge_window=fields[6],
+                    claimer_did=bytes(fields[0]).hex(),
+                    claimer_credential=_extract_credential(fields[1]),
+                    stake_amount=fields[5],
+                    evidence_hash=bytes(fields[2]).hex(),
+                    submitted_at=fields[6],
+                    challenge_window=fields[7],
                     state=state_str,
                     claim_token=token_hex,
                 )
@@ -147,6 +151,9 @@ class WorldState:
                 datum = cbor2.loads(u.output.datum.cbor if hasattr(u.output.datum, 'cbor')
                                    else bytes(u.output.datum))
                 fields = datum.value
+                # ChallengeDatum has 11 fields; claim_token is the last one.
+                if len(fields) != 11:
+                    raise ValueError(f"ChallengeDatum has {len(fields)} fields, not 11")
 
                 # Extract challenge token
                 token_hex = ""
@@ -198,6 +205,7 @@ class WorldState:
                     selected_jurors=selected,
                     verdict=verdict,
                     challenge_token=token_hex,
+                    claim_token=bytes(fields[10]).hex(),
                 )
             except Exception as e:
                 print(f"  [WorldState] Warning: failed to parse challenge at {u.input}: {e}")

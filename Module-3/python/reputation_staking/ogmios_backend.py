@@ -175,7 +175,7 @@ class OgmiosHttpContext:
             params={"addresses": [addr_str]},
             ogmios_url=self._ogmios_url,
         )
-        return [_parse_ogmios_utxo(item) for item in result]
+        return [parse_ogmios_utxo(item) for item in result]
 
     def _query_protocol_params(self) -> ProtocolParameters:
         """Fetch and parse protocol parameters from Ogmios."""
@@ -273,7 +273,7 @@ def _parse_ogmios_value(val: dict) -> Value:
     return Value(lovelace)
 
 
-def _parse_ogmios_utxo(item: dict) -> UTxO:
+def parse_ogmios_utxo(item: dict) -> UTxO:
     """Parse a single Ogmios UTxO result into a PyCardano UTxO."""
     tx_id = TransactionId(bytes.fromhex(item["transaction"]["id"]))
     tx_input = TransactionInput(tx_id, item["index"])
@@ -321,7 +321,7 @@ def resolve_utxo(
     )
     if not result:
         raise RuntimeError(f"UTxO {tx_hash_hex}#{tx_idx} not found on chain")
-    return _parse_ogmios_utxo(result[0])
+    return parse_ogmios_utxo(result[0])
 
 
 def resolve_utxos_at_address(
@@ -333,7 +333,7 @@ def resolve_utxos_at_address(
         params={"addresses": [address]},
         ogmios_url=ogmios_url,
     )
-    return [_parse_ogmios_utxo(item) for item in result]
+    return [parse_ogmios_utxo(item) for item in result]
 
 
 def find_utxo_with_token(

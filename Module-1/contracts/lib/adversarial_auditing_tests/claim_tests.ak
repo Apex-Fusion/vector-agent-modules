@@ -25,6 +25,9 @@ use adversarial_auditing/types.{
 use adversarial_auditing/utils.{
   claim_token_name, challenge_token_name,
 }
+use adversarial_auditing_tests/identity_fixtures.{
+  active_record_a, auditing_config, placeholder_verdict_policy, record_input,
+}
 
 // ══════════════════════════════════════════════════════════════════════
 // TEST CONSTANTS
@@ -38,12 +41,6 @@ const challenge_validator_hash: ByteArray =
 
 const jury_pool_hash: ByteArray =
   #"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-
-const registry_policy_id: ByteArray =
-  #"d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"
-
-const registry_script_hash: ByteArray =
-  #"e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1"
 
 const params_script_hash: ByteArray =
   #"f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1"
@@ -75,7 +72,7 @@ const valid_claim_hash: ByteArray =
 
 fn test_config() -> AuditingConfig {
   AuditingConfig {
-    registry_policy_id,
+    ..auditing_config(placeholder_verdict_policy()),
     oracle_vkh,
     refs_token_policy: #"9999999999999999999999999999999999999999999999999999999999",
   }
@@ -198,24 +195,16 @@ fn seed_input() -> Input {
   }
 }
 
-/// Registry reference input for DID verification
-fn registry_ref_input() -> Input {
-  Input {
-    output_reference: OutputReference {
+/// Identity record of the claimer (reference input for the identity check)
+fn claimer_record_input() -> Input {
+  record_input(
+    OutputReference {
       transaction_id: #"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       output_index: 0,
     },
-    output: Output {
-      address: Address {
-        payment_credential: Script(registry_script_hash),
-        stake_credential: None,
-      },
-      value: assets.from_lovelace(2_000_000)
-        |> assets.add(registry_policy_id, claimer_did, 1),
-      datum: NoDatum,
-      reference_script: None,
-    },
-  }
+    claimer_did,
+    active_record_a(),
+  )
 }
 
 /// A valid SubmitClaim mint value
@@ -255,7 +244,7 @@ test test_submit_claim_valid_passes() {
       outputs: [valid_claim_output(datum)],
       mint: claim_mint_value(),
       extra_signatories: [claimer_vkh],
-      reference_inputs: [registry_ref_input()],
+      reference_inputs: [claimer_record_input()],
       validity_range: interval.between(999_999, 1_000_001),
     }
   // Verify core invariants: datum has state Open, token minted, stake locked
