@@ -1,0 +1,120 @@
+{
+  "format": "vector-module-deploy/1",
+  "module": "module1",
+  "network": "mainnet",
+  "not_for_deployment": false,
+  "placeholders": [],
+  "mode": "oracle",
+  "identity_deployment": {
+    "file": "https://raw.githubusercontent.com/Apex-Fusion/agents-marketplace/4c95c3f7745f013f26a33e66e992989490ffb05e/contracts/identity-marketplace/deploy/mainnet/deployment.json",
+    "sha256": "5d9fab437aff5cef9e3fedf85f696c5ff0526766503671d715fe69ace8b0c5b5",
+    "format": "vector-identity-deployment/1"
+  },
+  "identity": {
+    "identity_hash": "d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762",
+    "identity_ref": "3d4471222e524584180a4358e05517a243effc46d15ef62443a82aaed822de46#0",
+    "config_policy": "c6a8cd37643ec0fffab66807bb53be5903d7ecda887d8af4a085f55a",
+    "config_holder": "288fea77a0f674c6080aadd8ed3ca42cd5a920bf1f00c0d3e63306e4"
+  },
+  "module1": {
+    "oracle_vkh": "470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028",
+    "refs_token_policy": "78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a",
+    "refs_token_name": "6175646974696e675f72656673",
+    "records_holder": {
+      "tag": 11,
+      "hash": "07c1a32ed6c31345466023398223e642f282f0f333b21d5ba0018126",
+      "address": "addr1wyrurgew6mp3x32xvq3nnq3ruep09qhs7vemy82m5qqczfsuu5n2k"
+    }
+  },
+  "verdict_policy": {
+    "auditor_wins": {
+      "action": "suspend",
+      "duration_ms": 604800000
+    },
+    "claimer_wins": null
+  },
+  "protocol_params": {
+    "min_claim_stake": 50000000,
+    "min_challenge_window": 1800000,
+    "max_challenge_window": 86400000,
+    "jury_size": 5,
+    "min_juror_bond": 25000000,
+    "jury_fee_rate": 1000,
+    "selection_delay": 30000,
+    "resolution_deadline": 259200000,
+    "juror_slash_rate": 1000,
+    "min_agent_age": 21600000,
+    "max_concurrent_cases": 5,
+    "min_jury_pool_size": 15,
+    "min_jury_pool_total": 375000000,
+    "oracle_active": true,
+    "commit_window": 1800000,
+    "reveal_window": 1800000,
+    "cleanup_buffer": 600000
+  },
+  "parameters": {
+    "auditing_config_cbor": "d8799f581cd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762581c470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028581c78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a581cc6a8cd37643ec0fffab66807bb53be5903d7ecda887d8af4a085f55a581c288fea77a0f674c6080aadd8ed3ca42cd5a920bf1f00c0d3e63306e4d8799fd8799fd8799fd879801a240c8400ffffd87a80ffff",
+    "protocol_params_cbor": "d8799f1a02faf0801a001b77401a05265c00051a017d78401903e81975301a0f7314001903e81a01499700050f1a165a0bc0d87a801a001b77401a001b77401a000927c0ff",
+    "identity_party_challenge_hash_cbor": "581c9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08",
+    "identity_party_claim_hash_cbor": "581c53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523"
+  },
+  "hashes": {
+    "claim": "53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523",
+    "challenge": "9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08",
+    "jury_pool": "1734760872e81fdc312cc380e2ce2bf597eff01ccb6d98ab7e8e0aee",
+    "identity_party": "f6b094a89b58d5e196a53d6e5ebedcbb837db4a1b16a1477cf98305d"
+  },
+  "addresses": {
+    "claim": "addr1w9fldlpkyxdrhs7g4ueusvzgpnlkt2km2xa2hv9lfpd52gcz33v7u",
+    "challenge": "addr1wxv88w3nfrh0rsnhhntdecnx4cts76928w4xfnu9n58wczqprfdng",
+    "jury_pool": "addr1wytngasgwt5plhp39npcpckw906e0mlsrn9kmx9t068q4mst2puw9",
+    "identity_party": "addr1w8mtp99gndvdtcvk557kuh47mjacxld55xck59rhe7vrqhgjxawlh"
+  },
+  "identity_party_reward_address": "stake178mtp99gndvdtcvk557kuh47mjacxld55xck59rhe7vrqhgwvagr9",
+  "reference_address": "addr1vyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkdl5mw",
+  "plan": "Module-1/deploy/identity/mainnet/plan.json",
+  "steps": {
+    "publish-claim": {
+      "tx": "a5ad79d3ded0804241649242f03ab5aa22792361d625391ba5d42a58fec08335",
+      "time": "2026-11-03T15:09:03Z",
+      "ref": "a5ad79d3ded0804241649242f03ab5aa22792361d625391ba5d42a58fec08335#0"
+    },
+    "publish-challenge": {
+      "tx": "fe2f04f569107f75faf6b93bb93d7c3aa616185612fd6a64c3dba712d0f687e5",
+      "time": "2026-11-03T15:09:08Z",
+      "ref": "fe2f04f569107f75faf6b93bb93d7c3aa616185612fd6a64c3dba712d0f687e5#0"
+    },
+    "publish-jury_pool": {
+      "tx": "4f092c18ebb08427f590c94ddd5673f5f4c5de6ef4c6fd2e9fb339e091041f71",
+      "time": "2026-11-03T15:09:13Z",
+      "ref": "4f092c18ebb08427f590c94ddd5673f5f4c5de6ef4c6fd2e9fb339e091041f71#0"
+    },
+    "publish-identity_party": {
+      "tx": "319d39dbe94fce88ab5ec5526ba3127c6d97c1f9c4a44abe02e6a2949c54770b",
+      "time": "2026-11-03T15:09:19Z",
+      "ref": "319d39dbe94fce88ab5ec5526ba3127c6d97c1f9c4a44abe02e6a2949c54770b#0"
+    },
+    "register-identity_party": {
+      "tx": "4e09cb641ad3ca9e3ff20402cfa83cbb59a4626fb24fe45cee61a82d5e0b665b",
+      "time": "2026-11-03T15:09:24Z",
+      "deposit": 5000000
+    },
+    "records": {
+      "tx": "72e417cad239afc47626574246ee3a15dd2cddd8bc648f0a21fa290299dc8941",
+      "time": "2026-11-03T15:09:30Z",
+      "cross_refs": "72e417cad239afc47626574246ee3a15dd2cddd8bc648f0a21fa290299dc8941#0",
+      "params": "72e417cad239afc47626574246ee3a15dd2cddd8bc648f0a21fa290299dc8941#1"
+    }
+  },
+  "pending": {},
+  "claim_ref": "a5ad79d3ded0804241649242f03ab5aa22792361d625391ba5d42a58fec08335#0",
+  "challenge_ref": "fe2f04f569107f75faf6b93bb93d7c3aa616185612fd6a64c3dba712d0f687e5#0",
+  "jury_pool_ref": "4f092c18ebb08427f590c94ddd5673f5f4c5de6ef4c6fd2e9fb339e091041f71#0",
+  "identity_party_ref": "319d39dbe94fce88ab5ec5526ba3127c6d97c1f9c4a44abe02e6a2949c54770b#0",
+  "identity_party_registration": {
+    "tx": "4e09cb641ad3ca9e3ff20402cfa83cbb59a4626fb24fe45cee61a82d5e0b665b",
+    "deposit": 5000000
+  },
+  "cross_refs_utxo": "72e417cad239afc47626574246ee3a15dd2cddd8bc648f0a21fa290299dc8941#0",
+  "params_utxo": "72e417cad239afc47626574246ee3a15dd2cddd8bc648f0a21fa290299dc8941#1"
+}

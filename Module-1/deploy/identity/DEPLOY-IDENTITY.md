@@ -5,9 +5,10 @@ This runbook gives the module steps of the release (Part 2 §11 step 2 of
 first, with the agents-marketplace deploy tool. Then do the steps below in
 this order.
 
-**Status (2026-11-03).** The deployer decides the Module-1 mode and the
-verdict policy. The seal makes both permanent, so the seal needs the final
-yes of the release owner. Run only dry runs until that yes.
+**Status (2026-11-03).** Done on mainnet: Module-1 in oracle mode, the seal
+(configuration record `dea7fd5b…379b#0` names M1 `f6b094a8…305d`), Module-3
+and Module-6. The Module-1 files are published in `mainnet/` next to this
+runbook. The Module-3 and Module-6 deployment files follow.
 
 ## 1. Rules
 

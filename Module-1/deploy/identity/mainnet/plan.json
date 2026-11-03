@@ -1,0 +1,53 @@
+{
+  "not_for_deployment": false,
+  "placeholders": [],
+  "network": "mainnet",
+  "mode": "oracle",
+  "trace_level": "silent",
+  "config_file": "Module-1/deploy/identity/config.json",
+  "applied_blueprint": "Module-1/deploy/identity/mainnet/plutus.json",
+  "hash_order": [
+    "config_holder, config_policy, identity (inputs from the identity deployment)",
+    "claim(AuditingConfig, ProtocolParams)",
+    "challenge(AuditingConfig, ProtocolParams)",
+    "jury_pool(AuditingConfig, ProtocolParams)",
+    "identity_party(AuditingConfig, challenge hash, claim hash) = M1",
+    "seal: config_seal mints identity-config with the inline datum M1"
+  ],
+  "parameters": {
+    "auditing_config_cbor": "d8799f581cd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762581c470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028581c78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a581cc6a8cd37643ec0fffab66807bb53be5903d7ecda887d8af4a085f55a581c288fea77a0f674c6080aadd8ed3ca42cd5a920bf1f00c0d3e63306e4d8799fd8799fd8799fd879801a240c8400ffffd87a80ffff",
+    "protocol_params_cbor": "d8799f1a02faf0801a001b77401a05265c00051a017d78401903e81975301a0f7314001903e81a01499700050f1a165a0bc0d87a801a001b77401a001b77401a000927c0ff",
+    "identity_party_challenge_hash_cbor": "581c9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08",
+    "identity_party_claim_hash_cbor": "581c53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523"
+  },
+  "hashes": {
+    "claim": "53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523",
+    "challenge": "9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08",
+    "jury_pool": "1734760872e81fdc312cc380e2ce2bf597eff01ccb6d98ab7e8e0aee",
+    "identity_party": "f6b094a89b58d5e196a53d6e5ebedcbb837db4a1b16a1477cf98305d"
+  },
+  "addresses": {
+    "claim": {
+      "enterprise": "addr1w9fldlpkyxdrhs7g4ueusvzgpnlkt2km2xa2hv9lfpd52gcz33v7u",
+      "reward": "stake179fldlpkyxdrhs7g4ueusvzgpnlkt2km2xa2hv9lfpd52gc7m32zw"
+    },
+    "challenge": {
+      "enterprise": "addr1wxv88w3nfrh0rsnhhntdecnx4cts76928w4xfnu9n58wczqprfdng",
+      "reward": "stake17xv88w3nfrh0rsnhhntdecnx4cts76928w4xfnu9n58wczqafft06"
+    },
+    "jury_pool": {
+      "enterprise": "addr1wytngasgwt5plhp39npcpckw906e0mlsrn9kmx9t068q4mst2puw9",
+      "reward": "stake17ytngasgwt5plhp39npcpckw906e0mlsrn9kmx9t068q4mshqp6jh"
+    },
+    "identity_party": {
+      "enterprise": "addr1w8mtp99gndvdtcvk557kuh47mjacxld55xck59rhe7vrqhgjxawlh",
+      "reward": "stake178mtp99gndvdtcvk557kuh47mjacxld55xck59rhe7vrqhgwvagr9"
+    }
+  },
+  "cross_validator_refs_datum_cbor": "d8799f581c53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523581c9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08581c1734760872e81fdc312cc380e2ce2bf597eff01ccb6d98ab7e8e0aeeff",
+  "seal": {
+    "m1": "f6b094a89b58d5e196a53d6e5ebedcbb837db4a1b16a1477cf98305d",
+    "datum_cbor": "581cf6b094a89b58d5e196a53d6e5ebedcbb837db4a1b16a1477cf98305d",
+    "note": "config_seal mints identity-config to config_holder with this inline datum. Register the stake credential of identity_party with the stake registration certificate without deposit field (no script witness): identity_party fails every publish purpose."
+  }
+}
