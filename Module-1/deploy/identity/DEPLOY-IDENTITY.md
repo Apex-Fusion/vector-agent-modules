@@ -157,8 +157,8 @@ python3 Module-6/scripts/deploy_params.py --vkey $VKEY --params <values.json>   
 | Module-1 simulation and tools | the manifest `$M1` (`DEPLOYMENT_PATH`) | the file |
 | Module-3 SDK, indexer, dashboard | the Module-3 state (`load_deployment`) | the file |
 | Module-6 scripts and dashboard | the Module-6 state (`GovernanceDeployment.from_state`, `MODULE6_DEPLOYMENT_FILE`) | the file |
-| mcp-server | environment `GOV_PROPOSAL_SPEND_HASH`, `GOV_PROPOSAL_MINT_HASH`, `GOV_CRITIQUE_SPEND_HASH`, `GOV_CRITIQUE_MINT_HASH`, `GOV_ENDORSEMENT_SPEND_HASH`, `GOV_TREASURY_ADDRESS`, `GOV_PROPOSAL_SPEND_REF`, `GOV_PROPOSAL_MINT_REF`, `GOV_PARAMS_UTXO`, `GOV_ORACLE_UTXO`, `GOV_CROSSREFS_UTXO` | `client_settings.mcp_env` of the Module-6 state. The built-in defaults are the old deployment: set every value. |
-| agent-sdk-py | `GovernanceDeployment.from_deploy_state` (the Module-6 state) or `VECTOR_MODULE6_*` | `client_settings.sdk_env` of the Module-6 state |
+| mcp-server | environment `GOV_PROPOSAL_SPEND_HASH`, `GOV_PROPOSAL_MINT_HASH`, `GOV_CRITIQUE_SPEND_HASH`, `GOV_CRITIQUE_MINT_HASH`, `GOV_ENDORSEMENT_SPEND_HASH`, `GOV_TREASURY_ADDRESS`, `GOV_PROPOSAL_SPEND_REF`, `GOV_PROPOSAL_MINT_REF`, `GOV_PARAMS_UTXO`, `GOV_ORACLE_UTXO`, `GOV_CROSSREFS_UTXO` and the new values of its identity branch | `client_settings["mcp-server"]` of the Module-6 state. The built-in defaults are the old deployment: set every value. |
+| agent-sdk-py | `GovernanceDeployment.from_deploy_state` (the Module-6 state) or `VECTOR_MODULE6_*` | `client_settings["agent-sdk-py"]` of the Module-6 state |
 
 No client computes a holder address from a tag: every client reads the holder
 hashes or addresses from a state file or from its configuration.
@@ -174,7 +174,8 @@ reference scripts stay locked for ever.
 |---|---:|---:|---:|---:|
 | Module-1 (either mode) | 2.753133 | 5.000000 | 172.085370 | 179.838503 |
 | Module-3 | 1.951292 | 0 | 125.481820 | 127.433112 |
-| Module-6 | see the Module-6 dry run | | | |
+| Module-6 (3 treasury batches of 30 AP3X) | 3.800696 | 0 | 256.870990 | 260.671686 |
+| **All modules** | **8.505121** | **5.000000** | **554.438180** | **567.943301** |
 
 Module-1 transactions (both modes have the same sizes):
 

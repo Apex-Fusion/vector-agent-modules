@@ -65,25 +65,67 @@ aiken build    # Compile only
 
 | Script | Purpose |
 |--------|---------|
-| `deploy.py` | Full deployment — apply params, deploy ref scripts, create infrastructure UTxOs |
+| `deploy.py` | Deployment on the identity registry: records, reference scripts, treasury batches and CrossRefs. Dry run by default ([below](#deployment-on-the-identity-registry)) |
+| `deploy_params.py` | Replace the GovernanceParams record of the deployment |
+| `treasury_fund.py` | Create more treasury batch UTxOs for the deployment |
 | `governance_identity.py` | Identity-checked builders: proposal submission (lock, then SubmitProposal), amendment, critique and endorsement |
 | `smoke_test.py` | End-to-end lifecycle test (9 steps) |
 | `test_validated_submit.py` | Proposal submission only (lock, then SubmitProposal) |
 | `test_expire_e2e.py` | Expire test — submit, wait for review window, expire |
-| `treasury_fund.py` | Create new treasury batch UTxOs |
-| `treasury_replenish.py` | Monitor and auto-replenish treasury batches |
-| `update_params.py` | Update GovernanceParams UTXO on-chain |
-| `recreate_infra.py` | Recreate missing infrastructure UTxOs |
-| `redeploy_proposal.py` | Targeted redeployment of changed validators |
-| `redeploy_ref_scripts.py` | Redeploy reference scripts to unspendable addresses |
+| `treasury_replenish.py` | Monitor and auto-replenish treasury batches (previous deployment, `wallets/deploy_state.json`) |
+| `update_params.py` | Update GovernanceParams UTXO on-chain (previous deployment) |
+| `recreate_infra.py` | Recreate missing infrastructure UTxOs (previous deployment) |
+| `redeploy_proposal.py` | Targeted redeployment of changed validators (previous deployment) |
+| `redeploy_ref_scripts.py` | Redeploy reference scripts to unspendable addresses (previous deployment) |
 
 ```bash
-# Prerequisites: nix-shell, funded wallet (a new Foundation operator key),
-# .env with endpoints and VECTOR_IDENTITY_HASH (the script hash of the
-# identity registry; deploy the identity registry, Module-1 and Module-3 first)
-nix-shell shell.nix --run "python scripts/deploy.py"
 VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/smoke_test.py"
 ```
+
+### Deployment on the identity registry
+
+Deploy the identity registry, Module-1 with its seal and Module-3 first (Part 2 §3.8 and §7 of `docs/IDENTITY_REGISTRY.md` in agents-marketplace). The deploy tools use the shared runner `shared/python/vector_deploy.py`. They need pycardano, cbor2 and the aiken CLI (v1.1.21).
+
+```bash
+# Dry run (the default): build each transaction, evaluate it with Ogmios, send nothing
+python3 scripts/deploy.py --deployment deployment.json --vkey operator.vkey --network testnet \
+    --dry-run-funds 600 --report report.json
+# Send: sign with the operator key, send the transactions in order
+python3 scripts/deploy.py run --submit --deployment deployment.json --skey operator.skey --network testnet
+# Offline signing: build, then sign without a network, then submit
+python3 scripts/deploy.py build --deployment deployment.json --vkey operator.vkey --network testnet
+python3 scripts/deploy.py sign --skey operator.skey --network testnet
+python3 scripts/deploy.py submit --deployment deployment.json --vkey operator.vkey --network testnet
+```
+
+- `--deployment` is the identity `deployment.json` of the agents-marketplace tool (format `vector-identity-deployment/1`). The tool reads `identity_hash`, `reference_address`, `operator_address`, `seal_seed_address` and `config_seed`. It checks the file with the rules of Module-1 (`Module-1/scripts/identity_deploy.py`).
+- The operator key (`--vkey` or `--skey`, a file path) must be the key of `operator_address`. One operator key deploys every module. It owns the holders, it is the oracle credential, and its `ScriptPubkey` policy mints the CrossRefs token `governance_refs`.
+- The holders are `holder(61, operator)` (params), `holder(62, operator)` (oracle and CrossRefs) and `holder(63, operator)` (treasury). Module-6 has its own tags, so its records and its treasury never share an address with another module.
+- `aiken blueprint apply` applies GovernanceConfig (11 fields, `identity_hash` last) to the five validators in a temporary directory.
+
+Each step is one transaction. The tool skips a step when the chain shows its result, so a run can continue after an error.
+
+| Step | Transaction |
+|------|-------------|
+| `records` | Spends the record token seed and mints the `params`, `oracle` and `activity` tokens of the one-shot record token policy. Output 0: the GovernanceParams record (params holder). Output 1: the oracle record (oracle holder). Output 2: the head of the activity list (`proposal_spend` address). 3 AP3X each |
+| `publish-holder-params`, `-oracle`, `-treasury`, `publish-proposal_mint`, `publish-proposal_spend`, `publish-critique_mint`, `publish-critique_spend`, `publish-endorsement_spend` | One reference script each, as output 0 at the reference address of the identity deployment (the all-zero key hash, unspendable), with the exact min-UTxO |
+| `treasury-1`, `treasury-2`, `treasury-3` | 30 AP3X each at the treasury holder, with `TreasuryBatchDatum(id, True)` |
+| `cross-refs` | Mints one `governance_refs` token. Output 0 at the oracle holder: the token and the 5-field GovernanceCrossRefs |
+
+The seed is the largest lovelace-only operator UTxO. The tool chooses it once and saves it before the first on-chain step. A resumed run uses the saved seed. In a dry run with `--dry-run-funds`, the virtual funds output is the seed, so the validator hashes of a dry run differ from the hashes of a send. The tool never spends `config_seed` or an output at `seal_seed_address`. A mainnet dry run shows a cost of about 260.7 AP3X: 3.8 AP3X of fees, 156.1 AP3X for the eight reference scripts, 90 AP3X for the treasury batches, 9 AP3X for the records and 1.8 AP3X for the CrossRefs output.
+
+The state is `deploy/identity/state/<network>/deploy_state.json` (`--state-dir` gives another folder; the state is not in git). A dry run writes no state. The tool refuses every state file of another format, so it never writes the state of the previous deployment (`wallets/deploy_state.json`). The state has the keys that `GovernanceDeployment.from_state` (`governance_identity.py`) and `GovernanceDeployment.from_deploy_state` (Python SDK) read, and `tx_hashes` with the key names of the earlier states. `client_settings` holds the `GOV_*` values of the mcp-server and the `VECTOR_MODULE6_*` values of the Python SDK. The tool fills each value when it records the step that gives it.
+
+After the deployment:
+
+```bash
+# Replace the GovernanceParams record (dry run; "run --submit --skey operator.skey" sends)
+python3 scripts/deploy_params.py --vkey operator.vkey --params params.json --network testnet
+# More treasury batches: the ids follow the treasury_batch_<id> keys of the state
+python3 scripts/treasury_fund.py --vkey operator.vkey --batches 3 --size 500 --network testnet
+```
+
+`deploy_params.py` spends the params record with the params holder script and creates it again at the same address, with the same `params` token and the values of `--params` (a JSON object with the 21 GovernanceParams fields; default: the values of `deploy.py`). It refuses a state without a params record. Both tools have the actions and the options of `deploy.py`, and they write the same state.
 
 ### Identity-checked actions (clients)
 
@@ -150,6 +192,7 @@ Module-6/
 ├── deploy/                            ← Deployment records + compiled blueprint
 │   ├── plutus.json                    ← Compiled Plutus V3 blueprint (network-agnostic)
 │   ├── README.md                      ← Layout guide
+│   ├── identity/state/<network>/      ← Deploy state on the identity registry (scripts/deploy.py, not in git)
 │   ├── testnet/                       ← Vector testnet deployment artifacts
 │   │   ├── DEPLOY.md                  ← Hashes, addresses, params, lifecycle results
 │   │   ├── deployment.json            ← Machine-readable deployment state

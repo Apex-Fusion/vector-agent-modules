@@ -1,21 +1,37 @@
 """
 Module 6: shared deploy helpers
 
-Used by deploy.py, the operations scripts (update_params.py,
-redeploy_proposal.py, recreate_infra.py) and the test scripts that read the
-params and oracle records. These functions need cbor2 and the aiken CLI.
-They do not need pycardano or a chain connection.
+The deploy tools (deploy.py, deploy_params.py and treasury_fund.py), the
+operations scripts of the previous deployment (update_params.py,
+redeploy_proposal.py, recreate_infra.py, move_crossrefs.py) and the client
+module governance_identity.py use these helpers. They need cbor2 and the
+aiken CLI. They do not need pycardano or a chain connection.
 
-  - apply_holder: holder script for a tag, owned by a verification key hash
-  - apply_record_token_policy: one-shot record token policy for a seed UTxO
-  - identity_hash_from_env: the identity_hash input (VECTOR_IDENTITY_HASH)
+  - HOLDER_TAGS, apply_holder, apply_record_token_policy: the holder scripts
+    and the one-shot record token policy of shared/python/holder_scripts.py.
+    Module-6 has its own holder tags (61, 62, 63), so its records and its
+    treasury never share an address with another module of the same
+    operator key.
+  - load_identity_deployment, check_operator_address: the identity
+    deployment.json of the agents-marketplace tool, checked with the rules of
+    Module-1 (Module-1/scripts/identity_deploy.py).
   - build_governance_config_cbor: GovernanceConfig (11 fields)
+  - governance_params_data, DEFAULT_GOVERNANCE_PARAMS: GovernanceParams (21
+    fields)
+  - oracle_datum_data: GovernanceOracleDatum (3 fields)
+  - treasury_batch_data: TreasuryBatchDatum (2 fields)
   - build_cross_refs_data: GovernanceCrossRefs (5 fields, with the
     endorsement validator hash last)
   - build_activity_head_data: the head of the activity list
     (ProposerActivityDatum, 5 fields)
-  - select_seed_utxo / select_collateral_utxo / find_record_utxo: read
-    pycardano UTxO objects
+  - plutus_data_cbor: the Plutus CBOR of a datum
+  - state_tx_hashes, client_settings: the values of a deploy state that the
+    clients read
+  - redeploy_state_error, find_record_utxo: checks of the older scripts
+
+The datum builders give Plutus Data trees (cbor2.CBORTag), in the field order
+of the Aiken types in
+contracts/governance-suggestion/lib/governance_suggestion/types.ak.
 
 Deployment order (Part 2 §3.8 and §7 of docs/IDENTITY_REGISTRY.md in
 agents-marketplace):
@@ -29,40 +45,62 @@ agents-marketplace):
      of step 4.
   7. Module-6 (these scripts). GovernanceConfig embeds identity_hash.
 
-Input: the environment variable VECTOR_IDENTITY_HASH, with no default
-(deploy.py also reads it from .env). deploy.py stops when the value is
+Input: the identity deployment.json (format vector-identity-deployment/1).
+deploy.py reads identity_hash, reference_address, operator_address,
+seal_seed_address and config_seed from it. It stops when identity_hash is
 missing, is not 28 bytes of hex, is all zero or is the legacy agent registry
 hash.
 
-Operator keys: new Foundation keys deploy the modules and act as their
-operators. The wallet key of deploy.py must be one of these keys. Old module
-keys are not reused.
+Operator key: one new operator key deploys every module. It owns the
+holders, it is the oracle credential and its ScriptPubkey policy mints the
+CrossRefs token. It is the key of operator_address of the identity
+deployment. Old module keys are not used again.
 """
 
-import json
-import os
-import subprocess
-import tempfile
+import importlib.util
+import sys
+from functools import lru_cache
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import cbor2
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-HOLDER_BLUEPRINT_PATH = REPO_ROOT / "shared" / "holder-scripts" / "plutus.json"
+SHARED_PYTHON = REPO_ROOT / "shared" / "python"
+if str(SHARED_PYTHON) not in sys.path:
+    sys.path.insert(0, str(SHARED_PYTHON))
 
-HOLDER_TITLE = "holder.holder.spend"
-RECORD_TOKEN_TITLE = "record_token.record_token.mint"
+import vector_identity as vid  # noqa: E402  (Module-6/scripts)
+# The deploy tools and the older scripts import these names from deploy_common.
+from holder_scripts import (  # noqa: E402, F401  (shared/python)
+    HOLDER_BLUEPRINT_PATH,
+    HOLDER_TAGS as _HOLDER_TAGS_BY_MODULE,
+    HOLDER_TITLE,
+    RECORD_TOKEN_TITLE,
+    aiken_apply,
+    apply_holder,
+    apply_record_token_policy,
+    validator_entry,
+)
+
+# The older scripts import these names from deploy_common.
+_aiken_apply = aiken_apply
+_validator = validator_entry
+
+#: The deploy script of Module-1. Its identity deployment checks are the
+#: rules of every module.
+MODULE1_IDENTITY_DEPLOY = REPO_ROOT / "Module-1" / "scripts" / "identity_deploy.py"
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 ZEROED_28 = "00" * 28
 
-# Holder tags (shared/holder-scripts/validators/holder.ak). The CrossRefs NFT
-# also sits at the oracle holder.
-HOLDER_TAGS = [(1, "params"), (2, "oracle"), (3, "treasury")]
+#: The holder tags of Module-6 (shared/python/holder_scripts.py):
+#: [(61, "params"), (62, "oracle"), (63, "treasury")]. The CrossRefs output
+#: also sits at the oracle holder.
+HOLDER_TAGS = sorted((tag, role) for role, tag in _HOLDER_TAGS_BY_MODULE["module6"].items())
 
 # Asset names of the record tokens (shared/lib/shared/record_auth.ak). The
 # head of the activity list holds the `activity` token
@@ -72,11 +110,62 @@ PARAMS_TOKEN_NAME = b"params"
 ORACLE_TOKEN_NAME = b"oracle"
 ACTIVITY_TOKEN_NAME = b"activity"
 
-# Redeemer data of the record token policy: unit (constructor 0, no fields).
-# The policy ignores the redeemer.
+#: The asset name of the CrossRefs token. The refs token policy of Module-1,
+#: Module-3 and Module-6 is the same ScriptPubkey(operator) policy; each
+#: module has its own token name.
+REFS_TOKEN_NAME = b"governance_refs"
+
+# Redeemer data of the record token policy and of the holder: unit
+# (constructor 0, no fields). Both scripts ignore the redeemer.
 UNIT_REDEEMER = cbor2.CBORTag(121, [])
 
-MIN_COLLATERAL_LOVELACE = 5_000_000
+#: The five applied validators of a deployment: {title: name}. The deploy
+#: state keeps the reference script of each one as tx_hashes["<name>_ref"]
+#: (output 0 of the transaction).
+VALIDATOR_TITLES = {
+    "proposal.proposal_mint.mint": "proposal_mint",
+    "proposal.proposal_spend.spend": "proposal_spend",
+    "critique.critique_mint.mint": "critique_mint",
+    "critique.critique_spend.spend": "critique_spend",
+    "critique.endorsement_spend.spend": "endorsement_spend",
+}
+PROPOSAL_SPEND = "proposal.proposal_spend.spend"
+PROPOSAL_MINT = "proposal.proposal_mint.mint"
+CRITIQUE_SPEND = "critique.critique_spend.spend"
+CRITIQUE_MINT = "critique.critique_mint.mint"
+ENDORSEMENT_SPEND = "critique.endorsement_spend.spend"
+
+#: GovernanceParams of a new deployment: the values of the live v8
+#: deployment (deploy/mainnet/deployment.json, governance_params) and the
+#: three Phase 1.2 values. The order is the field order of the Aiken type.
+#: Times are POSIX milliseconds, amounts are lovelace, shares are basis
+#: points.
+DEFAULT_GOVERNANCE_PARAMS = {
+    "min_proposal_stake": 25_000_000,
+    "min_critique_stake": 5_000_000,
+    "min_governance_endorsement": 10_000_000,
+    "min_review_window": 259_200_000,
+    "max_review_window": 2_419_200_000,
+    "max_amendments": 5,
+    "max_active_proposals": 3,
+    "proposal_cooldown": 86_400_000,
+    "proposer_reward_share": 7_000,
+    "critic_reward_share": 2_000,
+    "protocol_fee_rate": 1_000,
+    "min_adoption_reward": 50_000_000,
+    "max_adoption_reward": 500_000_000,
+    "max_incorporated_critiques": 10,
+    "max_treasury_request": 10_000_000_000,
+    "emergency_stake_multiplier": 5_000,
+    "emergency_review_window": 43_200_000,
+    "param_execution_delay": 604_800_000,
+    "min_prediction_pool": 100_000_000,
+    "credibility_pool_low_threshold": 500_000_000,
+    "credibility_pool_critical_threshold": 100_000_000,
+}
+
+#: The 21 fields of GovernanceParams, in the order of the Aiken type.
+GOVERNANCE_PARAMS_FIELDS = tuple(DEFAULT_GOVERNANCE_PARAMS)
 
 
 # ── Validation ───────────────────────────────────────────────────────────────
@@ -97,11 +186,6 @@ DEPLOYMENT_ORDER = (
     "the seal, then Module-3, then Module-6."
 )
 
-# identity_hash is the script hash (= policy ID) of the identity registry
-# contract `identity`. There is no default, because the value exists only
-# after the identity deployment.
-IDENTITY_HASH_ENV = "VECTOR_IDENTITY_HASH"
-
 # The legacy agent registry (policy ID = script hash). It is not allowed as
 # identity_hash.
 LEGACY_REGISTRY_HASH = "be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01"
@@ -115,18 +199,17 @@ def _identity_hash_problem(value: Optional[str]) -> Optional[str]:
     """Why `value` is not allowed as identity_hash, or None when it is allowed."""
     source = "the identity deployment (the script hash of `identity`)"
     if not value:
-        return f"identity_hash is not set. Set {IDENTITY_HASH_ENV} to the value from {source}."
+        return f"identity_hash is not set. Use the identity_hash of {source}."
     try:
         raw = bytes.fromhex(value)
     except ValueError:
-        return f"identity_hash ({IDENTITY_HASH_ENV}) is not hex: {value!r}."
+        return f"identity_hash is not hex: {value!r}."
     if len(raw) != 28:
-        return f"identity_hash ({IDENTITY_HASH_ENV}) must be 28 bytes, got {len(raw)} bytes."
+        return f"identity_hash must be 28 bytes, got {len(raw)} bytes."
     if raw == bytes(28):
-        return f"identity_hash ({IDENTITY_HASH_ENV}) is all zero. Set the value from {source}."
+        return f"identity_hash is all zero. Use the identity_hash of {source}."
     if raw.hex() == LEGACY_REGISTRY_HASH:
-        return (f"identity_hash ({IDENTITY_HASH_ENV}) is the legacy agent registry hash. "
-                f"Set the value from {source}.")
+        return f"identity_hash is the legacy agent registry hash. Use the identity_hash of {source}."
     return None
 
 
@@ -139,88 +222,57 @@ def _identity_hash_bytes(value: Optional[str]) -> bytes:
     return bytes.fromhex(value)
 
 
-def identity_hash_from_env(environ: Mapping[str, str] = os.environ) -> str:
-    """identity_hash as lowercase hex, from VECTOR_IDENTITY_HASH. Raises
-    DeployInputError, with the deployment order, when the value is missing
-    or not allowed."""
-    return _identity_hash_bytes(environ.get(IDENTITY_HASH_ENV, "").strip()).hex()
+@lru_cache(maxsize=1)
+def _module1_identity_deploy():
+    """Module-1/scripts/identity_deploy.py as a module. It needs only the
+    Python standard library."""
+    spec = importlib.util.spec_from_file_location("module1_identity_deploy", MODULE1_IDENTITY_DEPLOY)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-# ── aiken blueprint apply ────────────────────────────────────────────────────
+def load_identity_deployment(path, network: str) -> dict:
+    """The identity deployment.json of the agents-marketplace tool, checked
+    with the rules of Module-1 (identity_deploy.load_identity_deployment):
+    the format, the network, identity_hash, config_policy and config_holder
+    (28 bytes, not zero), reference_address (the enterprise address of the
+    all-zero key hash), operator_address and seal_seed_address (both set and
+    different) and config_seed. Module-6 does not read refs.identity, so the
+    file can come before the identity reference scripts. identity_hash must
+    not be the legacy agent registry hash.
 
-def _aiken_apply(
-    blueprint_path: Path,
-    module: str,
-    validator: str,
-    param_cbor_hex: str,
-    out_path: Optional[Path] = None,
-) -> Optional[dict]:
-    """Apply one parameter. Writes to `out_path` when given, else returns the
-    applied blueprint."""
-    cmd = [
-        "aiken", "blueprint", "apply",
-        "-i", str(blueprint_path),
-        "-m", module, "-v", validator,
-        param_cbor_hex,
-    ]
-    if out_path is not None:
-        cmd.extend(["-o", str(out_path)])
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"aiken blueprint apply failed for {module}.{validator}: "
-            f"{result.stderr.strip()}"
-        )
-    if out_path is not None:
-        return None
-    return json.loads(result.stdout)
-
-
-def _validator(blueprint: dict, title: str) -> dict:
-    for v in blueprint["validators"]:
-        if v["title"] == title:
-            return v
-    raise ValueError(f"Validator {title} not found in the applied blueprint")
+    Returns identity_hash, reference_address, operator_address,
+    seal_seed_address, config_seed (lower case), network, sealed (the file
+    has a seal), file and sha256. Raises DeployInputError."""
+    module1 = _module1_identity_deploy()
+    try:
+        data = module1.load_identity_deployment(Path(path), network, allow_placeholders=True)
+    except module1.PlanError as error:
+        raise DeployInputError(str(error)) from None
+    identity_hash = _identity_hash_bytes(str(data["identity_hash"]).lower()).hex()
+    tx_id, _, index = str(data["config_seed"]).partition("#")
+    return {
+        "network": data["network"],
+        "identity_hash": identity_hash,
+        "reference_address": data["reference_address"],
+        "operator_address": data["operator_address"],
+        "seal_seed_address": data["seal_seed_address"],
+        "config_seed": f"{tx_id.lower()}#{int(index)}",
+        "sealed": bool(data.get("seal")),
+        "file": data["file"],
+        "sha256": data["sha256"],
+    }
 
 
-def apply_holder(
-    tag: int,
-    owner_vkh_hex: str,
-    blueprint_path: Path = HOLDER_BLUEPRINT_PATH,
-) -> dict:
-    """Apply holder(tag, owner). Returns {"hash", "compiled_code"}.
-
-    Two `aiken blueprint apply` calls, one for each parameter: first the tag
-    (CBOR int), then the owner verification key hash (CBOR bytes, 28 bytes).
-    Only the owner key can spend an output at the holder address.
-    """
-    owner = _hex_bytes("owner_vkh_hex", owner_vkh_hex, 28)
-    with tempfile.TemporaryDirectory(prefix="holder-apply-") as tmp:
-        tagged = Path(tmp) / "holder-tag.json"
-        _aiken_apply(blueprint_path, "holder", "holder", cbor2.dumps(tag).hex(), tagged)
-        applied = _aiken_apply(tagged, "holder", "holder", cbor2.dumps(owner).hex())
-    v = _validator(applied, HOLDER_TITLE)
-    return {"hash": v["hash"], "compiled_code": v["compiledCode"]}
-
-
-def apply_record_token_policy(
-    seed_tx_id_hex: str,
-    seed_index: int,
-    blueprint_path: Path = HOLDER_BLUEPRINT_PATH,
-) -> dict:
-    """Apply record_token(seed). Returns {"policy_id", "compiled_code"}.
-
-    The seed is an OutputReference: Plutus constructor 0 with the
-    transaction id (32 bytes) and the output index. Tokens of the policy can
-    be minted only in the transaction that spends the seed.
-    """
-    tx_id = _hex_bytes("seed_tx_id_hex", seed_tx_id_hex, 32)
-    if seed_index < 0:
-        raise ValueError(f"seed_index must not be negative, got {seed_index}")
-    seed_cbor = cbor2.dumps(cbor2.CBORTag(121, [tx_id, seed_index])).hex()
-    applied = _aiken_apply(blueprint_path, "record_token", "record_token", seed_cbor)
-    v = _validator(applied, RECORD_TOKEN_TITLE)
-    return {"policy_id": v["hash"], "compiled_code": v["compiledCode"]}
+def check_operator_address(identity: Mapping[str, Any], operator_key_hash: bytes) -> None:
+    """The operator key must be the key of operator_address of the identity
+    deployment (an enterprise key address). Raises DeployInputError."""
+    module1 = _module1_identity_deploy()
+    try:
+        module1.check_operator_address(identity, bytes(operator_key_hash))
+    except module1.PlanError as error:
+        raise DeployInputError(str(error)) from None
 
 
 # ── GovernanceConfig CBOR ────────────────────────────────────────────────────
@@ -236,10 +288,11 @@ def build_governance_config_cbor(
     """Build GovernanceConfig as Plutus Data CBOR (hex).
 
     Constructor 0 with 11 fields (all ByteArray) in the order of the Aiken
-    type (contracts/governance-suggestion/lib/governance_suggestion/types.ak).
-    identity_hash is the last field. When identity_hash is missing, all zero
-    or the legacy agent registry hash, the function raises DeployInputError
-    with the deployment order.
+    type: tag 121 and a definite array (head 0x8b). `aiken blueprint apply`
+    keeps the CBOR form of its argument, so the script hashes depend on it:
+    the SDKs apply the same definite form. identity_hash is the last field.
+    When identity_hash is missing, all zero or the legacy agent registry
+    hash, the function raises DeployInputError with the deployment order.
 
     reputation_validator_hash and jury_pool_hash stay zero, as before: the
     validators then skip the Module-3 checks that use them. A non-zero value
@@ -262,6 +315,77 @@ def build_governance_config_cbor(
     ]
     # Plutus Data constructor: Tag 121 + 0 = constr(0, fields)
     return cbor2.dumps(cbor2.CBORTag(121, fields)).hex()
+
+
+# ── Datums ───────────────────────────────────────────────────────────────────
+
+def plutus_data_cbor(tree: Any) -> bytes:
+    """The Plutus CBOR of a Plutus Data tree, as Aiken's cbor.serialise
+    writes it (vector_identity.serialise_data). The deploy tools write each
+    inline datum in this form."""
+    return vid.serialise_data(tree)
+
+
+def check_governance_params(values: Mapping[str, Any]) -> dict:
+    """The 21 GovernanceParams values, in the order of the Aiken type. Each
+    value must be an integer and not negative. Raises DeployInputError for a
+    missing, unknown or bad value."""
+    missing = [name for name in GOVERNANCE_PARAMS_FIELDS if name not in values]
+    unknown = sorted(set(values) - set(GOVERNANCE_PARAMS_FIELDS))
+    if missing or unknown:
+        parts = []
+        if missing:
+            parts.append("missing " + ", ".join(missing))
+        if unknown:
+            parts.append("unknown " + ", ".join(unknown))
+        raise DeployInputError(f"GovernanceParams has 21 fields: {'; '.join(parts)}")
+    bad = [name for name in GOVERNANCE_PARAMS_FIELDS
+           if isinstance(values[name], bool) or not isinstance(values[name], int) or values[name] < 0]
+    if bad:
+        raise DeployInputError("GovernanceParams values must be integers, 0 or more: " + ", ".join(bad))
+    return {name: values[name] for name in GOVERNANCE_PARAMS_FIELDS}
+
+
+def governance_params_data(values: Mapping[str, Any] = DEFAULT_GOVERNANCE_PARAMS) -> cbor2.CBORTag:
+    """GovernanceParams as Plutus Data: constructor 0 with the 21 integers in
+    the order of the Aiken type (governance_identity.GovernanceParams gives
+    the same tree)."""
+    checked = check_governance_params(values)
+    return cbor2.CBORTag(121, [checked[name] for name in GOVERNANCE_PARAMS_FIELDS])
+
+
+def governance_params_from_data(tree: Any) -> Optional[dict]:
+    """The 21 GovernanceParams values of a decoded datum, or None when the
+    datum is not a GovernanceParams datum."""
+    if not isinstance(tree, cbor2.CBORTag) or tree.tag != 121:
+        return None
+    fields = list(tree.value)
+    if len(fields) != len(GOVERNANCE_PARAMS_FIELDS):
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in fields):
+        return None
+    return dict(zip(GOVERNANCE_PARAMS_FIELDS, fields))
+
+
+def oracle_datum_data(oracle_vkh_hex: str, treasury_holder_hash: str) -> cbor2.CBORTag:
+    """GovernanceOracleDatum as Plutus Data: constructor 0 with 3 fields.
+
+    oracle_credential is VerificationKey(oracle) (constructor 0 with the
+    28-byte key hash). The validators refuse a Script credential.
+    treasury_script_hash is the treasury holder hash. oracle_active is True
+    (Aiken Bool: constructor 1, no fields).
+    """
+    oracle = _hex_bytes("oracle_vkh_hex", oracle_vkh_hex, 28)
+    treasury = _hex_bytes("treasury_holder_hash", treasury_holder_hash, 28)
+    return cbor2.CBORTag(121, [cbor2.CBORTag(121, [oracle]), treasury, cbor2.CBORTag(122, [])])
+
+
+def treasury_batch_data(batch_id: int, active: bool = True) -> cbor2.CBORTag:
+    """TreasuryBatchDatum as Plutus Data: constructor 0 with batch_id and
+    active (Aiken Bool: True is constructor 1, False is constructor 0)."""
+    if isinstance(batch_id, bool) or not isinstance(batch_id, int) or batch_id < 1:
+        raise ValueError(f"batch_id must be an integer of 1 or more, got {batch_id!r}")
+    return cbor2.CBORTag(121, [batch_id, cbor2.CBORTag(122 if active else 121, [])])
 
 
 # ── GovernanceCrossRefs datum ────────────────────────────────────────────────
@@ -315,8 +439,8 @@ def build_activity_head_data(owner_vkh_hex: str) -> cbor2.CBORTag:
     agent_credential; it is VerificationKey(owner), the deployer key
     (constructor 0 with the 28-byte key hash).
 
-    The deploy record transaction puts the head at the proposal_spend
-    address with the `activity` record token (ACTIVITY_TOKEN_NAME). The first
+    The record step of deploy.py puts the head at the proposal_spend address
+    with the `activity` record token (ACTIVITY_TOKEN_NAME). The first
     submission of each agent inserts the node of the agent into the list.
     """
     owner = _hex_bytes("owner_vkh_hex", owner_vkh_hex, 28)
@@ -327,46 +451,139 @@ def build_activity_head_data(owner_vkh_hex: str) -> cbor2.CBORTag:
 
 # ── Deploy state ─────────────────────────────────────────────────────────────
 
-def resume_state_error(state: dict, owner_vkh_hex: str, identity_hash: str) -> Optional[str]:
-    """Check a saved deploy state before a deploy run.
+#: The tx_hashes key of each step of deploy.py whose output 0 the clients
+#: read ("<tx>#0"). treasury-<id> gives treasury_batch_<id>.
+STEP_TX_KEYS = {
+    "publish-holder-params": "holder_params_ref",
+    "publish-holder-oracle": "holder_oracle_ref",
+    "publish-holder-treasury": "holder_treasury_ref",
+    **{f"publish-{name}": f"{name}_ref" for name in VALIDATOR_TITLES.values()},
+    "cross-refs": "cross_refs_nft",
+}
 
-    Returns an error message, or None when the run can continue. A state with
-    tx hashes but without record_token_policy is from a deployment before
-    record tokens. A state with tx hashes but without identity_hash is from a
-    deployment with the legacy agent registry fields. A state whose record
-    transaction created no head of the activity list (no
-    tx_hashes["activity_head"]) is from a deployment before the activity
-    list: the one-shot record token policy cannot mint the `activity` token
-    any more. A new deployment must not reuse their tx hashes. A state with
-    another identity_hash belongs to another configuration: its validators
-    differ.
-    """
-    policy = state.get("record_token_policy")
-    tx_hashes = state.get("tx_hashes") or {}
-    if state.get("tx_hashes") and not policy:
-        return ("the deploy state belongs to a deployment without record tokens. "
-                "Move it to a different path to start a new deployment.")
-    if state.get("tx_hashes") and not state.get("identity_hash"):
-        return ("the deploy state belongs to a deployment with the legacy agent "
-                "registry fields (no identity_hash). Move it to a different path "
-                "to start a new deployment.")
-    if policy and not state.get("record_token_seed"):
-        return "the deploy state has record_token_policy but no record_token_seed."
-    owner = state.get("holder_owner_vkey_hash")
-    if owner and owner != owner_vkh_hex:
-        return (f"the deploy state belongs to the holder owner {owner}, "
-                f"not to this wallet ({owner_vkh_hex}).")
-    saved = state.get("identity_hash")
-    if saved and saved != identity_hash:
-        return (f"the deploy state has identity_hash {saved}, but {IDENTITY_HASH_ENV} "
-                f"is {identity_hash}. Use the value of that deployment, or move the "
-                f"state to a different path to start a new deployment.")
-    if tx_hashes.get("params_utxo") and not tx_hashes.get("activity_head"):
-        return ("the deploy state has records but no head of the activity list "
-                "(a deployment before the activity list). The one-shot record token "
-                "policy cannot mint the `activity` token any more. Move the state to "
-                "a different path to start a new deployment.")
+#: The step of deploy.py that creates the records, and the prefix of the
+#: steps of deploy_params.py that replace the params record.
+RECORDS_STEP = "records"
+PARAMS_UPDATE_PREFIX = "params-update-"
+TREASURY_PREFIX = "treasury-"
+
+
+def treasury_batch_id(step_name: str) -> Optional[int]:
+    """The batch id of a step "treasury-<id>", else None."""
+    if step_name.startswith(TREASURY_PREFIX) and step_name[len(TREASURY_PREFIX):].isdigit():
+        return int(step_name[len(TREASURY_PREFIX):])
     return None
+
+
+def _tx_of(ref: Optional[str]) -> Optional[str]:
+    return str(ref).partition("#")[0] if ref else None
+
+
+def current_params_entry(steps: Mapping[str, Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    """The newest step record that names the params record: the record step
+    of deploy.py or a replacement by deploy_params.py (the latest time; at
+    the same time, the later step)."""
+    entries = [
+        (entry.get("time") or "", order, entry)
+        for order, (name, entry) in enumerate(steps.items())
+        if (name == RECORDS_STEP or name.startswith(PARAMS_UPDATE_PREFIX)) and entry.get("params")
+    ]
+    return max(entries, key=lambda item: item[:2])[2] if entries else None
+
+
+def state_tx_hashes(steps: Mapping[str, Mapping[str, Any]]) -> dict:
+    """tx_hashes of a deploy state from the recorded steps, with the key
+    names of the earlier deploy states: the transaction of each reference
+    script, treasury batch and the CrossRefs output (output 0 of each), and
+    of the params record, the oracle record and the head of the activity
+    list. The head moves with each first submission of an agent: the
+    clients find it by its record token."""
+    tx_hashes = {}
+    for name, entry in steps.items():
+        key = STEP_TX_KEYS.get(name)
+        batch_id = treasury_batch_id(name)
+        if batch_id is not None:
+            key = f"treasury_batch_{batch_id}"
+        if key and entry.get("tx"):
+            tx_hashes[key] = entry["tx"]
+    params = current_params_entry(steps)
+    if params:
+        tx_hashes["params_utxo"] = _tx_of(params["params"])
+    records = steps.get(RECORDS_STEP) or {}
+    for field, key in (("oracle", "oracle_utxo"), ("activity_head", "activity_head")):
+        if records.get(field):
+            tx_hashes[key] = _tx_of(records[field])
+    return tx_hashes
+
+
+def client_settings(state: Mapping[str, Any]) -> dict:
+    """The environment values of the external clients for a deploy state:
+
+    - "mcp-server": the GOV_* values. The main branch reads GOV_PARAMS_UTXO,
+      GOV_ORACLE_UTXO and GOV_CROSSREFS_UTXO; the identity registry branch
+      reads GOV_RECORD_TOKEN_POLICY, GOV_REFS_TOKEN_POLICY,
+      GOV_PARAMS_ADDRESS, GOV_CROSSREFS_ADDRESS and all five *_REF values.
+    - "agent-sdk-py": the VECTOR_MODULE6_* values of
+      vector_agent.governance.deployment.ENV_VARS. The zero hashes of
+      GovernanceConfig are the SDK defaults, so they are not set.
+
+    A value that comes from a step is None until the state records the
+    step."""
+    steps = state.get("steps") or {}
+    validators = state.get("validators") or {}
+    holders = state.get("holders") or {}
+
+    def script_hash(title: str) -> Optional[str]:
+        return (validators.get(title) or {}).get("hash")
+
+    def holder(role: str, key: str) -> Optional[str]:
+        return (holders.get(role) or {}).get(key)
+
+    def script_ref(title: str) -> Optional[str]:
+        return (steps.get(f"publish-{VALIDATOR_TITLES[title]}") or {}).get("ref")
+
+    params = (current_params_entry(steps) or {}).get("params")
+    oracle = (steps.get(RECORDS_STEP) or {}).get("oracle")
+    cross_refs = (steps.get("cross-refs") or {}).get("cross_refs")
+    return {
+        "mcp-server": {
+            "GOV_PROPOSAL_SPEND_HASH": script_hash(PROPOSAL_SPEND),
+            "GOV_PROPOSAL_MINT_HASH": script_hash(PROPOSAL_MINT),
+            "GOV_CRITIQUE_SPEND_HASH": script_hash(CRITIQUE_SPEND),
+            "GOV_CRITIQUE_MINT_HASH": script_hash(CRITIQUE_MINT),
+            "GOV_ENDORSEMENT_SPEND_HASH": script_hash(ENDORSEMENT_SPEND),
+            "GOV_RECORD_TOKEN_POLICY": state.get("record_token_policy"),
+            "GOV_REFS_TOKEN_POLICY": state.get("refs_token_policy"),
+            "GOV_PARAMS_ADDRESS": holder("params", "address"),
+            "GOV_CROSSREFS_ADDRESS": state.get("cross_refs_address"),
+            "GOV_TREASURY_ADDRESS": holder("treasury", "address"),
+            "GOV_PROPOSAL_SPEND_REF": script_ref(PROPOSAL_SPEND),
+            "GOV_PROPOSAL_MINT_REF": script_ref(PROPOSAL_MINT),
+            "GOV_CRITIQUE_SPEND_REF": script_ref(CRITIQUE_SPEND),
+            "GOV_CRITIQUE_MINT_REF": script_ref(CRITIQUE_MINT),
+            "GOV_ENDORSEMENT_SPEND_REF": script_ref(ENDORSEMENT_SPEND),
+            "GOV_PARAMS_UTXO": params,
+            "GOV_ORACLE_UTXO": oracle,
+            "GOV_CROSSREFS_UTXO": cross_refs,
+        },
+        "agent-sdk-py": {
+            "VECTOR_MODULE6_IDENTITY_HASH": state.get("identity_hash"),
+            "VECTOR_MODULE6_RECORD_TOKEN_POLICY": state.get("record_token_policy"),
+            "VECTOR_MODULE6_REFS_TOKEN_POLICY": state.get("refs_token_policy"),
+            "VECTOR_MODULE6_ORACLE_HOLDER_HASH": holder("oracle", "hash"),
+            "VECTOR_MODULE6_PARAMS_HOLDER_HASH": holder("params", "hash"),
+            "VECTOR_MODULE6_TREASURY_HOLDER_HASH": holder("treasury", "hash"),
+            "VECTOR_MODULE6_PROPOSAL_SPEND_HASH": script_hash(PROPOSAL_SPEND),
+            "VECTOR_MODULE6_PROPOSAL_SPEND_REF_UTXO": script_ref(PROPOSAL_SPEND),
+            "VECTOR_MODULE6_PROPOSAL_MINT_REF_UTXO": script_ref(PROPOSAL_MINT),
+            "VECTOR_MODULE6_CRITIQUE_SPEND_REF_UTXO": script_ref(CRITIQUE_SPEND),
+            "VECTOR_MODULE6_CRITIQUE_MINT_REF_UTXO": script_ref(CRITIQUE_MINT),
+            "VECTOR_MODULE6_ENDORSEMENT_SPEND_REF_UTXO": script_ref(ENDORSEMENT_SPEND),
+            "VECTOR_MODULE6_PARAMS_UTXO": params,
+            "VECTOR_MODULE6_ORACLE_UTXO": oracle,
+            "VECTOR_MODULE6_CROSSREFS_UTXO": cross_refs,
+        },
+    }
 
 
 def redeploy_state_error(state: dict, proposal_utxos=()) -> Optional[str]:
@@ -380,7 +597,7 @@ def redeploy_state_error(state: dict, proposal_utxos=()) -> Optional[str]:
     not use that list, and the record token policy cannot mint a second
     head, so after a redeploy an agent could get a second activity record.
     The redeploy is refused when the deploy state names the head
-    (tx_hashes["activity_head"], record step 5a) or when `proposal_utxos`
+    (tx_hashes["activity_head"], the record step) or when `proposal_utxos`
     (the outputs at the proposal_spend address of the deployment) hold the
     `activity` record token.
     """
@@ -394,7 +611,7 @@ def redeploy_state_error(state: dict, proposal_utxos=()) -> Optional[str]:
             "would leave the activity list at the old proposal validator, and the "
             "one-shot record token policy cannot mint a new head, so agents could "
             "get a second activity record. Start a new deployment with "
-            "scripts/deploy.py (move the deploy state to a different path first).")
+            "scripts/deploy.py (it writes a new deploy state).")
 
 
 # ── UTxO references ──────────────────────────────────────────────────────────
@@ -403,62 +620,13 @@ def format_utxo_ref(tx_id_hex: str, index: int) -> str:
     return f"{tx_id_hex}#{index}"
 
 
-def parse_utxo_ref(ref: str) -> tuple:
-    """Split "<tx_id>#<index>" into (tx_id_hex, index)."""
-    tx_id_hex, index = ref.split("#")
-    return tx_id_hex, int(index)
-
-
 def utxo_ref(utxo) -> str:
     """Reference "<tx_id>#<index>" of a pycardano UTxO."""
     return format_utxo_ref(bytes(utxo.input.transaction_id).hex(), utxo.input.index)
 
 
-def _coin(amount) -> int:
-    return amount if isinstance(amount, int) else amount.coin
-
-
 def _multi_asset(amount):
     return None if isinstance(amount, int) else amount.multi_asset
-
-
-def _lovelace_only(output) -> bool:
-    """True when the output holds lovelace only (no native tokens, no datum,
-    no script)."""
-    return (
-        not _multi_asset(output.amount)
-        and getattr(output, "datum", None) is None
-        and getattr(output, "datum_hash", None) is None
-        and getattr(output, "script", None) is None
-    )
-
-
-def select_seed_utxo(utxos):
-    """Choose the record token seed from wallet UTxOs: the largest output
-    that holds lovelace only."""
-    plain = [u for u in utxos if _lovelace_only(u.output)]
-    if not plain:
-        raise RuntimeError(
-            "No wallet UTxO with lovelace only is available as the record token seed"
-        )
-    return max(plain, key=lambda u: (_coin(u.output.amount), utxo_ref(u)))
-
-
-def select_collateral_utxo(utxos, avoid_ref: Optional[str] = None):
-    """Choose collateral from wallet UTxOs: the smallest lovelace-only output
-    of at least 5 AP3X. Prefers an output other than `avoid_ref`."""
-    candidates = [
-        u for u in utxos
-        if _lovelace_only(u.output) and _coin(u.output.amount) >= MIN_COLLATERAL_LOVELACE
-    ]
-    preferred = [u for u in candidates if utxo_ref(u) != avoid_ref]
-    pool = preferred or candidates
-    if not pool:
-        raise RuntimeError(
-            "No collateral UTxO found (need a wallet UTxO of at least 5 AP3X "
-            "with lovelace only)"
-        )
-    return min(pool, key=lambda u: (_coin(u.output.amount), utxo_ref(u)))
 
 
 def record_token_quantity(output, policy_id_hex: str, token_name: bytes) -> int:
@@ -475,7 +643,7 @@ def record_token_quantity(output, policy_id_hex: str, token_name: bytes) -> int:
     return 0
 
 
-def find_record_utxo(utxos, policy_id_hex: str, token_name: bytes):
+def find_record_utxo(utxos: Iterable, policy_id_hex: str, token_name: bytes):
     """The UTxO that holds exactly one record token (policy_id_hex,
     token_name), or None."""
     for u in utxos:
