@@ -5,9 +5,9 @@ This runbook gives the module steps of the release (Part 2 §11 step 2 of
 first, with the agents-marketplace deploy tool. Then do the steps below in
 this order.
 
-**Status (2026-11-03).** Module-1, the seal, Module-3 and Module-6 wait for
-the answer of the module owners on the Module-1 mode and the verdict policy.
-Run only dry runs until then. Do not use `--submit`, `build` or `submit`.
+**Status (2026-11-03).** The deployer decides the Module-1 mode and the
+verdict policy. The seal makes both permanent, so the seal needs the final
+yes of the release owner. Run only dry runs until that yes.
 
 ## 1. Rules
 
@@ -41,11 +41,11 @@ be on PATH.
 | Identity `deployment.json` | agents-marketplace tool | all modules: `identity_hash`, `config_policy`, `config_holder`, `refs.identity`, `reference_address`, `operator_address`, `seal_seed_address`, `config_seed`, `seal`, `network` |
 | Operator key | `operator.vkey` / `operator.skey` (by path) | all modules. The key must be the key of `operator_address`. |
 | `Module-1/deploy/identity/config.json` | this repository | Module-1: `verdict_policy`, `protocol_params` (16 values) |
-| `--mode oracle` or `--mode jury` | the decision of the module owners | Module-1: `oracle_active` |
+| `--mode oracle` or `--mode jury` | the decision of the deployer | Module-1: `oracle_active` |
 | Module-1 manifest | `Module-1/deploy/identity/state/<network>/manifest.json` | the identity seal step (`hashes.identity_party`), Module-3, the Module-1 clients |
 
-`config.json` still lists `verdict_policy` as a placeholder. Remove it from
-`placeholders` only after the module owners confirm the policy. The plan
+`config.json` lists `verdict_policy` as a placeholder until the deployer
+confirms the policy. Remove it from `placeholders` only then. The plan
 refuses placeholders unless `--allow-placeholders` is given; a sending run
 always refuses them.
 
@@ -57,7 +57,7 @@ Set the paths once:
 ID=<agents-marketplace>/contracts/identity-marketplace/deploy/state/mainnet/deployment.json
 VKEY=~/.vector-keys/identity-2026-11/operator.vkey
 SKEY=~/.vector-keys/identity-2026-11/operator.skey
-MODE=<oracle|jury>          # the decision of the module owners
+MODE=<oracle|jury>          # the decision of the deployer
 M1=Module-1/deploy/identity/state/mainnet/manifest.json
 ```
 
