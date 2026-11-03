@@ -72,11 +72,12 @@ aiken build    # Compile only
 | `smoke_test.py` | End-to-end lifecycle test (9 steps) |
 | `test_validated_submit.py` | Proposal submission only (lock, then SubmitProposal) |
 | `test_expire_e2e.py` | Expire test — submit, wait for review window, expire |
-| `treasury_replenish.py` | Monitor and auto-replenish treasury batches (previous deployment, `wallets/deploy_state.json`) |
-| `update_params.py` | Update GovernanceParams UTXO on-chain (previous deployment) |
+| `treasury_replenish.py` | Monitor and auto-replenish treasury batches (`--state`, default: the state of `deploy.py`) |
+| `update_params.py` | Update the GovernanceParams record with the SDK values (`--state`; `deploy_params.py` replaces it with the values of a file) |
 | `recreate_infra.py` | Recreate missing infrastructure UTxOs (previous deployment) |
 | `redeploy_proposal.py` | Targeted redeployment of changed validators (previous deployment) |
 | `redeploy_ref_scripts.py` | Redeploy reference scripts to unspendable addresses (previous deployment) |
+| `redeploy_proposal_spend_ref.py` | Redeploy only the proposal_spend reference script (previous deployment) |
 
 ```bash
 VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/smoke_test.py"
@@ -129,7 +130,7 @@ python3 scripts/treasury_fund.py --vkey operator.vkey --batches 3 --size 500 --n
 
 `deploy_params.py` spends the params record with the params holder script and creates it again at the same address, with the same `params` token and the values of `--params` (a JSON object with the 21 GovernanceParams fields; default: the values of `deploy.py`). It refuses a state without a params record. Both tools have the actions and the options of `deploy.py` (they need no seal check), and they write the same state.
 
-`redeploy_proposal.py`, `recreate_infra.py` and `move_crossrefs.py` are for the previous deployment only (`wallets/deploy_state.json`). They import their helpers from `scripts/old_deploy_helpers.py`.
+`redeploy_proposal.py`, `recreate_infra.py`, `move_crossrefs.py`, `redeploy_proposal_spend_ref.py` and `redeploy_ref_scripts.py` are for the previous deployment only (`wallets/deploy_state.json`). `redeploy_proposal.py` and `move_crossrefs.py` import their helpers from `scripts/old_deploy_helpers.py`.
 
 ### Identity-checked actions (clients)
 
@@ -146,7 +147,7 @@ Inputs of the scripts:
 
 | Input | Used by | Meaning |
 |-------|---------|---------|
-| `--state` (default: `deploy/identity/state/<network>/deploy_state.json` of `deploy.py`) and `--network` (default `mainnet`) | `smoke_test.py`, `test_expire.py`, `test_expire_e2e.py`, `update_params.py`, `treasury_replenish.py` | The deploy state. It must have `identity_hash`. A state without it belongs to the old deployment with the legacy agent registry: the scripts refuse it and name the deployment order. The state of the previous deployment is read only with `--state wallets/deploy_state.json`. The state of `deploy.py` has no endpoints: `VECTOR_OGMIOS_URL`, `VECTOR_SUBMIT_URL`, `VECTOR_EXPLORER_URL` or the preset of `--network` give them. `test_validated_submit.py` reads `wallets/deploy_state.json`. |
+| `--state` (default: `deploy/identity/state/<network>/deploy_state.json` of `deploy.py`) and `--network` (default `mainnet`) | `smoke_test.py`, `test_validated_submit.py`, `test_expire.py`, `test_expire_e2e.py`, `update_params.py`, `treasury_replenish.py`, `agents/analytics_template.py` | The deploy state. It must have `identity_hash`. A state without it belongs to the old deployment with the legacy agent registry: the scripts refuse it and name the deployment order. The state of the previous deployment is read only with `--state wallets/deploy_state.json`. The state of `deploy.py` has no endpoints: `VECTOR_OGMIOS_URL`, `VECTOR_SUBMIT_URL`, `VECTOR_EXPLORER_URL` or the preset of `--network` give them. |
 | `VECTOR_AGENT_DID` or `--agent` | `smoke_test.py`, `test_validated_submit.py`, `test_expire_e2e.py` | The agent: `did:vector:<64 hex>` or the 64-hex identifier. The record must be Active and must declare the wallet key (controller or listed key with the transaction purpose). |
 | `VECTOR_ENDORSER_DID` or `--endorser` | `smoke_test.py` | Optional second agent for the endorsement steps (an agent cannot endorse its own proposal). |
 | `--finalise withdraw\|adopt` | `smoke_test.py` | How the smoke test ends the proposal; `adopt` needs the oracle key as wallet key. |

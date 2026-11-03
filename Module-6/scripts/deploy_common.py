@@ -2,11 +2,12 @@
 Module 6: shared deploy helpers
 
 The deploy tools (deploy.py, deploy_params.py and treasury_fund.py), the
-scripts that read a deploy state (smoke_test.py, test_expire.py,
-test_expire_e2e.py, update_params.py, treasury_replenish.py), the scripts of
-the previous deployment (redeploy_proposal.py, recreate_infra.py,
-move_crossrefs.py, through old_deploy_helpers.py) and the client module
-governance_identity.py use these helpers. They need cbor2 and the aiken CLI.
+scripts that read a deploy state (smoke_test.py, test_validated_submit.py,
+test_expire.py, test_expire_e2e.py, update_params.py, treasury_replenish.py
+and agents/analytics_template.py), the scripts of the previous deployment
+(redeploy_proposal.py, recreate_infra.py, move_crossrefs.py, through
+old_deploy_helpers.py) and the client module governance_identity.py use
+these helpers. They need cbor2 and the aiken CLI.
 They do not need pycardano or a chain connection; only state_endpoints reads
 the network presets of shared/python/vector_deploy.py (pycardano).
 

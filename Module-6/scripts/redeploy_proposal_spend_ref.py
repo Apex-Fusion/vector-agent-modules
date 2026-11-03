@@ -1,6 +1,10 @@
 """
 Redeploy ONLY the proposal_spend reference script.
 
+For the previous deployment only (wallets/deploy_state.json). The deployment
+on the identity registry publishes its reference scripts at the reference
+address of the identity deployment (scripts/deploy.py).
+
 The previous batch deployment accidentally consumed it as a coin input
 when deploying subsequent scripts. This deploys it in isolation.
 

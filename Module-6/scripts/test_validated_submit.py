@@ -7,20 +7,21 @@ SubmitProposal with the proposal token and the activity record
 of the agent and its ancestors at the identity address.
 
 Usage:
-    VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/test_validated_submit.py"
+    VECTOR_AGENT_DID=did:vector:<64 hex> nix-shell shell.nix --run "python scripts/test_validated_submit.py --network testnet"
     nix-shell shell.nix --run "python scripts/test_validated_submit.py --agent <DID or 64 hex>"
 
-The deploy state (wallets/deploy_state.json) must have identity_hash
+The deploy state (--state, default deploy/identity/state/<network>/deploy_state.json
+of scripts/deploy.py; --network, default mainnet) must have identity_hash
 (deployment order: identity registry, Module-1, Module-3, Module-6). The
-wallet key must be the controller key of the agent's record or a listed key
-with the transaction purpose.
+state of the previous deployment is used only with --state
+wallets/deploy_state.json. The wallet key must be the controller key of the
+agent's record or a listed key with the transaction purpose.
 """
 
 import argparse
 import asyncio
 import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
@@ -30,20 +31,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import governance_identity as gi
 import vector_identity as vid
+from deploy_common import add_state_arguments, default_state_path, read_state, state_endpoints, state_path
 
-DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
 
 
-async def main(agent_arg=None):
+async def main(agent_arg=None, path=None, network="mainnet"):
     # Load state
-    with open(DEPLOY_STATE_FILE) as f:
-        state = json.load(f)
+    path = Path(path) if path is not None else default_state_path(network)
+    state = read_state(path, network)
+    endpoints = state_endpoints(state, network)
     with open(WALLET_FILE) as f:
         wallet = json.load(f)
 
     try:
-        deployment = gi.GovernanceDeployment.from_state(state, str(DEPLOY_STATE_FILE))
+        deployment = gi.GovernanceDeployment.from_state(state, str(path))
         agent_id = gi.agent_id_from(agent_arg)
     except gi.GovernanceClientError as e:
         print(f"[ERR] {e}")
@@ -51,8 +53,8 @@ async def main(agent_arg=None):
 
     from vector_agent import VectorAgent
 
-    ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
-    submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
+    ogmios_url = endpoints["ogmios_url"]
+    submit_url = endpoints["submit_url"]
     skey_path = str(Path("wallets/payment.skey").absolute())
 
     print("=" * 60)
@@ -119,7 +121,7 @@ async def main(agent_arg=None):
             print(f"  Proposal: {result.position.transaction_id}#{result.position.index}")
             print(f"  Activity: {result.activity.transaction_id}#{result.activity.index}")
             print(f"  Token: {result.minted[0].hex()}")
-            print(f"  Explorer: {state.get('explorer_url', '')}/tx/{result.tx}")
+            print(f"  Explorer: {endpoints['explorer_url']}/tx/{result.tx}")
         except Exception as e:
             err_str = str(e)
             print(f"\n[FAIL] {err_str[:200]}")
@@ -140,7 +142,13 @@ async def main(agent_arg=None):
         print(f"\nFinal balance: {final_balance.ada} AP3X")
 
 
-if __name__ == "__main__":
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Module 6 standalone proposal submission")
     parser.add_argument("--agent", help=f"agent DID or 64-hex identifier (default: ${gi.AGENT_DID_ENV})")
-    asyncio.run(main(parser.parse_args().agent))
+    add_state_arguments(parser)
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    asyncio.run(main(args.agent, state_path(args), args.network))

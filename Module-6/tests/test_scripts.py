@@ -7,18 +7,21 @@
   activity list: by the deploy state before step 1, and by the outputs at the
   proposal_spend address before the first transaction.
 - The scripts that read a deploy state (smoke_test.py, test_expire.py,
-  test_expire_e2e.py, update_params.py, treasury_replenish.py) read the state
-  of scripts/deploy.py on --network by default, and another state only from
+  test_expire_e2e.py, test_validated_submit.py, update_params.py,
+  treasury_replenish.py and agents/analytics_template.py) read the state of
+  scripts/deploy.py on --network by default, and another state only from
   --state. The state of scripts/deploy.py has no endpoints: the network
   presets give them.
 - The scripts of the previous deployment (redeploy_proposal.py,
-  move_crossrefs.py, recreate_infra.py) say so, and they import their helpers
-  from old_deploy_helpers.py; deploy.py has no copies of them.
+  move_crossrefs.py, recreate_infra.py, redeploy_proposal_spend_ref.py,
+  redeploy_ref_scripts.py) say so; the first two import their helpers from
+  old_deploy_helpers.py, and deploy.py has no copies of them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import sys
 import types
@@ -33,13 +36,28 @@ import move_crossrefs
 import old_deploy_helpers
 import recreate_infra
 import redeploy_proposal
+import redeploy_proposal_spend_ref
+import redeploy_ref_scripts
 import smoke_test
 import test_expire
 import test_expire_e2e
+import test_validated_submit
 import treasury_replenish
 import update_params
 import vector_deploy as vd
-from conftest import CRITIC, ENDORSER, PROPOSER, deploy_state, make_world, tx_in
+from conftest import CRITIC, ENDORSER, MODULE_ROOT, PROPOSER, deploy_state, make_world, tx_in
+
+
+def _agent_template():
+    """agents/analytics_template.py as a module (agents/ is not on sys.path)."""
+    spec = importlib.util.spec_from_file_location("analytics_template",
+                                                  MODULE_ROOT / "agents" / "analytics_template.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+analytics_template = _agent_template()
 
 # ── scripts/test_expire.py ───────────────────────────────────────────────────
 
@@ -191,6 +209,8 @@ PARSERS = {
     "test_expire_e2e.py": test_expire_e2e.parse_args,
     "update_params.py": lambda argv: update_params.parse_args(argv)[0],
     "treasury_replenish.py": treasury_replenish.parse_args,
+    "test_validated_submit.py": test_validated_submit.parse_args,
+    "agents/analytics_template.py": analytics_template.parse_args,
 }
 
 
@@ -215,6 +235,28 @@ def test_the_other_options_of_the_scripts_stay():
     assert (args.agent, args.finalise, args.network) == ("a1" * 32, "adopt", "testnet")
     args = treasury_replenish.parse_args(["--force", "--target", "10"])
     assert (args.force, args.target, args.state) == (True, 10, None)
+    args = test_validated_submit.parse_args(["--agent", "a2" * 32, "--state", "wallets/deploy_state.json"])
+    assert (args.agent, args.state, args.network) == ("a2" * 32, Path("wallets/deploy_state.json"), "mainnet")
+    args = analytics_template.parse_args(["--monitor-only", "--network", "testnet"])
+    assert (args.monitor_only, args.network, args.state) == (True, "testnet", None)
+
+
+RUNNERS = {
+    "smoke_test.py": lambda path: smoke_test.smoke_test(smoke_test.parse_args(["--state", str(path)])),
+    "test_expire_e2e.py": lambda path: test_expire_e2e.run_test(None, path, "mainnet"),
+    "test_validated_submit.py": lambda path: test_validated_submit.main(None, path, "mainnet"),
+    "update_params.py": lambda path: update_params.main(["--state", str(path)]),
+    "treasury_replenish.py": lambda path: treasury_replenish.check_and_replenish(True, False, 5, path, "mainnet"),
+    "agents/analytics_template.py": lambda path: analytics_template.main(["--state", str(path)]),
+}
+
+
+@pytest.mark.parametrize("script", sorted(RUNNERS))
+def test_the_scripts_read_the_given_state_first(script, tmp_path):
+    """The scripts read the deploy state before they connect: a missing state
+    stops them and names scripts/deploy.py."""
+    with pytest.raises(FileNotFoundError, match="scripts/deploy.py"):
+        asyncio.run(RUNNERS[script](tmp_path / "missing" / "deploy_state.json"))
 
 
 def test_a_state_of_deploy_py_on_another_network_is_refused(tmp_path):
@@ -250,7 +292,8 @@ def test_the_state_of_deploy_py_takes_the_endpoints_of_the_network(monkeypatch):
 
 
 def test_the_scripts_of_the_previous_deployment_use_old_deploy_helpers():
-    for module in (redeploy_proposal, move_crossrefs, recreate_infra):
+    for module in (redeploy_proposal, move_crossrefs, recreate_infra, redeploy_proposal_spend_ref,
+                   redeploy_ref_scripts):
         assert "For the previous deployment only (wallets/deploy_state.json)" in module.__doc__
         assert module.DEPLOY_STATE_FILE.parts[-2:] == ("wallets", "deploy_state.json")
     for name in ("apply_governance_config", "script_hash_to_address", "deploy_reference_script",

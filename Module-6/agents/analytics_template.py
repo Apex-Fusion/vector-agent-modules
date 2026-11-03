@@ -10,10 +10,15 @@ This is a template — adapt the analysis logic and thresholds to your
 specific monitoring goals.
 
 Usage:
-    nix-shell shell.nix --run "python agents/analytics_template.py"
+    nix-shell shell.nix --run "python agents/analytics_template.py --network testnet"
 
     # Monitor-only (no proposal submission):
     nix-shell shell.nix --run "python agents/analytics_template.py --monitor-only"
+
+    --state: the deploy state (default:
+    deploy/identity/state/<network>/deploy_state.json of scripts/deploy.py;
+    --network, default mainnet). The state of the previous deployment is used
+    only with --state wallets/deploy_state.json.
 
 Requires:
     - An agent with an identity record (did:vector) and sufficient AP3X for stakes.
@@ -23,9 +28,9 @@ Requires:
     - GovernanceClient and GovernanceIndexer configured
 """
 
+import argparse
 import asyncio
 import hashlib
-import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -37,10 +42,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 load_dotenv()
 
 import vector_identity as vid
+from deploy_common import add_state_arguments, read_state, state_endpoints, state_path
 
 AGENT_DID_ENV = "VECTOR_AGENT_DID"
 
-DEPLOY_STATE_FILE = Path("wallets/deploy_state.json")
 WALLET_FILE = Path("wallets/governance_wallet.json")
 
 # Governance parameter fitness targets
@@ -259,14 +264,19 @@ class GovernanceAnalyticsAgent:
         return opportunities
 
 
-async def main():
-    import argparse
+def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Module 6 Chain Analytics Agent")
     parser.add_argument("--monitor-only", action="store_true",
                         help="Monitor only, don't suggest actions")
-    args = parser.parse_args()
+    add_state_arguments(parser)
+    return parser.parse_args(argv)
 
-    state = json.load(open(DEPLOY_STATE_FILE))
+
+async def main(argv=None):
+    args = parse_args(argv)
+
+    state = read_state(state_path(args), args.network)
+    endpoints = state_endpoints(state, args.network)
     skey_path = str(Path("wallets/payment.skey").absolute())
 
     validators = state.get("validators", {})
@@ -278,8 +288,8 @@ async def main():
     from vector_agent import VectorAgent
     from vector_agent.governance.indexer import GovernanceIndexer
 
-    ogmios_url = state.get("ogmios_url", os.getenv("VECTOR_OGMIOS_URL"))
-    submit_url = state.get("submit_url", os.getenv("VECTOR_SUBMIT_URL"))
+    ogmios_url = endpoints["ogmios_url"]
+    submit_url = endpoints["submit_url"]
 
     async with VectorAgent(
         ogmios_url=ogmios_url,
