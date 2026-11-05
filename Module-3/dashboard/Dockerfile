@@ -20,6 +20,9 @@ COPY dashboard/static/ ./dashboard/static/
 # Deploy state (consumed by /api/config)
 COPY deploy/deploy_state.json ./deploy/deploy_state.json
 COPY deploy/mainnet/deploy_state.json ./deploy/mainnet/deploy_state.json
+# Published state of the identity release; the identity instance selects it
+# with MODULE3_DEPLOY_STATE and --deploy-state (docker-compose.apex-web-identity.yml).
+COPY deploy/identity/mainnet/deploy_state.json ./deploy/identity/mainnet/deploy_state.json
 
 WORKDIR /app/dashboard
 ENV PYTHONPATH=/app/python

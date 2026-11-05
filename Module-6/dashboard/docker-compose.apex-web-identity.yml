@@ -1,0 +1,35 @@
+# apex-web deploy of the identity-era Module-6 (contracts of 2026-11-03),
+# mainnet only. It runs next to the legacy instances (project module6:
+# module6-dashboard-mainnet + module6-dashboard-testnet) and shares no
+# container or image with them. Its own project name keeps
+# `docker compose up/down` away from the legacy containers.
+#
+# The dashboard reads deploy/identity/mainnet/deployment.json, which the
+# Dockerfile copies to /app/deploy/identity/mainnet/.
+#
+# The dashboard has no public route. The activity-api reads it on the
+# umami_default network as http://module6-dashboard-identity:8000
+# (M6_IDENTITY_DASHBOARD_URL).
+#
+# Runbook: docs/apex-web-identity-dashboards.md (repo root).
+#   docker compose -f docker-compose.apex-web-identity.yml up -d --build
+
+name: module6-identity
+
+services:
+  dashboard:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    container_name: module6-dashboard-identity
+    environment:
+      - MODULE6_DEPLOYMENT_FILE=/app/deploy/identity/mainnet/deployment.json
+      - VECTOR_OGMIOS_URL=https://ogmios.vector.mainnet.apexfusion.org
+    networks:
+      - edge
+    restart: unless-stopped
+
+networks:
+  edge:
+    name: umami_default
+    external: true

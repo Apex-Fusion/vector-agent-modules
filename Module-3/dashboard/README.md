@@ -46,6 +46,7 @@ the dashboard only reads.
 | `DEPLOYMENT_NETWORK` | `testnet`  | `testnet` or `mainnet` — selects deploy_state + explorer URL |
 | `INDEXER_DB`         | `reputation_index.db` | Path to the SQLite file populated by the indexer |
 | `MODULE3_ROOT`       | parent dir | Path to `Module-3/` (for deploy state lookup) |
+| `MODULE3_DEPLOY_STATE` | none     | Path of another deploy state file; overrides the `DEPLOYMENT_NETWORK` file (the indexer has `--deploy-state`) |
 
 ## Deploy state
 
@@ -60,6 +61,13 @@ does not start with a missing or old state (an old state has
 `agent_registry_hash` and no `identity_hash`); the error tells you to move
 the old file. Deployment order: identity registry, Module-1, Module-3,
 Module-6.
+
+The published state of the identity release (2026-11-03) is
+`deploy/identity/mainnet/deploy_state.json`, a copy of the git-ignored
+`deploy/identity/state/mainnet/deploy_state.json` that the deploy tool
+wrote. The image copies it in, and `docker-compose.apex-web-identity.yml`
+points `MODULE3_DEPLOY_STATE` and `--deploy-state` at it
+(`docs/apex-web-identity-dashboards.md` in the repo root).
 
 ## Tabs
 

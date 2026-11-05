@@ -1,0 +1,97 @@
+{
+  "version": "identity-2026-11-03",
+  "network": "vector-mainnet",
+  "date": "2026-11-03",
+  "source": "Module-6/deploy/identity/state/mainnet/deploy_state.json of scripts/deploy.py (format vector-module-deploy/1, sha256 3ddbba29f7f746b48733b6a83a77cc10a7cc732cc1eb6bec41b18bbfb0d7f7a0). Addresses of the three spend validators = enterprise script address of the hash (header 0x71).",
+  "endpoints": {
+    "ogmios": "https://ogmios.vector.mainnet.apexfusion.org",
+    "submit": "https://submit.vector.mainnet.apexfusion.org/api/submit/tx",
+    "koios": "https://v2.koios.vector.mainnet.apexfusion.org/",
+    "explorer": "https://vector.apexscan.org"
+  },
+  "addresses": {
+    "proposal_spend": "addr1wyxup69kp34r7ngkksal0dkunh6fwuehlta9v8ggkh8gw6qwlrj9e",
+    "critique_spend": "addr1wxf0vkkc5geedkryc879w8l53s9j2qy0c02lt4at8l2k33gtlf99s",
+    "endorsement_spend": "addr1wyh8u2jgs59dk08h35yglk70e3afraw9p7tqm9ndmcyr25qejnlc5"
+  },
+  "hashes": {
+    "proposal_spend": "0dc0e8b60c6a3f4d16b43bf7b6dc9df4977337fafa561d08b5ce8768",
+    "proposal_mint": "cb248e9d6e636db1c78242813a500febcc93a6c92475e7bd5e51e4a4",
+    "critique_spend": "92f65ad8a23396d864c1fc571ff48c0b25008fc3d5f5d7ab3fd568c5",
+    "critique_mint": "e29a533518133173935174ba396a6b17c99b4bcdd2effd3720db4747",
+    "endorsement_spend": "2e7e2a48850adb3cf78d088fdbcfcc7a91f5c50f960d966dde083550"
+  },
+  "holders": {
+    "params": {
+      "hash": "14643b9683a03039965f878cb2e81c64b61083596d143b5d8bc42a37",
+      "address": "addr1wy2xgwukswsrqwvkt7rcevhgr3jtvyyrt9k3gw6a30zz5dct5yq44"
+    },
+    "oracle": {
+      "hash": "234c3805ab45d0fb1f3e742f0fab37033ff79b692b5e5995c94d4603",
+      "address": "addr1wy35cwq94dzap7cl8e6z7ratxupnlaumdy44ukv4e9x5vqckt3zar"
+    },
+    "treasury": {
+      "hash": "e2e95b9a9b4bc715f3dec5d18d689bf6d1196a31bd6eeeada641eeaa",
+      "address": "addr1w83wjku6nd9uw90nmmzarrtgn0mdzxt2xx7kam4d5eq7a2s262ejl"
+    }
+  },
+  "reference_scripts": {
+    "holder_params_ref": "4b5ca092b77ec0ace8a0fca91b8de927b8394232e8621c2c7abc341520785543#0",
+    "holder_oracle_ref": "ab6db9887f6a34ae1d6a78d9751cbe2d2d88eb0fd051c1faad4e05831301cf8f#0",
+    "holder_treasury_ref": "0ad98df84f5fa99568db156d81690d892b7fc0fb6e67de8c1366b5003f7dc712#0",
+    "proposal_mint_ref": "4f6a67ecd315ebe25d8ad74a00320d969ba3a384ff5dce4d8aa864d07548874d#0",
+    "proposal_spend_ref": "f2d48082040a8de740d885da7540f4704bfd0f1ad1e47ae83fb1259fc190519c#0",
+    "critique_mint_ref": "eef62e767c70fb01538d29435dd0f9dd71b0c1df0369fdcd6fd32f7bd215473f#0",
+    "critique_spend_ref": "84cb24a1092950320ca2236fdd7a25dfb43379502bd65a467e6bb1dff95a823d#0",
+    "endorsement_spend_ref": "cc4e486e50983487fa48e7a3539c74d96aded9c3b88919b7205a6d131bc4d0d5#0",
+    "cross_refs_nft": "17b98fff6986f72a4685ce942552e8123312d651ac805e81cd3877975e76652a#0"
+  },
+  "infrastructure": {
+    "params_utxo": "7e3482147534cec860c9df7798f93d1635e49b3c1e7bde92b74876090a460864#0",
+    "oracle_utxo": "7e3482147534cec860c9df7798f93d1635e49b3c1e7bde92b74876090a460864#1",
+    "activity_head": "7e3482147534cec860c9df7798f93d1635e49b3c1e7bde92b74876090a460864#2",
+    "activity_head_address": "addr1wyxup69kp34r7ngkksal0dkunh6fwuehlta9v8ggkh8gw6qwlrj9e",
+    "treasury_batch_1": "a6632f841ea76a120f6087176f4e33f45685fd6a6eca0fb42cd32bb418e6f5d3#0",
+    "treasury_batch_2": "d8bb7c15085528d4f7471f5f5527afdf7bac2a7142e02896023108460a6c6749#0",
+    "treasury_batch_3": "c875428b5a2204889939d215393287a77c758767552a7b6a3f658e210677426b#0",
+    "cross_refs_nft": "17b98fff6986f72a4685ce942552e8123312d651ac805e81cd3877975e76652a#0",
+    "reference_address": "addr1vyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkdl5mw",
+    "operator_address": "addr1v9rsmmtun4y8ctpcx2hcft48pxrm9jdqzjqpjt4m7q6aq2qv5dmnh"
+  },
+  "token_policies": {
+    "cross_refs_nft": "78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a",
+    "cross_refs_nft_name": "governance_refs",
+    "record_tokens": "45d4a5544f44045f339034ee1603c8cbc28126f78b68da0b05055724",
+    "proposal_tokens": "cb248e9d6e636db1c78242813a500febcc93a6c92475e7bd5e51e4a4",
+    "critique_tokens": "e29a533518133173935174ba396a6b17c99b4bcdd2effd3720db4747"
+  },
+  "identity_hash": "d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762",
+  "external_dependencies": {
+    "identity_registry": "d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762",
+    "identity_deployment": "agents-marketplace contracts/identity-marketplace/deploy/mainnet/deployment.json",
+    "identity_deployment_sha256": "1d67e358b95be098d18e9537b8dc5748401b32c1ac24dec4f7082b7603e11236"
+  },
+  "governance_params": {
+    "min_proposal_stake": 25000000,
+    "min_critique_stake": 5000000,
+    "min_governance_endorsement": 10000000,
+    "min_review_window": 259200000,
+    "max_review_window": 2419200000,
+    "max_amendments": 5,
+    "max_active_proposals": 3,
+    "proposal_cooldown": 86400000,
+    "proposer_reward_share": 7000,
+    "critic_reward_share": 2000,
+    "protocol_fee_rate": 1000,
+    "min_adoption_reward": 50000000,
+    "max_adoption_reward": 500000000,
+    "max_incorporated_critiques": 10,
+    "max_treasury_request": 10000000000,
+    "emergency_stake_multiplier": 5000,
+    "emergency_review_window": 43200000,
+    "param_execution_delay": 604800000,
+    "min_prediction_pool": 100000000,
+    "credibility_pool_low_threshold": 500000000,
+    "credibility_pool_critical_threshold": 100000000
+  }
+}

@@ -17,6 +17,8 @@ COPY dashboard/static/ ./static/
 # MODULE6_DEPLOYMENT_FILE (docker-compose.yml) names one of these files.
 COPY deploy/testnet/deployment.json ./deploy/testnet/deployment.json
 COPY deploy/mainnet/deployment.json ./deploy/mainnet/deployment.json
+# Identity release (2026-11-03): docker-compose.apex-web-identity.yml.
+COPY deploy/identity/mainnet/deployment.json ./deploy/identity/mainnet/deployment.json
 
 EXPOSE 8000
 
