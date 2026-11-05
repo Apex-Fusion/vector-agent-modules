@@ -1,0 +1,76 @@
+{
+  "format": "vector-module-deploy/1",
+  "module": "module3",
+  "network": "mainnet",
+  "steps": {
+    "records": {
+      "tx": "bcd480d70063e2c7be3c9df2447b67a764e180fc73a3cd3481000a62fcd713d3",
+      "time": "2026-11-03T15:09:58Z",
+      "ref": "bcd480d70063e2c7be3c9df2447b67a764e180fc73a3cd3481000a62fcd713d3#0"
+    },
+    "publish-reputation": {
+      "tx": "0add1592bdf312fede7f66c48835dee17638af884d37e7246b2bab7e01752ae0",
+      "time": "2026-11-03T15:10:13Z",
+      "ref": "0add1592bdf312fede7f66c48835dee17638af884d37e7246b2bab7e01752ae0#0"
+    },
+    "publish-endorsement": {
+      "tx": "1295d37ac2f0359253289b6f56c056ebdac80f0cf83d47da6e424a1369dcfefe",
+      "time": "2026-11-03T15:10:19Z",
+      "ref": "1295d37ac2f0359253289b6f56c056ebdac80f0cf83d47da6e424a1369dcfefe#0"
+    },
+    "cross-refs": {
+      "tx": "f194fa5a853e2a775fac5f8091b6d9d412adcfe6c5845512fa3304b00ebc7a44",
+      "time": "2026-11-03T15:10:24Z",
+      "ref": "f194fa5a853e2a775fac5f8091b6d9d412adcfe6c5845512fa3304b00ebc7a44#0"
+    }
+  },
+  "pending": {},
+  "wallet_address": "addr1v9rsmmtun4y8ctpcx2hcft48pxrm9jdqzjqpjt4m7q6aq2qv5dmnh",
+  "wallet_vkey_hash": "470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028",
+  "holder_owner_vkey_hash": "470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028",
+  "refs_token_policy": "78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a",
+  "refs_token_name": "72657075746174696f6e5f72656673",
+  "reputation_validator_hash": "fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424",
+  "endorsement_validator_hash": "21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe",
+  "reputation_address": "addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs",
+  "endorsement_address": "addr1wys6c9gzhfa6ka8f3me66ftthgtz9gf4ry62cxwsgvsjdlspch2kv",
+  "params_holder_tag": 31,
+  "params_holder_hash": "bb9e647e6ea974753c0b61ff2330dcf7a27710e954ca460b1aeb24c5",
+  "params_holder_address": "addr1wxaeuer7d65hgafupdsl7gesmnm6yacsa92v53strt4jf3guqevxp",
+  "treasury_holder_tag": 33,
+  "treasury_holder_hash": "c5bff82c5d67158234e62cc0a099cd70b072eca9702eec28d8b321ba",
+  "treasury_holder_address": "addr1w8zml7pvt4n3tq35uckvpgyee4ctquhv49czampgmzejrws8yr0j2",
+  "cross_refs_address": "addr1wxaeuer7d65hgafupdsl7gesmnm6yacsa92v53strt4jf3guqevxp",
+  "record_token_seed": "72e417cad239afc47626574246ee3a15dd2cddd8bc648f0a21fa290299dc8941#2",
+  "params_token_policy": "8295dad015ecba3d5f7b346083d0c879794ab065b1c7ec1a533f2657",
+  "genesis_minting_window": 1796137789603,
+  "reputation_config_cbor": "d8798c581c78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a581c53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523581c9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08581c1734760872e81fdc312cc380e2ce2bf597eff01ccb6d98ab7e8e0aee581c78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a581cbb9e647e6ea974753c0b61ff2330dcf7a27710e954ca460b1aeb24c5581cc5bff82c5d67158234e62cc0a099cd70b072eca9702eec28d8b321ba4040581c470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028581c8295dad015ecba3d5f7b346083d0c879794ab065b1c7ec1a533f2657581cd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762",
+  "reference_address": "addr1vyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkdl5mw",
+  "ap3x_policy_id": "",
+  "ap3x_asset_name": "",
+  "validators": {
+    "endorsement.endorsement.mint": {
+      "hash": "21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe"
+    },
+    "endorsement.endorsement.spend": {
+      "hash": "21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe"
+    },
+    "reputation.reputation.mint": {
+      "hash": "fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424"
+    },
+    "reputation.reputation.spend": {
+      "hash": "fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424"
+    }
+  },
+  "module1_claim_validator_hash": "53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523",
+  "module1_challenge_validator_hash": "9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08",
+  "module1_jury_pool_hash": "1734760872e81fdc312cc380e2ce2bf597eff01ccb6d98ab7e8e0aee",
+  "module1_refs_token_policy": "78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a",
+  "identity_hash": "d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762",
+  "tx_hashes": {
+    "params_utxo": "bcd480d70063e2c7be3c9df2447b67a764e180fc73a3cd3481000a62fcd713d3",
+    "reputation_spend_ref": "0add1592bdf312fede7f66c48835dee17638af884d37e7246b2bab7e01752ae0",
+    "endorsement_spend_ref": "1295d37ac2f0359253289b6f56c056ebdac80f0cf83d47da6e424a1369dcfefe",
+    "cross_refs_nft": "f194fa5a853e2a775fac5f8091b6d9d412adcfe6c5845512fa3304b00ebc7a44"
+  }
+}

@@ -1,0 +1,64 @@
+# apex-web deploy of the identity-era Module-3 (contracts of 2026-11-03).
+# It runs next to the legacy instance (docker-compose.apex-web.yml, project
+# module3-mainnet: module3-indexer + module3-dashboard). It shares no
+# container, volume or image with it.
+#
+# Both containers read the published state of the identity release,
+# deploy/identity/mainnet/deploy_state.json, which the Dockerfile copies to
+# /app/deploy/identity/mainnet/. The indexer selects it with --deploy-state,
+# the dashboard with MODULE3_DEPLOY_STATE.
+#
+# The dashboard has no public route. The activity-api reads it on the
+# umami_default network as http://module3-dashboard-identity:8000
+# (M3_IDENTITY_REPUTATION_API).
+#
+# Runbook: docs/apex-web-identity-dashboards.md (repo root).
+#   docker compose -f docker-compose.apex-web-identity.yml up -d --build
+
+name: module3-identity
+
+services:
+  indexer:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    container_name: module3-indexer-identity
+    command: [
+      "python", "-m", "indexer",
+      "--network", "mainnet",
+      "--deploy-state", "/app/deploy/identity/mainnet/deploy_state.json",
+      "--db", "/data/reputation_index.db",
+      "--interval", "60"
+    ]
+    working_dir: /app/python
+    environment:
+      - PYTHONPATH=/app/python
+    volumes:
+      - indexer-data:/data
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: dashboard/Dockerfile
+    container_name: module3-dashboard-identity
+    depends_on:
+      - indexer
+    environment:
+      - DEPLOYMENT_NETWORK=mainnet
+      - MODULE3_DEPLOY_STATE=/app/deploy/identity/mainnet/deploy_state.json
+      - INDEXER_DB=/data/reputation_index.db
+      - MODULE3_ROOT=/app
+    volumes:
+      - indexer-data:/data
+    networks:
+      - edge
+    restart: unless-stopped
+
+volumes:
+  indexer-data:
+
+networks:
+  edge:
+    name: umami_default
+    external: true

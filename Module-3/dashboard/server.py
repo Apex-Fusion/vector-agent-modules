@@ -14,7 +14,10 @@ The SQLite database is populated by a separate indexer process:
 
 The server reads the deploy state of DEPLOYMENT_NETWORK, the file that the
 deploy scripts write: deploy/deploy_state.json (testnet) or
-deploy/mainnet/deploy_state.json (mainnet). It does not start without a
+deploy/mainnet/deploy_state.json (mainnet). MODULE3_DEPLOY_STATE names
+another file instead (like --deploy-state of the indexer), for example the
+published state of the identity release,
+deploy/identity/mainnet/deploy_state.json. It does not start without a
 state of a new deployment (with identity_hash). Move an old state file to a
 different path.
 """
@@ -62,12 +65,15 @@ _DEPLOY_STATE_FILES = {
 if NETWORK not in _DEPLOY_STATE_FILES:
     raise SystemExit(f"DEPLOYMENT_NETWORK must be testnet or mainnet, got {NETWORK!r}")
 
+# MODULE3_DEPLOY_STATE overrides the network default (an empty value does not).
+DEPLOY_STATE_FILE = Path(os.getenv("MODULE3_DEPLOY_STATE") or _DEPLOY_STATE_FILES[NETWORK])
+
 # Raises DeploymentStateError (with the deployment order) for a missing file,
 # an old deployment or a malformed value.
-DEPLOYMENT = load_deployment(_DEPLOY_STATE_FILES[NETWORK])
+DEPLOYMENT = load_deployment(DEPLOY_STATE_FILE)
 logger.info(
     "Loaded deploy state for %s from %s (identity_hash %s)",
-    NETWORK, _DEPLOY_STATE_FILES[NETWORK], DEPLOYMENT.identity_hash,
+    NETWORK, DEPLOY_STATE_FILE, DEPLOYMENT.identity_hash,
 )
 
 

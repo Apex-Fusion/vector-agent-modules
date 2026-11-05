@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pycardano import Address, Network, ScriptHash
 
 import identity_view as view
 import vector_identity as vid
@@ -53,6 +54,30 @@ def test_the_published_v8_deployments_are_old_deployments():
     for network in ("testnet", "mainnet"):
         data = view.load_deployment(MODULE_DEPLOY / network / "deployment.json")
         assert view.deployment_note(data) == view.OLD_DEPLOYMENT_NOTE
+
+
+def test_the_published_identity_mainnet_deployment_is_a_new_deployment():
+    """dashboard/docker-compose.apex-web-identity.yml points
+    MODULE6_DEPLOYMENT_FILE at this file. Its values come from the deploy state
+    of the identity release (deploy/identity/state/mainnet/deploy_state.json)."""
+    data = view.load_deployment(MODULE_DEPLOY / "identity" / "mainnet" / "deployment.json")
+    assert view.deployment_note(data) is None
+    assert data["identity_hash"] == "d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762"
+    assert data["hashes"] == {
+        "proposal_spend": "0dc0e8b60c6a3f4d16b43bf7b6dc9df4977337fafa561d08b5ce8768",
+        "proposal_mint": "cb248e9d6e636db1c78242813a500febcc93a6c92475e7bd5e51e4a4",
+        "critique_spend": "92f65ad8a23396d864c1fc571ff48c0b25008fc3d5f5d7ab3fd568c5",
+        "critique_mint": "e29a533518133173935174ba396a6b17c99b4bcdd2effd3720db4747",
+        "endorsement_spend": "2e7e2a48850adb3cf78d088fdbcfcc7a91f5c50f960d966dde083550",
+    }
+    assert data["holders"]["treasury"]["address"] == "addr1w83wjku6nd9uw90nmmzarrtgn0mdzxt2xx7kam4d5eq7a2s262ejl"
+    assert data["endpoints"]["ogmios"] == "https://ogmios.vector.mainnet.apexfusion.org"
+    for name, address in data["addresses"].items():
+        script = ScriptHash(bytes.fromhex(data["hashes"][name]))
+        assert address == str(Address(payment_part=script, network=Network.MAINNET))
+    for holder in data["holders"].values():
+        script = ScriptHash(bytes.fromhex(holder["hash"]))
+        assert holder["address"] == str(Address(payment_part=script, network=Network.MAINNET))
 
 
 def test_a_deployment_file_must_name_the_validators(tmp_path):

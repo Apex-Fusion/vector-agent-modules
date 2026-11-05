@@ -139,3 +139,19 @@ def test_reputation_config_matches_deploy_scripts():
         identity_hash=d.identity_hash,
     )
     assert cbor2.loads(d.reputation_config().to_cbor()) == cbor2.loads(bytes.fromhex(expected))
+
+
+PUBLISHED_IDENTITY_STATE = (
+    Path(__file__).resolve().parents[2] / "deploy" / "identity" / "mainnet" / "deploy_state.json"
+)
+
+
+def test_published_identity_mainnet_state_loads():
+    """The identity instance on apex-web reads this file (MODULE3_DEPLOY_STATE
+    and --deploy-state in dashboard/docker-compose.apex-web-identity.yml)."""
+    d = load_deployment(PUBLISHED_IDENTITY_STATE)
+    assert d.identity_hash == "d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762"
+    assert d.reputation_validator_hash == "fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424"
+    assert d.endorsement_validator_hash == "21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe"
+    assert d.reputation_address == "addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs"
+    assert d.endorsement_address == "addr1wys6c9gzhfa6ka8f3me66ftthgtz9gf4ry62cxwsgvsjdlspch2kv"

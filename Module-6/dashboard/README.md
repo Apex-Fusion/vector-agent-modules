@@ -37,6 +37,7 @@ Open http://localhost:8000
 - Agent identifiers (proposer, critic, endorser, leaderboard) are canonical DIDs: `did:vector:<64 hex>`. `/api/agent/{did}` accepts the DID or the 64-hex identifier.
 - A deployment file without `identity_hash` describes an old Module-6 deployment with the legacy agent registry (the v8 files in `deploy/` are such files). `/api/config` then returns `deployment_note`, and the page shows it above the tabs. A deployment file for the identity registry has `identity_hash` and no note.
 - The dashboard does not read the legacy agent registry.
+- `deploy/identity/mainnet/deployment.json` is the mainnet deployment file of the identity release (2026-11-03). It comes from the git-ignored `deploy/identity/state/mainnet/deploy_state.json`. The image copies it in, and `docker-compose.apex-web-identity.yml` selects it (`docs/apex-web-identity-dashboards.md` in the repo root).
 
 ## Features
 
