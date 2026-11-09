@@ -80,7 +80,7 @@ def simple_tx() -> bytes:
     return vd.tx_bytes(Transaction(body, TransactionWitnessSet()))
 
 
-def test_submit_hook_evaluates_and_sends_only_with_submit(monkeypatch):
+def test_submit_hook_evaluates_and_sends_only_with_submit(monkeypatch, tmp_path):
     sim_chain, sim_tx = module1.simulation_modules(NETWORK)
     calls = []
 
@@ -97,12 +97,34 @@ def test_submit_hook_evaluates_and_sends_only_with_submit(monkeypatch):
         assert sim_tx.submit_tx is not original and sim_chain.submit_tx is sim_tx.submit_tx
         assert sim_tx.submit_tx(tx) == vd.transaction_id(tx)
     assert calls == [] and [s.submitted for s in sent] == [False]
+    # --save-tx: the checked transaction bytes go to the file, also in a dry run.
+    saved = tmp_path / "tx.hex"
+    with module1.submit_hook(False, network=NETWORK, save_tx=saved):
+        sim_tx.submit_tx(tx)
+    assert bytes.fromhex(saved.read_text().strip()) == (tx if isinstance(tx, bytes) else bytes.fromhex(tx))
     assert sim_tx.submit_tx is original
     with module1.submit_hook(True, network=NETWORK) as sent:
         assert sim_chain.submit_tx(tx) == "ee" * 32
     assert calls == ["submitTransaction"] and sent[0].submitted and sent[0].tx_id == "ee" * 32
     with pytest.raises(module1.Module1Error):
         module1.simulation_modules("mainnet" if NETWORK == "testnet" else "testnet")
+
+
+def test_wallet_inputs_leave_out_the_collateral_and_reference_script_outputs():
+    sim_chain, _ = module1.simulation_modules(NETWORK)
+    wallet = Address(Key(b"wallet").vkey.hash(), network=Network.MAINNET)
+    collateral = UTxO(txin(b"collateral"), TransactionOutput(wallet, Value(5 * AP3X)))
+    plain = UTxO(txin(b"plain"), TransactionOutput(wallet, Value(40 * AP3X)))
+    with_tokens = UTxO(txin(b"tokens"), TransactionOutput(wallet, Value(2 * AP3X, tokens(h28(b"p"), b"t"))))
+    reference = UTxO(txin(b"reference script"),
+                     TransactionOutput(wallet, Value(59 * AP3X), script=PlutusV3Script(b"\x01\x02\x03")))
+
+    class Context:
+        def utxos(self, address):
+            assert address == str(wallet)
+            return [reference, plain, collateral, with_tokens]
+
+    assert sim_chain.get_wallet_utxos_no_collateral(Context(), wallet) == [plain, with_tokens]
 
 
 class FakeContext:
