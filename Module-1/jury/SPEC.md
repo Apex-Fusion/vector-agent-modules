@@ -435,11 +435,12 @@ The reference juror writes this JSON object:
   "instructions": "<system instructions for the model>",
   "input_template": "vector-jury-input/1",
   "output": "One JSON object {\"vote\": \"ClaimerWins|AuditorWins|Inconclusive\", \"reason\": \"<text>\"}",
-  "max_output_tokens": 2500
+  "max_output_tokens": 262144
 }
 ```
 
 - `suppliers` is an ordered list of suppliers of the same model. The juror tries them in this order.
+- `max_output_tokens` is the largest answer the juror asks for. The gateway commits the smaller of this value and the advert limit of the supplier, so the Foundation jurors ask for 262,144 tokens and get the full limit of each supplier.
 - Other jurors can use another format. The hash binds the juror to its prompt. The contract cannot check the content of a prompt or a record.
 
 ### 10.4 Juror record document (`juror-record`)
