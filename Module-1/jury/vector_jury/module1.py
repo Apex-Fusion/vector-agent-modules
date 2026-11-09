@@ -353,10 +353,13 @@ class SentTx:
 
 
 @contextlib.contextmanager
-def submit_hook(submit: bool, *, network: str, log: Callable[[str], None] = lambda _m: None):
+def submit_hook(submit: bool, *, network: str, log: Callable[[str], None] = lambda _m: None,
+                save_tx: Optional[Union[str, Path]] = None):
     """Replace ``submit_tx`` of the simulation modules while the block runs.
     Each transaction is evaluated with Ogmios (a failure with redeemers stops
     it), its size is checked, and it is submitted only with ``submit=True``.
+    With ``save_tx`` the CBOR (hex) of each checked transaction is written to
+    that file (the last one stays), for a decode check before a submit.
     Yields the list of ``SentTx``."""
     sim_chain, sim_tx = simulation_modules(network)
     sent: List[SentTx] = []
@@ -375,6 +378,8 @@ def submit_hook(submit: bool, *, network: str, log: Callable[[str], None] = lamb
                 raise Module1Error(f"Ogmios evaluation of {tx_id} failed, nothing sent: {error}") from None
         if len(data) > MAX_TX_SIZE:
             raise Module1Error(f"{tx_id} has {len(data)} bytes, more than {MAX_TX_SIZE}")
+        if save_tx is not None:
+            Path(save_tx).write_text(data.hex() + "\n")
         if not submit:
             log(f"dry run: {tx_id} ({len(data)} bytes) evaluated, not sent")
             sent.append(SentTx(tx_id, len(data), False, evaluation))
@@ -422,17 +427,18 @@ def _require_collateral(context, wallet: Wallet) -> None:
                        "send one first (no collateral split is made)")
 
 
-def _run(m1: Module1, wallet: Wallet, submit: bool, log, build: Callable[[Any, Any, Any], dict]) -> dict:
+def _run(m1: Module1, wallet: Wallet, submit: bool, log, build: Callable[[Any, Any, Any], dict],
+         save_tx: Optional[Union[str, Path]] = None) -> dict:
     context, deployment, sim_tx = _context_and_deployment(m1)
     _require_collateral(context, wallet)
-    with submit_hook(submit, network=m1.network, log=log) as sent:
+    with submit_hook(submit, network=m1.network, log=log, save_tx=save_tx) as sent:
         result = build(context, deployment, sim_tx)
     return {**result, "submitted": submit, "transactions": [dataclasses.asdict(s) for s in sent]}
 
 
 def oracle_resolve(m1: Module1, wallet: Wallet, challenge_ref: str, claim_ref: str, verdict: str, *,
                    resolution: Optional[bytes] = None, reasoning_hash: Optional[bytes] = None,
-                   oracle_skey=None, submit: bool = False, log=lambda _m: None) -> dict:
+                   oracle_skey=None, submit: bool = False, log=lambda _m: None, save_tx=None) -> dict:
     """OracleResolve with ``verdict``. The resolution document (§10.5) goes in
     the metadata (label 22084, type ``resolution``) and its hash is the
     ``reasoning_hash``."""
@@ -446,27 +452,28 @@ def oracle_resolve(m1: Module1, wallet: Wallet, challenge_ref: str, claim_ref: s
     _check_stakes(m1, claim_ref, challenge_ref)
     return _run(m1, wallet, submit, log, lambda ctx, dep, tx: tx.build_oracle_resolve(
         ctx, dep, wallet.skey, wallet.vkey, wallet.address, challenge_ref, claim_ref, verdict=verdict,
-        reasoning_hash=bytes(reasoning_hash), oracle_skey=oracle_skey, auxiliary_data=aux))
+        reasoning_hash=bytes(reasoning_hash), oracle_skey=oracle_skey, auxiliary_data=aux), save_tx)
 
 
 def apply_verdict(m1: Module1, wallet: Wallet, verdict_ref: str, *, submit: bool = False,
-                  log=lambda _m: None) -> dict:
+                  log=lambda _m: None, save_tx=None) -> dict:
     """ApplyVerdict of an identity verdict output (anybody)."""
     return _run(m1, wallet, submit, log, lambda ctx, dep, tx: tx.build_apply_verdict(
-        ctx, dep, wallet.skey, wallet.vkey, wallet.address, verdict_ref))
+        ctx, dep, wallet.skey, wallet.vkey, wallet.address, verdict_ref), save_tx)
 
 
 def timeout_resolve(m1: Module1, wallet: Wallet, challenge_ref: str, claim_ref: str, *, submit: bool = False,
-                    log=lambda _m: None) -> dict:
+                    log=lambda _m: None, save_tx=None) -> dict:
     """TimeoutResolve after the deadline: each side gets its stake back."""
     _check_stakes(m1, claim_ref, challenge_ref)
     return _run(m1, wallet, submit, log, lambda ctx, dep, tx: tx.build_timeout_resolve(
-        ctx, dep, wallet.skey, wallet.vkey, wallet.address, challenge_ref, claim_ref))
+        ctx, dep, wallet.skey, wallet.vkey, wallet.address, challenge_ref, claim_ref), save_tx)
 
 
 def submit_claim(m1: Module1, wallet: Wallet, claimer: Union[bytes, str], stake: int, *, claim_hash: bytes,
                  storage_uri: Union[bytes, str], claim_type: bytes = b"service-quality",
-                 challenge_window_ms: Optional[int] = None, submit: bool = False, log=lambda _m: None) -> dict:
+                 challenge_window_ms: Optional[int] = None, submit: bool = False, log=lambda _m: None,
+                 save_tx=None) -> dict:
     """SubmitClaim: the claim document hash and URI (``vector-tx:`` of the
     publish transaction, or another URI)."""
     claimer_hex = claimer.hex() if isinstance(claimer, bytes) else claimer
@@ -474,13 +481,13 @@ def submit_claim(m1: Module1, wallet: Wallet, claimer: Union[bytes, str], stake:
     return _run(m1, wallet, submit, log, lambda ctx, dep, tx: tx.build_submit_claim(
         ctx, dep, wallet.skey, wallet.vkey, wallet.address, claimer_hex, stake,
         challenge_window_ms=challenge_window_ms, claim_hash=bytes(claim_hash), claim_type=bytes(claim_type),
-        storage_uri=uri))
+        storage_uri=uri), save_tx)
 
 
 def open_challenge(m1: Module1, wallet: Wallet, auditor: Union[bytes, str], claim_ref: str, *, stake: int,
                    evidence_hash: bytes, evidence_uri: Union[bytes, str],
                    resolution_deadline_ms: Optional[int] = None, submit: bool = False,
-                   log=lambda _m: None) -> dict:
+                   log=lambda _m: None, save_tx=None) -> dict:
     """OpenChallenge in oracle mode (state PendingOracle, no juror list)."""
     auditor_hex = auditor.hex() if isinstance(auditor, bytes) else auditor
     uri = evidence_uri.encode("utf-8") if isinstance(evidence_uri, str) else bytes(evidence_uri)
@@ -489,7 +496,7 @@ def open_challenge(m1: Module1, wallet: Wallet, auditor: Union[bytes, str], clai
     return _run(m1, wallet, submit, log, lambda ctx, dep, tx: tx.build_open_challenge(
         ctx, dep, wallet.skey, wallet.vkey, wallet.address, auditor_hex, claim_ref, [],
         stake_amount=stake, evidence_hash=bytes(evidence_hash), evidence_uri=uri,
-        resolution_deadline_ms=deadline, oracle_active=True))
+        resolution_deadline_ms=deadline, oracle_active=True), save_tx)
 
 
 def resolution_document(challenge: ChallengeOutput, verdict: str, basis: str, *, jury: Optional[dict] = None) -> bytes:

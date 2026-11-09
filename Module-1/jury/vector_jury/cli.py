@@ -301,7 +301,8 @@ def cmd_m1_claim(ctx: Ctx) -> None:
     claim_hash, uri = _document_args(ctx, "claim")
     result = submit_claim(ctx.m1, wallet, ctx.args.agent, lovelace_of(ctx.args.stake), claim_hash=claim_hash,
                           storage_uri=uri, claim_type=ctx.args.type.encode("utf-8"),
-                          challenge_window_ms=ctx.args.window, submit=ctx.args.submit, log=_log)
+                          challenge_window_ms=ctx.args.window, submit=ctx.args.submit, log=_log,
+                          save_tx=ctx.args.save_tx)
     ctx.out(result)
 
 
@@ -312,7 +313,8 @@ def cmd_m1_challenge(ctx: Ctx) -> None:
     evidence_hash, uri = _document_args(ctx, "evidence")
     result = open_challenge(ctx.m1, wallet, ctx.args.agent, ctx.args.claim, stake=lovelace_of(ctx.args.stake),
                             evidence_hash=evidence_hash, evidence_uri=uri,
-                            resolution_deadline_ms=ctx.args.deadline, submit=ctx.args.submit, log=_log)
+                            resolution_deadline_ms=ctx.args.deadline, submit=ctx.args.submit, log=_log,
+                            save_tx=ctx.args.save_tx)
     ctx.out(result)
 
 
@@ -340,14 +342,16 @@ def cmd_m1_resolve(ctx: Ctx) -> None:
         raise CliError("give --doc FILE (the resolution document), or --basis no-time")
     oracle = vd.load_signing_key(ctx.args.oracle_key) if ctx.args.oracle_key else None
     result = oracle_resolve(ctx.m1, wallet, challenge.ref, _claim_ref(ctx, challenge), T.vote_name(ctx.args.verdict),
-                            resolution=doc, oracle_skey=oracle, submit=ctx.args.submit, log=_log)
+                            resolution=doc, oracle_skey=oracle, submit=ctx.args.submit, log=_log,
+                            save_tx=ctx.args.save_tx)
     ctx.out({**result, "resolution_hash": documents.doc_hash(doc).hex()})
 
 
 def cmd_m1_apply(ctx: Ctx) -> None:
     from .module1 import apply_verdict
 
-    ctx.out(apply_verdict(ctx.m1, _wallet(ctx), ctx.args.verdict_ref, submit=ctx.args.submit, log=_log))
+    ctx.out(apply_verdict(ctx.m1, _wallet(ctx), ctx.args.verdict_ref, submit=ctx.args.submit, log=_log,
+                          save_tx=ctx.args.save_tx))
 
 
 def cmd_m1_timeout(ctx: Ctx) -> None:
@@ -356,7 +360,7 @@ def cmd_m1_timeout(ctx: Ctx) -> None:
     wallet = _wallet(ctx)
     challenge = _challenge(ctx)
     ctx.out(timeout_resolve(ctx.m1, wallet, challenge.ref, _claim_ref(ctx, challenge), submit=ctx.args.submit,
-                            log=_log))
+                            log=_log, save_tx=ctx.args.save_tx))
 
 
 def _log(message: str) -> None:

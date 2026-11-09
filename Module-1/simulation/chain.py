@@ -693,8 +693,11 @@ def prepare_fee_payer_utxos(
 
 
 def get_wallet_utxos_no_collateral(context, wallet_addr):
-    """Get wallet UTxOs excluding the smallest pure-ADA UTxO (reserved for collateral)."""
-    utxos = context.utxos(str(wallet_addr))
+    """Get wallet UTxOs excluding the smallest pure-ADA UTxO (reserved for
+    collateral) and the outputs that hold a reference script: spending one
+    would remove a reference script that other transactions use, and its
+    bytes add a fee that the builders do not estimate."""
+    utxos = [u for u in context.utxos(str(wallet_addr)) if u.output.script is None]
     pure_ada = []
     with_tokens = []
     for u in utxos:
