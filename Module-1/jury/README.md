@@ -61,6 +61,8 @@ The manifest is [`deploy/mainnet/manifest.json`](deploy/mainnet/manifest.json), 
 
 The Foundation jurors of [`jurors/foundation/jurors.json`](jurors/foundation/jurors.json) are registered with a bond of 250 AP3X each. The deployment takes challenges from `cases_from` in the manifest (SPEC §12.1): the time when all Foundation jurors can vote. Before that time, the relay resolves a challenge with the basis `no-jury`.
 
+On 2026-11-09 the Foundation jurors registered again with new prompts. The prompts now ask for 262,144 output tokens, so each call gets the full limit of its supplier (the first prompts asked for 2,500 tokens). The first juror outputs requested their exit at the same time, so they cannot vote. `cases_from` moved to the time when the new juror outputs can vote: 2026-11-12 20:43:17 UTC. The manifest keeps the registration transactions of both sets (`txs.foundation_jurors` and `txs.foundation_jurors_replaced`).
+
 ### Launch test deployment (2026-11-09)
 
 A second deployment with short times tests the whole flow on mainnet before the Foundation jurors of the main deployment can vote. Its manifest is [`deploy/mainnet-launch-test/manifest.json`](deploy/mainnet-launch-test/manifest.json) (`test: true`).

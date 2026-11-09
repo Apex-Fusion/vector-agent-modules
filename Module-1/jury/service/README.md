@@ -161,6 +161,15 @@ Log events: `service.*` (start, world, stop), `relay.loop`, `relay.note`, `relay
 3. Create a gateway API key for the juror, fund it, and add it to `gateway-keys.env` under its `api_key_env`.
 4. Add its name to `jurors` in `config.json` (or keep `null` for all), rebuild and restart.
 
+### Change the prompt of a juror
+
+The registered juror output holds the hash of its prompt document, so a new prompt needs a new registration. One DID can have two juror outputs, and it gets one ballot per case (SPEC §6.9).
+
+1. Register the juror DID again with the new prompt document. The new output can vote 3 days later.
+2. Put the new prompt file and its hash in `jurors/foundation/jurors.json`, rebuild and restart. The juror then votes only with the output that holds the configured hash.
+3. Send `RequestExit` for the old output. It cannot vote after this request. Take the bond back with `Exit` after the exit notice.
+4. When the new outputs of the Foundation jurors can vote only after `cases_from`, move `cases_from` in the manifest to that time before it comes, and update the indexer (`JURY_DEPLOYMENTS`) and the service. A challenge before `cases_from` gets the basis `no-jury`, not a case without jurors.
+
 ### Follow a new deployment
 
 1. Deploy the new validator (`deploy/jury_deploy.py`) and register the Foundation jurors in it.

@@ -13,9 +13,9 @@
         }
       ],
       "prompt_file": "ds-flash-chat-1.prompt.json",
-      "prompt_hash": "32496832af52613911ba578740ae57dd14575713c4ee60400f2e999f6ad9be26",
-      "prompt_bytes": 2184,
-      "max_output_tokens": 2500,
+      "prompt_hash": "89914df0a0c40d7e1d5d7dfec6e5d6b551cc17ab90c4164fd0754be45610c3f2",
+      "prompt_bytes": 2186,
+      "max_output_tokens": 262144,
       "api_key_env": "JURY_GATEWAY_KEY_DS_FLASH_CHAT_1"
     },
     {
@@ -29,9 +29,9 @@
         }
       ],
       "prompt_file": "ds-flash-chat-2.prompt.json",
-      "prompt_hash": "3534598e34c5b2ad18c485882b1a0d86a22318cb3cc2848626561787e1345d05",
-      "prompt_bytes": 2150,
-      "max_output_tokens": 2500,
+      "prompt_hash": "ac9d7e08f86b3fe81975d50841b6f6607561796e33379bd7175b047f86f09d94",
+      "prompt_bytes": 2152,
+      "max_output_tokens": 262144,
       "api_key_env": "JURY_GATEWAY_KEY_DS_FLASH_CHAT_2"
     },
     {
@@ -45,9 +45,9 @@
         }
       ],
       "prompt_file": "ds-flash-chat-3.prompt.json",
-      "prompt_hash": "083820d4de4a31dc4d44ec1d14d93db0698f2efd51249917cc34ef434fb7ab44",
-      "prompt_bytes": 2236,
-      "max_output_tokens": 2500,
+      "prompt_hash": "d1027e0f67b9bfd0f9da5ce872c39f2d0eab6673147cb208f92c6b3c40b1cef8",
+      "prompt_bytes": 2238,
+      "max_output_tokens": 262144,
       "api_key_env": "JURY_GATEWAY_KEY_DS_FLASH_CHAT_3"
     },
     {
@@ -69,9 +69,9 @@
         }
       ],
       "prompt_file": "kimi-chat-2.prompt.json",
-      "prompt_hash": "9c0ebf3c522925f6a69fd2b92642e3e0bfda3dac9aa30fba95ef9153ab2ec9e8",
-      "prompt_bytes": 2572,
-      "max_output_tokens": 2500,
+      "prompt_hash": "e138059dd894036c86c1043f8d4e735c1ee3a879a92a059f995cc0340b76f2f6",
+      "prompt_bytes": 2574,
+      "max_output_tokens": 262144,
       "api_key_env": "JURY_GATEWAY_KEY_KIMI_CHAT_2"
     },
     {
@@ -85,9 +85,9 @@
         }
       ],
       "prompt_file": "kimi-chat-3.prompt.json",
-      "prompt_hash": "50e65296b3b9cbac27ee8f3329580392d427c106629232f860e83d19969deb44",
-      "prompt_bytes": 2234,
-      "max_output_tokens": 2500,
+      "prompt_hash": "145c135efd5255491b732fc333887bdb0c9f169d03a71308b9d30fd9702b6104",
+      "prompt_bytes": 2236,
+      "max_output_tokens": 262144,
       "api_key_env": "JURY_GATEWAY_KEY_KIMI_CHAT_3"
     }
   ]

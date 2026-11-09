@@ -30,6 +30,13 @@
   "txs": {
     "reference_script": "929cda1ae22d71ac09fe098c59206fdff553f8eeb4c7328a0585f1ebde0cda82",
     "foundation_jurors": {
+      "ds-flash-chat-1": "51f271658edecdc50a11f07aef05b52b9e77e7741084504a996c58c4599488ce",
+      "ds-flash-chat-2": "8b4f7a80738020feab9074695a01095eb068e03cca0b0925c4ff4548693cc62a",
+      "ds-flash-chat-3": "d7e245d5a9fe388702b4628cd7f665ba439ddd3bb38b56117b8d074570ece69a",
+      "kimi-chat-2": "78c48809a81043c781b6da94e912ad9c308b637df10a497f65e6b3ebfab726f4",
+      "kimi-chat-3": "1c5c42a20155d1d8ac1653a6bacc8f1fa3725814a6ce9cb29bf04edb090e0255"
+    },
+    "foundation_jurors_replaced": {
       "ds-flash-chat-1": "9af8efd39ed31f8204512e1e5a0da864d2feda78b677d9435302775bc3246219",
       "ds-flash-chat-2": "179051ff1bef0cb763e8f689a2a3aefebcf882a67bcdfc648045ccd594980974",
       "ds-flash-chat-3": "7d9ad9dcc29fa030e8f60e4dc89e73876b5062a7a0a5b56e06e717ce3c0e2101",
@@ -38,6 +45,6 @@
     }
   },
   "time": "2026-11-09T11:43:16Z",
-  "cases_from": 1794485675000,
+  "cases_from": 1794516197000,
   "cases_until": null
 }
