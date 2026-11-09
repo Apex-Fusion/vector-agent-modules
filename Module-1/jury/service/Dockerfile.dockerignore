@@ -1,0 +1,13 @@
+# Build context: the repository root. Send only what the image copies.
+*
+!shared/python/vector_deploy.py
+!shared/python/aiken_simulate.py
+!Module-1/simulation/
+!Module-1/deploy/identity/
+!Module-1/jury/vector_jury/
+!Module-1/jury/jurors/
+!Module-1/jury/deploy/
+!Module-1/jury/service/config.example.json
+**/__pycache__
+**/*.pyc
+Module-1/simulation/tests

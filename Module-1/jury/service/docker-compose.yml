@@ -1,0 +1,42 @@
+# The Module-1 jury service (relay + Foundation reference jurors).
+#   cd Module-1/jury/service && docker compose up -d --build
+# Files next to this compose file (not in git):
+#   config.json         copy of config.example.json, edited
+#   gateway-keys.env    copy of gateway-keys.env.example, filled in (mode 600)
+#   keys/operator.skey  the operator signing key (cardano-cli JSON, mode 600)
+services:
+  module1-jury:
+    build:
+      context: ../../..
+      dockerfile: Module-1/jury/service/Dockerfile
+    image: vector-module1-jury:latest
+    restart: unless-stopped
+    env_file:
+      - ./gateway-keys.env
+    environment:
+      APEX_NETWORK: mainnet
+      # The service submits mainnet transactions (relay and jurors).
+      APEX_NETWORK_CONFIRM: "yes"
+    command: ["--config", "/config/config.json"]
+    volumes:
+      - ./config.json:/config/config.json:ro
+      - ./keys:/run/keys:ro
+      - jury-state:/var/lib/vector-jury
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    # Give an in-flight transaction time to confirm before a stop kills it.
+    stop_grace_period: 3m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
+
+volumes:
+  jury-state:

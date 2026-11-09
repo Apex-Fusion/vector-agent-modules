@@ -3048,6 +3048,7 @@ def build_oracle_resolve(
     reasoning_hash: bytes,
     oracle_skey=None,
     window_slots: int = IDENTITY_WINDOW_SLOTS,
+    auxiliary_data=None,
 ) -> dict:
     """Build and submit an oracle resolution (OracleResolve, Phase 1.0;
     ``validate_oracle_resolve`` of challenge.ak and the MintVerdict rule of
@@ -3103,6 +3104,10 @@ def build_oracle_resolve(
               ttl_slot}. ``verdict_ref``, ``verdict_token_hex`` and
     ``identity_verdict`` (``IdentityVerdict.to_json``) are None when the
     resolution gives no verdict.
+
+    ``auxiliary_data`` (a pycardano ``AuxiliaryData``, optional) is set on
+    every build pass, for example the resolution document of the jury relay
+    (metadata label 22084). None builds the transaction without metadata.
     """
     if verdict not in identity_party.OUTCOMES:
         raise ValueError(
@@ -3256,6 +3261,7 @@ def build_oracle_resolve(
     def build_tx(units):
         b = TransactionBuilder(context)
         b.fee_buffer = 500_000
+        b.auxiliary_data = auxiliary_data
         _add_script_input_with_fallback(
             b, challenge_utxo, deployment.challenge_ref_utxo,
             _identity_redeemer(resolve_data, units.get("resolve")),
@@ -5484,6 +5490,7 @@ def build_timeout_resolve(
     *,
     resolution_deadline_ms: int | None = None,
     resolved_params=None,
+    auxiliary_data=None,
 ) -> dict:
     """Build and submit a TimeoutResolve transaction (iter-4 / Path B).
 
@@ -5527,6 +5534,9 @@ def build_timeout_resolve(
           "validity_start_slot": int,
           "ttl_slot": int,
         }
+
+    ``auxiliary_data`` (a pycardano ``AuxiliaryData``, optional) is set on
+    every build pass. None builds the transaction without metadata.
     """
     # ── ProtocolParams resolution (Option A — for the preflight math only;
     #    the on-chain validator reads resolution_deadline from the DATUM).
@@ -5693,6 +5703,7 @@ def build_timeout_resolve(
     def build_timeout_tx(ch_spend_r, cl_spend_r, ch_mint_r, cl_mint_r):
         b = TransactionBuilder(context)
         b.fee_buffer = 500_000
+        b.auxiliary_data = auxiliary_data
         # Spend: challenge UTxO with TimeoutResolve redeemer.
         _add_script_input_with_fallback(
             b, challenge_utxo, deployment.challenge_ref_utxo, ch_spend_r,

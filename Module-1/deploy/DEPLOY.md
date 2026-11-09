@@ -2,11 +2,11 @@
 
 **Network:** Vector Mainnet (Cardano eUTxO L2)  
 **Language:** Aiken (Plutus V3)  
-**Current Version:** v14-mainnet (2026-04-16)
+**Current Version:** identity-registry deployment (2026-11-03, `identity/mainnet/`); the v14-mainnet deployment (2026-04-16) below keeps its own rules.
 
 ---
 
-## Identity Registry Deployment (new, not deployed)
+## Identity Registry Deployment (deployed on mainnet, 2026-11-03)
 
 The source in `contracts/` is the new deployment for the identity registry
 (`docs/IDENTITY_REGISTRY.md` §3.8 and §7 in agents-marketplace). It adds the

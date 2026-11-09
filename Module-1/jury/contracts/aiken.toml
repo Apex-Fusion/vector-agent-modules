@@ -1,0 +1,17 @@
+name = "vector/module1-jury"
+version = "1.0.0"
+compiler = "v1.1.21"
+plutus = "v3"
+description = "Module-1 jury: juror registrations and jury cases for Module-1 challenges (Module-1/jury/SPEC.md)"
+
+[[dependencies]]
+name = "aiken-lang/stdlib"
+version = "v3.0.0"
+source = "github"
+
+# Tests only: property tests (lib/jury_tests/property_tests.ak). The
+# validator does not use it.
+[[dependencies]]
+name = "aiken-lang/fuzz"
+version = "v2.2.0"
+source = "github"

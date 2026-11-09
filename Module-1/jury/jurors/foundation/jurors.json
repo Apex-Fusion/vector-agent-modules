@@ -1,0 +1,94 @@
+{
+  "format": "vector-jury-foundation-jurors/2",
+  "owner_vkh": "470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028",
+  "jurors": [
+    {
+      "name": "ds-flash-chat-1",
+      "agent": "e33d9be7ac64faf703d511ec4c31c4d539db51dd8a378a2c25a4bdb70635855a",
+      "model": "deepseek-v4-pro",
+      "suppliers": [
+        {
+          "agent": "5649d6e5a1160c706ad8c227f7d2bab7e7bf00cd2953c6d7838fb80f89b8a503",
+          "supplier_pkh": "5e6cff6d91ba035b36452054f40ee12f1c04ea63e6ae0eced5913e43"
+        }
+      ],
+      "prompt_file": "ds-flash-chat-1.prompt.json",
+      "prompt_hash": "32496832af52613911ba578740ae57dd14575713c4ee60400f2e999f6ad9be26",
+      "prompt_bytes": 2184,
+      "max_output_tokens": 2500,
+      "api_key_env": "JURY_GATEWAY_KEY_DS_FLASH_CHAT_1"
+    },
+    {
+      "name": "ds-flash-chat-2",
+      "agent": "52556675362cb250307c05427fb086157efe7ab7d8eaea45efec75d1f740abf2",
+      "model": "moonshotai/kimi-k2.6",
+      "suppliers": [
+        {
+          "agent": "40f9f0b22a0109b1364578f706919394674db0022fd1de440e0727ce45f2a714",
+          "supplier_pkh": "28ec5ec1f21b21a5971ddcbb3e727c7dbafeecd595b45e4d694b9b63"
+        }
+      ],
+      "prompt_file": "ds-flash-chat-2.prompt.json",
+      "prompt_hash": "3534598e34c5b2ad18c485882b1a0d86a22318cb3cc2848626561787e1345d05",
+      "prompt_bytes": 2150,
+      "max_output_tokens": 2500,
+      "api_key_env": "JURY_GATEWAY_KEY_DS_FLASH_CHAT_2"
+    },
+    {
+      "name": "ds-flash-chat-3",
+      "agent": "b35d952b2dc80c9fbfe139dc2804d6086c5cd017e484cee238d6c0123262aae7",
+      "model": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "suppliers": [
+        {
+          "agent": "a7b2088985ad2c5dd914f0deaedbcdee71dbe25033ca29a3527c9bde65876d93",
+          "supplier_pkh": "3c1d6d825c1853b74bbd24c69c815563366a00cc040587a61ec79877"
+        }
+      ],
+      "prompt_file": "ds-flash-chat-3.prompt.json",
+      "prompt_hash": "083820d4de4a31dc4d44ec1d14d93db0698f2efd51249917cc34ef434fb7ab44",
+      "prompt_bytes": 2236,
+      "max_output_tokens": 2500,
+      "api_key_env": "JURY_GATEWAY_KEY_DS_FLASH_CHAT_3"
+    },
+    {
+      "name": "kimi-chat-2",
+      "agent": "29a379b7b77c20e9e237eeacdb54bd2c3e759a7504d4074db967ca58620e0304",
+      "model": "deepseek/deepseek-v4-flash",
+      "suppliers": [
+        {
+          "agent": "d5e4121350eb085f7d648572386f276e9dacf140162f8900fba49b938fb7a611",
+          "supplier_pkh": "8dd21b435089885891d85ea45f43928df8a14b18366119892ef8433e"
+        },
+        {
+          "agent": "8cbee297b368cdd752cbaa4aae475461b425cff23b8610d66ce6c3e1db7e46c9",
+          "supplier_pkh": "10e566bdfd8e8ca18add8e3155eb6a08e3260442cb62bfcad1afc5b7"
+        },
+        {
+          "agent": "5862f0e82c95c7c4fa50d46af08b2f255384078428e7ace57f738378d3ccb421",
+          "supplier_pkh": "9458c6483dbf546f337b32074e5a09864c294c5cd413ebf316492c7c"
+        }
+      ],
+      "prompt_file": "kimi-chat-2.prompt.json",
+      "prompt_hash": "9c0ebf3c522925f6a69fd2b92642e3e0bfda3dac9aa30fba95ef9153ab2ec9e8",
+      "prompt_bytes": 2572,
+      "max_output_tokens": 2500,
+      "api_key_env": "JURY_GATEWAY_KEY_KIMI_CHAT_2"
+    },
+    {
+      "name": "kimi-chat-3",
+      "agent": "a7d6c1e0ea0374c28fe064af705f7e743c1704b906510d4606e51d62034bd93d",
+      "model": "gpt-5.6-sol",
+      "suppliers": [
+        {
+          "agent": "cd67289518ee58888f87f4cad5d13261bc7219068a61519b05178d167d916f5d",
+          "supplier_pkh": "4609385a841c8f049040aa7b777bc6a456a160d9c0f3914f64483a3a"
+        }
+      ],
+      "prompt_file": "kimi-chat-3.prompt.json",
+      "prompt_hash": "50e65296b3b9cbac27ee8f3329580392d427c106629232f860e83d19969deb44",
+      "prompt_bytes": 2234,
+      "max_output_tokens": 2500,
+      "api_key_env": "JURY_GATEWAY_KEY_KIMI_CHAT_3"
+    }
+  ]
+}
