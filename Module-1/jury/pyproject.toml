@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vector-jury"
+version = "1.0.0"
+description = "Module-1 jury on Vector: Python library and the vector-jury command line tool (SPEC.md)"
+requires-python = ">=3.11"
+# The library also imports Module-1/simulation (simulation.vector_identity,
+# simulation.tx_builder) and shared/python (vector_deploy, aiken_simulate)
+# from this repository: install it editable from the repository
+# (pip install -e Module-1/jury), so vector_jury/_paths.py finds them.
+dependencies = [
+    "pycardano==0.19.2",
+    "cbor2>=5.6,<6",
+    "requests>=2.31",
+]
+
+[project.scripts]
+vector-jury = "vector_jury.cli:main"
+
+[tool.setuptools]
+packages = ["vector_jury"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "..", "../../shared/python"]
+markers = [
+    "aiken: runs aiken tx simulate on the validator applied from contracts/plutus.json",
+]

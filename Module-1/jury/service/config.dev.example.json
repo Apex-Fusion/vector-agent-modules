@@ -1,0 +1,19 @@
+{
+  "format": "vector-jury-service/1",
+  "network": "mainnet",
+  "ogmios_url": null,
+  "koios_url": null,
+  "module1_manifest": "../../deploy/identity/mainnet/manifest.json",
+  "jury_manifests": [
+    "../deploy/mainnet/manifest.json"
+  ],
+  "operator_key": "~/keys/operator.skey",
+  "operator_vkh": "470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028",
+  "state_dir": "~/.vector-jury/service",
+  "poll_seconds": 60,
+  "relay": true,
+  "dry_run": true,
+  "gateway_url": "https://api.marketplace.vector.apexfusion.org",
+  "jurors_file": "../jurors/foundation/jurors.json",
+  "jurors": null
+}

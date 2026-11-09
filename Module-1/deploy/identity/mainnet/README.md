@@ -12,7 +12,7 @@ This folder publishes the Module-1 deployment of the identity registry release (
 
 | Value | |
 |---|---|
-| Mode | Oracle (`oracle_active` true). The oracle is the Foundation operator key `470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028`. |
+| Mode | Oracle (`oracle_active` true). The oracle is the Foundation operator key `470ded7c9d487c2c3832af84aea70987b2c9a01480192ebbf035d028`. The oracle signs the result of the Module-1 jury ([`jury/SPEC.md`](../../../jury/SPEC.md)): the Foundation relay holds the key and resolves each challenge with the jury result. |
 | Verdict policy | Auditor wins: the claimer is suspended for 7 days. Claimer wins: no verdict. No revocations. |
 | Protocol values | `config.json` in the folder above (the v14 values) |
 | `identity_party` (M1) | `f6b094a89b58d5e196a53d6e5ebedcbb837db4a1b16a1477cf98305d` |
