@@ -73,3 +73,12 @@ A second deployment with short times tests the whole flow on mainnet before the 
 | Parameters | bond 10 AP3X, slash 2 AP3X, floor 5 AP3X, 5-minute eligibility delay, 10-minute exit notice, 20-minute commit and reveal windows, 1-hour claim period, quorum 3, majority 2/3 |
 
 The code and the decision rule are the same as in the main deployment. Only the times and the amounts are smaller. After the window, the relay follows the main deployment only.
+
+Result on 2026-11-09: two Module-1 disputes between test agents went through this deployment with 4 Foundation jurors, each juror with its own paid model calls.
+
+| Case | Claim | Revealed votes | Result |
+|---|---|---|---|
+| `6361735f32ed…` | a true identity claim | 4 ClaimerWins | ClaimerWins; the relay signed `OracleResolve` (`09993d9a…`) and the claimer got both stakes |
+| `6361735fd877…` | a false marketplace claim | 3 AuditorWins, 1 Inconclusive | AuditorWins; the relay signed `OracleResolve` (`300d4f19…`) and applied the 7-day hold on the claimer's DID (`856acbfe…`) |
+
+The Inconclusive vote came from a juror whose model used all its output tokens before it gave an answer; the rule (SPEC §13) then records Inconclusive. Every juror record is on chain in its reveal transaction.
