@@ -60,3 +60,16 @@ The manifest is [`deploy/mainnet/manifest.json`](deploy/mainnet/manifest.json), 
 | Parameters | SPEC §3: bond 250 AP3X, slash 25 AP3X, 3-day eligibility delay and exit notice, 2-hour commit and reveal windows, quorum 3, majority 2/3 |
 
 The Foundation jurors of [`jurors/foundation/jurors.json`](jurors/foundation/jurors.json) are registered with a bond of 250 AP3X each. The deployment takes challenges from `cases_from` in the manifest (SPEC §12.1): the time when all Foundation jurors can vote. Before that time, the relay resolves a challenge with the basis `no-jury`.
+
+### Launch test deployment (2026-11-09)
+
+A second deployment with short times tests the whole flow on mainnet before the Foundation jurors of the main deployment can vote. Its manifest is [`deploy/mainnet-launch-test/manifest.json`](deploy/mainnet-launch-test/manifest.json) (`test: true`).
+
+| Item | Value |
+|---|---|
+| Script hash | `0a901378aeeab76d09e24ad95ecc4348497b597c8973c4a8a3ec8030` |
+| Jury address | `addr1wy9fqymc4m4twmgfuf9djhkvgdyyj76e0jyh839g50kgqvqudvqya` |
+| Window (`cases_from`, `cases_until`) | 2026-11-09 16:00:12 to 20:00:12 UTC; it takes only the challenges of that window |
+| Parameters | bond 10 AP3X, slash 2 AP3X, floor 5 AP3X, 5-minute eligibility delay, 10-minute exit notice, 20-minute commit and reveal windows, 1-hour claim period, quorum 3, majority 2/3 |
+
+The code and the decision rule are the same as in the main deployment. Only the times and the amounts are smaller. After the window, the relay follows the main deployment only.
