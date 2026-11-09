@@ -1,0 +1,37 @@
+{
+  "format": "vector-module1-jury-deployment/1",
+  "network": "mainnet",
+  "params": {
+    "identity_hash": "d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762",
+    "m1_claim": "53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523",
+    "m1_challenge": "9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08",
+    "treasury": "addr1wx2yu92dtp70q0stsv8kmnrv284lh836lp0l936x6gsrggshvzzlc",
+    "bond_min": 10000000,
+    "slash": 2000000,
+    "juror_floor": 5000000,
+    "eligibility_delay": 300000,
+    "exit_notice": 600000,
+    "commit_window": 1200000,
+    "reveal_window": 1200000,
+    "resolve_margin": 7200000,
+    "claim_period": 3600000,
+    "quorum": 3,
+    "majority_num": 2,
+    "majority_den": 3
+  },
+  "params_cbor": "d8799f581cd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762581c53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523581c9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08d8799fd87a9f581c944e154d587cf03e0b830f6dcc6c51ebfb9e3af85ff2c746d2203422ffd87a80ff1a009896801a001e84801a004c4b401a000493e01a000927c01a00124f801a00124f801a006ddd001a0036ee80030203ff",
+  "script_hash": "0a901378aeeab76d09e24ad95ecc4348497b597c8973c4a8a3ec8030",
+  "address": "addr1wy9fqymc4m4twmgfuf9djhkvgdyyj76e0jyh839g50kgqvqudvqya",
+  "reference_script": "2ee9c3ff7fd04102e92f96b328ca2d0113bc8c2863544fa7ac275cec32346ce7#0",
+  "reference_address": "addr1v9rsmmtun4y8ctpcx2hcft48pxrm9jdqzjqpjt4m7q6aq2qv5dmnh",
+  "script_size": 13414,
+  "plutus": "plutus.json",
+  "compiler": "Aiken v1.1.21+42babe5",
+  "txs": {
+    "reference_script": "2ee9c3ff7fd04102e92f96b328ca2d0113bc8c2863544fa7ac275cec32346ce7"
+  },
+  "time": "2026-11-09T16:00:52Z",
+  "cases_from": 1794240012000,
+  "cases_until": 1794254412000,
+  "test": true
+}
