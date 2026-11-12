@@ -35,3 +35,7 @@ Modules are designed to interlock:
 
 - [vector-ai-agents](https://github.com/Apex-Fusion/vector-ai-agents) - security audit trail and methodology documentation
 - [Vector AI documentation](https://apex-fusion.github.io/vector-ai-documentation/) - quickstarts, MCP server, SDKs
+
+## License
+
+MIT, see [LICENSE](LICENSE). Deployment records under `deploy/` keep the blueprint preamble they were deployed with.

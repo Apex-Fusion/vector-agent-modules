@@ -2,7 +2,7 @@ name = "vector/holder-scripts"
 version = "0.1.0"
 compiler = "v1.1.21"
 plutus = "v3"
-license = "Apache-2.0"
+license = "MIT"
 description = "Owner-gated holder scripts for params/oracle/treasury addresses and the one-shot record token policy"
 
 [repository]
