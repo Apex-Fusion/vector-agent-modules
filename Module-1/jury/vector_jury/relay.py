@@ -47,8 +47,9 @@ Spec choices:
 
 The context object ``ctx`` (built by ``service.py``) has: ``chain``
 (``vector_jury.chain.Chain``), ``m1`` (``module1.Module1``), ``deployments``,
-``address`` (the operator key address: fee payer, refund address, verdict
-deposit), ``operator_vkh``, ``signing_key`` (None in a dry run without a
+``address`` (the operator key address: fee payer, owner of the jurors, verdict
+deposit; a case refund goes to the treasury of the deployment, not to it),
+``operator_vkh``, ``signing_key`` (None in a dry run without a
 key), ``dry_run``, ``txs`` (the transaction queue), ``log(event, **fields)``,
 ``foundation_agents`` (the configured juror DIDs, 32 bytes each) and
 ``state_dir``.
