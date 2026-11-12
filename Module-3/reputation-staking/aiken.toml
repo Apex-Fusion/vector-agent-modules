@@ -2,7 +2,7 @@ name = "vector/reputation-staking"
 version = "0.1.0"
 compiler = "v1.1.21"
 plutus = "v3"
-license = "Apache-2.0"
+license = "MIT"
 description = "Module 3: Reputation Staking — economically-secured agent curation for Vector"
 
 [repository]
