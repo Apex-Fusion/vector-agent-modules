@@ -24,7 +24,7 @@ import dataclasses
 import json
 import math
 import time
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Union
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 import requests
 import cbor2
@@ -103,9 +103,15 @@ TIME_BASES = {
 
 class Koios:
     """Read-only Koios queries. Koios shares its rate limit with production
-    services, so the callers batch their queries and cache the answers."""
+    services, so the callers batch their queries and cache the answers.
+    Koios returns at most ``PAGE`` rows for one request: the list queries
+    whose answer can grow without a limit ask page after page."""
 
     BATCH = 50
+    #: The row limit of one Koios answer (PostgREST ``max-rows``).
+    PAGE = 1000
+    #: A safety stop for the paged reads (rows).
+    MAX_ROWS = 200_000
 
     def __init__(self, url: str, *, timeout: int = 30, post: Callable = requests.post, get: Callable = requests.get):
         self.url = url.rstrip("/")
@@ -122,9 +128,10 @@ class Koios:
             raise ChainError(f"Koios {what}: {json.dumps(data)[:300]}")
         return data
 
-    def post(self, path: str, body: Mapping) -> list:
+    def post(self, path: str, body: Mapping, params: Optional[Mapping] = None) -> list:
         try:
-            response = self._post(f"{self.url}/{path}", json=dict(body), timeout=self.timeout)
+            response = self._post(f"{self.url}/{path}", json=dict(body), params=dict(params or {}),
+                                  timeout=self.timeout)
         except requests.RequestException as error:
             raise ChainError(f"Koios {path}: {error}") from None
         return self._answer(response, path)
@@ -135,6 +142,19 @@ class Koios:
         except requests.RequestException as error:
             raise ChainError(f"Koios {path}: {error}") from None
         return self._answer(response, path)
+
+    def _paged(self, what: str, fetch: Callable[[Mapping], list], order: str) -> list:
+        """Every row of a list query. ``fetch`` gets the paging parameters
+        (``order``, ``limit``, ``offset``); the order makes the pages stable.
+        A page with fewer than ``PAGE`` rows is the last one."""
+        out: list = []
+        while True:
+            rows = fetch({"order": order, "limit": self.PAGE, "offset": len(out)})
+            out.extend(rows)
+            if len(rows) < self.PAGE:
+                return out
+            if len(out) >= self.MAX_ROWS:
+                raise ChainError(f"Koios {what}: more than {self.MAX_ROWS} rows")
 
     def _batched(self, path: str, tx_hashes: Sequence[str], extra: Mapping = ()) -> list:
         out: list = []
@@ -161,13 +181,18 @@ class Koios:
 
     def policy_asset_list(self, policy: str) -> list:
         """``policy_asset_list``: every asset ever minted under a policy (a
-        burned asset has total supply 0)."""
-        return self.get("policy_asset_list", {"_asset_policy": policy})
+        burned asset has total supply 0). Paged: a jury policy gets one asset
+        for each juror output and for each case."""
+        return self._paged("policy_asset_list",
+                           lambda page: self.get("policy_asset_list", {"_asset_policy": policy, **page}),
+                           "asset_name.asc")
 
     def credential_utxos(self, credentials: Sequence[str]) -> list:
         """``credential_utxos`` (extended: assets and inline datums) of
-        payment credentials, any stake credential."""
-        return self.post("credential_utxos", {"_payment_credentials": list(credentials), "_extended": True})
+        payment credentials, any stake credential. Paged."""
+        body = {"_payment_credentials": list(credentials), "_extended": True}
+        return self._paged("credential_utxos", lambda page: self.post("credential_utxos", body, page),
+                           "tx_hash.asc,tx_index.asc")
 
     def tx_metadata(self, tx_hashes: Sequence[str]) -> list:
         """``tx_metadata``: ``[{"tx_hash", "metadata"}]`` (JSON metadata, byte
@@ -264,6 +289,25 @@ class Chain:
         self.spent: set = set()
         self._protocol: Optional[ProtocolParameters] = None
         self._network_checked = False
+        #: Seconds that one Koios asset list of a policy stays in use
+        #: (``policy_assets``); 0 reads it again each time. The service sets
+        #: it: the relay and the jurors read the same list many times in a loop.
+        self.asset_list_ttl = 0.0
+        self._asset_lists: Dict[str, Tuple[float, list]] = {}
+
+    def policy_assets(self, policy_hex: str) -> list:
+        """The assets ever minted under a policy (``Koios.policy_asset_list``),
+        kept for ``asset_list_ttl`` seconds."""
+        ttl = getattr(self, "asset_list_ttl", 0.0)
+        lists = self.__dict__.setdefault("_asset_lists", {})
+        now = time.monotonic()
+        hit = lists.get(policy_hex)
+        if ttl > 0 and hit is not None and now - hit[0] < ttl:
+            return hit[1]
+        rows = self.koios.policy_asset_list(policy_hex)
+        if ttl > 0:
+            lists[policy_hex] = (now, rows)
+        return rows
 
     # ── protocol, tip and time ───────────────────────────────────────────
 

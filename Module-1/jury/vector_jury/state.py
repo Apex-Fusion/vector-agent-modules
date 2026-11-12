@@ -258,7 +258,10 @@ def case_openings(chain: Chain, deployment: Deployment, *,
     opening never changes once it is in a block)."""
     cache = cache if cache is not None else {}
     policy = deployment.script_hash.hex()
-    names = [bytes.fromhex(a["asset_name"]) for a in chain.koios.policy_asset_list(policy)
+    # Chain.policy_assets keeps one answer for a short time (the service sets
+    # the time); a plain test double has only .koios.
+    read_assets = getattr(chain, "policy_assets", None) or chain.koios.policy_asset_list
+    names = [bytes.fromhex(a["asset_name"]) for a in read_assets(policy)
              if rules.is_case_token(bytes.fromhex(a.get("asset_name") or ""))]
     missing = {}
     for name in names:
