@@ -69,6 +69,9 @@ CONFIG_FORMAT = "vector-jury-service/1"
 #: The longest wait for a submitted transaction (seconds).
 CONFIRM_TIMEOUT = 180
 CONFIRM_POLL = 5
+#: One Koios asset list of a jury policy stays in use this long (seconds): the
+#: relay and each juror read it for every dispute and case of a loop.
+ASSET_LIST_TTL = 20.0
 
 
 class ConfigError(ValueError):
@@ -270,6 +273,7 @@ def load_signing_key(config: Config, log: Callable[..., None]):
 
 def build_context(config: Config, log: Callable[..., None], specs: List[juror.JurorSpec]) -> Context:
     chain = Chain(config.network, ogmios_url=config.ogmios_url, koios_url=config.koios_url)
+    chain.asset_list_ttl = ASSET_LIST_TTL
     chain.check_network()
     m1 = module1.Module1.load(config.module1_manifest)
     if m1.network != config.network:
