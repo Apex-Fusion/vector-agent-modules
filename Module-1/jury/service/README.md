@@ -22,7 +22,7 @@ The code is in `Module-1/jury/vector_jury/`: `service.py` (the loop and the tran
 
 - Each loop (`poll_seconds`, default 60) reads the chain once: the genuine `PendingOracle` challenges (§11.1) with the canonical case of each dispute (§11.2), the juror and case outputs of the followed deployments, and the verdict outputs with `deposit_to` = the operator address.
 - The relay decides and submits its transactions. Then each juror gets its jobs: commits run in worker threads, because a model call takes minutes. Reveals run in the loop.
-- The relay and the jurors use one key: the operator key is the fee payer, the oracle key, the owner of the Foundation jurors and the refund address. All transactions go through one queue. One transaction is sent at a time, and the queue waits until the chain shows its output (at most 3 minutes) before the next one. Commits, reveals, resolutions, `TimeoutResolve` and Open go first.
+- The relay and the jurors use one key: the operator key is the fee payer, the oracle key and the owner of the Foundation jurors (a bond comes back to it at the exit). The lovelace of a case that the relay opens does not come back to this key: it goes to the treasury of the deployment when the case closes (`refund_to`, §12.2). All transactions go through one queue. One transaction is sent at a time, and the queue waits until the chain shows its output (at most 3 minutes) before the next one. Commits, reveals, resolutions, `TimeoutResolve` and Open go first.
 - The service reads the chain again on every loop, so a restart is safe. The transaction log of the relay and the state of each juror are in the state directory.
 
 ### Relay decisions (§12.2)
@@ -32,7 +32,7 @@ The code is in `Module-1/jury/vector_jury/`: `service.py` (the loop and the tran
 | Situation | Action |
 |---|---|
 | No case under §11.2 rules 1-2, and no followed deployment covers `challenged_at` | `OracleResolve(Inconclusive)`, basis `no-jury` |
-| No case, `D - now >= 6 h 10 min` | Open a case in the deployment of `challenged_at` (no fee, 10 AP3X, refund to the relay), from `challenged_at + 30 min`, or at once when `D - now <= 6 h 40 min` |
+| No case, `D - now >= 6 h 10 min` | Open a case in the deployment of `challenged_at` (no fee, 10 AP3X, refund to the treasury of the deployment), from `challenged_at + 30 min`, or at once when `D - now <= 6 h 40 min` |
 | No case, `D - now < 6 h 10 min` | `OracleResolve(Inconclusive)`, basis `no-time` |
 | Canonical case, `now >= reveal_end`, still `Open` | Finalize it |
 | The Finalize transaction is 10 blocks deep | `OracleResolve(outcome)` with the resolution document (§10.5), `hi <= D`; for `AuditorWins`, then `ApplyVerdict` |

@@ -1,6 +1,6 @@
 # Module-1 jury: specification
 
-Status: draft for review, round 2. Version `vector-module1-jury/1`.
+Status: deployed on Vector mainnet on 2026-11-09 (§16). Version `vector-module1-jury/1`.
 
 ## 1. Purpose and scope
 
@@ -593,4 +593,53 @@ The Vector MCP server has build tools for documents, Module-1 claims and challen
 
 ## 16. Mainnet deployment
 
-To be added after the deployment: script hash, address, reference script output, parameter CBOR, the window `cases_from` / `cases_until`, and the Foundation jurors.
+The deployment manifest is `deploy/mainnet/manifest.json`. It is the source of these values.
+
+| Item | Value |
+|---|---|
+| Script hash | `733936500845a3b6e3c298e8ef5ef737e0c26c60ae475d7aa203b3dd` |
+| Address | `addr1w9enjdjsppz68dhrc2vw3m677um7psnvvzhywht65gpm8hgxam0s0` |
+| Reference script output | `929cda1ae22d71ac09fe098c59206fdff553f8eeb4c7328a0585f1ebde0cda82#0` (script size 13,414 bytes, Aiken v1.1.21) |
+| Deployed | 2026-11-09T11:43:16Z |
+| `cases_from` | `1794516197000` (2026-11-12T20:43:17Z) |
+| `cases_until` | none |
+
+Parameters (§3):
+
+| Parameter | Value |
+|---|---|
+| `identity_hash` | `d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762` |
+| `m1_claim` | `53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523` |
+| `m1_challenge` | `9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08` |
+| `treasury` | `addr1wx2yu92dtp70q0stsv8kmnrv284lh836lp0l936x6gsrggshvzzlc` |
+| `bond_min` | 250 AP3X |
+| `slash` | 25 AP3X |
+| `juror_floor` | 10 AP3X |
+| `eligibility_delay` | 3 days |
+| `exit_notice` | 3 days |
+| `commit_window` | 2 hours |
+| `reveal_window` | 2 hours |
+| `resolve_margin` | 2 hours |
+| `claim_period` | 30 days |
+| `quorum` | 3 |
+| Majority | 2/3 |
+
+Parameter CBOR:
+
+```
+d8799f581cd958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762581c53f6fc36219a3bc3c8af33c830480cff65aadb51baabb0bf485b4523581c9873ba3348eef1c277bcd6dce266ae170f68aa3baa64cf859d0eec08d8799fd87a9f581c944e154d587cf03e0b830f6dcc6c51ebfb9e3af85ff2c746d2203422ffd87a80ff1a0ee6b2801a017d78401a009896801a0f7314001a0f7314001a006ddd001a006ddd001a006ddd001a9a7ec800030203ff
+```
+
+Foundation jurors (registered again on 2026-11-09 with new prompt documents; the first registrations of that day are in `txs.foundation_jurors_replaced` of the manifest). Their configuration and prompts are in `jurors/foundation/`.
+
+| Name | Juror DID | Model | Registration transaction |
+|---|---|---|---|
+| `ds-flash-chat-1` | `did:vector:e33d9be7ac64faf703d511ec4c31c4d539db51dd8a378a2c25a4bdb70635855a` | `deepseek-v4-pro` | `51f271658edecdc50a11f07aef05b52b9e77e7741084504a996c58c4599488ce` |
+| `ds-flash-chat-2` | `did:vector:52556675362cb250307c05427fb086157efe7ab7d8eaea45efec75d1f740abf2` | `moonshotai/kimi-k2.6` | `8b4f7a80738020feab9074695a01095eb068e03cca0b0925c4ff4548693cc62a` |
+| `ds-flash-chat-3` | `did:vector:b35d952b2dc80c9fbfe139dc2804d6086c5cd017e484cee238d6c0123262aae7` | `Qwen/Qwen3.6-35B-A3B-FP8` | `d7e245d5a9fe388702b4628cd7f665ba439ddd3bb38b56117b8d074570ece69a` |
+| `kimi-chat-2` | `did:vector:29a379b7b77c20e9e237eeacdb54bd2c3e759a7504d4074db967ca58620e0304` | `deepseek/deepseek-v4-flash` | `78c48809a81043c781b6da94e912ad9c308b637df10a497f65e6b3ebfab726f4` |
+| `kimi-chat-3` | `did:vector:a7d6c1e0ea0374c28fe064af705f7e743c1704b906510d4606e51d62034bd93d` | `gpt-5.6-sol` | `1c5c42a20155d1d8ac1653a6bacc8f1fa3725814a6ce9cb29bf04edb090e0255` |
+
+A juror name is the name of its gateway key. It does not name the model.
+
+Two test deployments with short windows are in `deploy/mainnet-launch-test/` (cases from 2026-11-09T16:00:12Z to 2026-11-09T20:00:12Z) and `deploy/mainnet-load-test/` (cases from 2026-11-12T12:45:00Z to 2026-11-12T20:40:00Z).
