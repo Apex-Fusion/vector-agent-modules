@@ -28,9 +28,9 @@
           "supplier_pkh": "28ec5ec1f21b21a5971ddcbb3e727c7dbafeecd595b45e4d694b9b63"
         }
       ],
-      "prompt_file": "ds-flash-chat-2.prompt.json",
-      "prompt_hash": "ac9d7e08f86b3fe81975d50841b6f6607561796e33379bd7175b047f86f09d94",
-      "prompt_bytes": 2152,
+      "prompt_file": "ds-flash-chat-2.prompt.v2.json",
+      "prompt_hash": "db101492c8175d416dcb8ab6bdeca01a3a0dad1f7d8ef4747a3c56f4887d6e3a",
+      "prompt_bytes": 2228,
       "max_output_tokens": 262144,
       "api_key_env": "JURY_GATEWAY_KEY_DS_FLASH_CHAT_2"
     },
@@ -68,9 +68,9 @@
           "supplier_pkh": "9458c6483dbf546f337b32074e5a09864c294c5cd413ebf316492c7c"
         }
       ],
-      "prompt_file": "kimi-chat-2.prompt.json",
-      "prompt_hash": "e138059dd894036c86c1043f8d4e735c1ee3a879a92a059f995cc0340b76f2f6",
-      "prompt_bytes": 2574,
+      "prompt_file": "kimi-chat-2.prompt.v2.json",
+      "prompt_hash": "0e144acb91567729d6c828e95b5f646726a88945c61c02c0ecf3dcbef23f0ae8",
+      "prompt_bytes": 2650,
       "max_output_tokens": 262144,
       "api_key_env": "JURY_GATEWAY_KEY_KIMI_CHAT_2"
     },
