@@ -25,19 +25,21 @@ Identity registry (did:vector)
 |----------|---------------|
 | [Single-Agent Instructions](docs/single-agent-instructions.md) | How to bootstrap and play Module 3 as an AI agent |
 | [Implementation Spec](MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md) | Full design specification (v0.4) |
-| [Deployment Guide](deploy/DEPLOY.md) | Deploying contracts to Vector testnet |
+| [Deployment Guide](../Module-1/deploy/identity/DEPLOY-IDENTITY.md) | Deploying the contracts of the identity registry release to Vector (Module-3 is step 8) |
 | [Dashboard](dashboard/README.md) | Public read-only leaderboard + REST API (testnet & mainnet) |
 
 ## Contracts
 
-Two Aiken multi-validators on Plutus V3 (Conway), deployed to both testnet and mainnet:
+Two Aiken multi-validators on Plutus V3 (Conway). The identity-era deployment is on Vector mainnet. The previous deployment is on Vector testnet and mainnet.
 
-| Validator | Handles | Testnet Hash | Mainnet Hash |
-|-----------|---------|-------------|-------------|
-| `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `7e0d53b6797cd770...` | `5168e1871cfdb1e5...` |
-| `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `715726f3670743b1...` | `77196bed7fb84576...` |
+| Validator | Handles | Mainnet, identity era | Mainnet, previous | Testnet, previous |
+|-----------|---------|-----------------------|-------------------|-------------------|
+| `reputation` | Self-stake lifecycle + history bonus tokens (mint + spend) | `fad945ab20f61a58...` | `5168e1871cfdb1e5...` | `7e0d53b6797cd770...` |
+| `endorsement` | Endorsement + challenge lifecycle (mint + spend) | `21ac1502ba7bab74...` | `77196bed7fb84576...` | `715726f3670743b1...` |
 
-Aiken unit tests (`aiken check`), 273 Python SDK tests (offline, with the transaction builders), 12/12 smoke test steps passing on both Vector testnet and mainnet with the previous deployment (includes CapabilityVerified and CapabilityFalsified paths). The new deployment for the identity registry is not deployed yet.
+Aiken unit tests (`aiken check`) and 398 Python SDK tests (offline, with the transaction builders) cover the contracts and the SDK. The previous deployment passed 12/12 smoke test steps on both Vector testnet and mainnet (includes CapabilityVerified and CapabilityFalsified paths).
+
+**Identity-era deployment.** The deployment for the identity registry is on Vector mainnet since 2026-11-03. Its reputation validator is `fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424`. Its endorsement validator is `21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe`. Its state file is `deploy/identity/mainnet/deploy_state.json`. As of 2026-11-18, no stake, endorsement or challenge has used it, and no smoke test has run on it. The previous deployment (reputation validator `5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093`) keeps its positions.
 
 ## Python SDK
 
@@ -54,14 +56,28 @@ pip install -e ".[dev,indexer]"
 
 ### Quick Start (Remote / Ogmios)
 
+The example uses the identity-era deployment on Vector mainnet. The SDK defaults are the testnet endpoints and the testnet system start, so a mainnet client sets both.
+
 ```python
+import reputation_staking.constants as constants
+import reputation_staking.utils as utils
 from reputation_staking import ReputationStakingClient
+from reputation_staking.constants import (
+    MAINNET_OGMIOS_URL,
+    MAINNET_SUBMIT_URL,
+    MAINNET_SYSTEM_START_UNIX_S,
+)
 from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
 
-context = OgmiosHttpContext()
+# Set the mainnet system start before any slot conversion.
+utils.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
+constants.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
+
+context = OgmiosHttpContext(ogmios_url=MAINNET_OGMIOS_URL)
 skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
 client = ReputationStakingClient.from_deploy_state(
-    "deploy/deploy_state.json", context, skey,
+    "deploy/identity/mainnet/deploy_state.json", context, skey,
+    ogmios_url=MAINNET_OGMIOS_URL, submit_url=MAINNET_SUBMIT_URL,
 )
 agent = "did:vector:<64 hex>"          # or the 64-hex identifier
 client.check_agent(agent, ["code_review"], controller_skey=None)
@@ -69,9 +85,11 @@ seed_tx = client.create_seed_utxo(agent, ["code_review"])
 tx = client.create_stake(agent, ["code_review"], 10_000_000, seed_utxo=f"{seed_tx}#0")
 ```
 
+The example stakes 10 AP3X, the module minimum. The owner cannot withdraw the minimum: `DecreaseStake` keeps at least that amount in the stake, and no action burns the stake token. See [Single-Agent Instructions](docs/single-agent-instructions.md).
+
 No local node or Docker required. Uses Ogmios HTTP JSON-RPC for chain queries and the HTTP submit endpoint for transaction submission, matching Module 1 and Module 6. Works with both testnet and mainnet endpoints. The protocol parameters (also the Plutus V3 cost model) come from the chain context.
 
-**Deployment values.** The client reads every hash and address from the deploy state that the deploy scripts write (`reputation_staking.deployment.load_deployment`): the validators, the params holder and `params_token_policy`, the treasury holder, `identity_hash` and the Module-1 hashes. There are no defaults. The client refuses a state without `identity_hash` (an old deployment has `agent_registry_hash`): move that file to a different path. Deployment order: identity registry, Module-1, Module-3, Module-6.
+**Deployment values.** The client reads every hash and address from the deploy state that the deploy scripts write (`reputation_staking.deployment.load_deployment`): the validators, the params holder and `params_token_policy`, the treasury holder, `identity_hash` and the Module-1 hashes. There are no defaults. The client refuses a state without `identity_hash` (an old deployment has `agent_registry_hash`): move that file to a different path. The files `deploy/deploy_state.json` (testnet) and `deploy/mainnet/deploy_state.json` (mainnet) belong to the previous deployment. The state of the identity-era deployment is `deploy/identity/mainnet/deploy_state.json`. Deployment order: identity registry, Module-1, Module-3, Module-6.
 
 **Identity records.** An agent is an identity record (did:vector); the methods accept the canonical DID or the 64-hex identifier. Before it builds a transaction, the client checks the rules of the contracts and raises `vector_identity.IdentityError` (or a subclass) when one fails:
 
@@ -105,8 +123,9 @@ Read-only tools use the indexer database. Write tools use `ReputationStakingClie
 # Testnet (default) — polls every 60s
 cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 -m indexer
 
-# Mainnet
-PYTHONPATH=python:$PYTHONPATH python3 -m indexer --network mainnet
+# Mainnet, identity-era deployment
+PYTHONPATH=python:$PYTHONPATH python3 -m indexer --network mainnet \
+  --deploy-state deploy/identity/mainnet/deploy_state.json
 
 # Single poll (no loop)
 PYTHONPATH=python:$PYTHONPATH python3 -m indexer --once
@@ -115,7 +134,7 @@ PYTHONPATH=python:$PYTHONPATH python3 -m indexer --once
 PYTHONPATH=python:$PYTHONPATH python3 -m indexer --with-api --api-port 8080
 ```
 
-The indexer reads `deploy/deploy_state.json` (testnet) or `deploy/mainnet/deploy_state.json` (mainnet), the files of the deploy scripts, and stops for an old deploy state. Each poll reads the ProtocolParams record (decay and epoch values, in milliseconds) and the identity records at the identity address. It stores the effective status of each agent's record at the index time (`active`, `suspended`, `revoked`, `retired`, or `missing` when the record or an ancestor record is not there). Times are POSIX milliseconds; decay counts `(now − last_updated) // epoch_length − activity_window` epochs, as ClaimDecayRefund does. An existing SQLite file gets the new columns when the indexer opens it.
+The indexer reads `deploy/deploy_state.json` (testnet), `deploy/mainnet/deploy_state.json` (mainnet) or the file of `--deploy-state`, and stops for an old deploy state. Both default files belong to the previous deployment: pass `--deploy-state deploy/identity/mainnet/deploy_state.json` for the identity-era deployment. Each poll reads the ProtocolParams record (decay and epoch values, in milliseconds) and the identity records at the identity address. It stores the effective status of each agent's record at the index time (`active`, `suspended`, `revoked`, `retired`, or `missing` when the record or an ancestor record is not there). Times are POSIX milliseconds; decay counts `(now − last_updated) // epoch_length − activity_window` epochs, as ClaimDecayRefund does. An existing SQLite file gets the new columns when the indexer opens it.
 
 **Decision (identity rule):** an agent whose record is not Active at the index time gets the tier Unverified. Its amounts stay as they are. The leaderboard leaves it out unless the caller asks for all agents (`include_all=true`).
 
@@ -133,6 +152,7 @@ It shows canonical DIDs (`did:vector:<64 hex>`). It re-exports every `/v1/*` rou
 ```bash
 # Local dev (after running the indexer once)
 cd dashboard && DEPLOYMENT_NETWORK=mainnet MODULE3_ROOT=$(pwd)/.. \
+  MODULE3_DEPLOY_STATE=$(pwd)/../deploy/identity/mainnet/deploy_state.json \
   uvicorn server:app --reload --port 8000
 ```
 
@@ -194,7 +214,24 @@ R(agent) = self_stake + endorsements - challenges + history_bonus - decay
 
 ## Contract Hashes
 
-The hashes below belong to the old deployment, which uses the legacy agent
+**Identity-era deployment, mainnet** (on chain since 2026-11-03). The state file
+`deploy/identity/mainnet/deploy_state.json` holds these values and the
+transactions of the params record, the cross refs and the two reference
+scripts. The SDK reads that file.
+
+```
+reputation_validator:  fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424
+endorsement_validator: 21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe
+refs_token_policy:     78d0c5547001110c61bcafb143d1c332b7427d91b9ce3f9dbb8d364a
+params_token_policy:   8295dad015ecba3d5f7b346083d0c879794ab065b1c7ec1a533f2657
+params_holder:         bb9e647e6ea974753c0b61ff2330dcf7a27710e954ca460b1aeb24c5
+treasury_holder:       c5bff82c5d67158234e62cc0a099cd70b072eca9702eec28d8b321ba
+identity_registry:     d958b823faaa76977d0a07bd9622e87d8e2c85f6692f7f8e8db77762
+reputation_address:    addr1w8adj3dtyrmp5k8mma4r8285jxyeklw5zelmvssqhsrqgfqc9uavs
+endorsement_address:   addr1wys6c9gzhfa6ka8f3me66ftthgtz9gf4ry62cxwsgvsjdlspch2kv
+```
+
+The hashes below belong to the previous deployment, which uses the legacy agent
 registry and the old holders. The current contracts do not accept them: they
 read the identity registry (`identity_hash`), and the deploy scripts apply a
 12-field `ReputationConfig`. A new deployment gets its hashes from the
@@ -203,21 +240,21 @@ the `VECTOR_MODULE1_*` values of the new Module-1 deployment), in this order:
 identity registry, Module-1, Module-3, Module-6. The client reads the new
 values from the deploy state that the deploy scripts write.
 
-**Old deployment, mainnet:**
+**Previous deployment, mainnet:**
 ```
 reputation_validator:  5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093
 endorsement_validator: 77196bed7fb8457610800cc7241cf4496e00d7901de9079fb0323ebf
 refs_token_policy:     09dce01a3c2f2fddeda34a547bb4a5ef9f156feae6c4f45d6d74af84
 ```
 
-**Old deployment, testnet:**
+**Previous deployment, testnet:**
 ```
 reputation_validator:  7e0d53b6797cd7707eb923b0ab044d4e03ef54cf115a6c14fadfb38e
 endorsement_validator: 715726f3670743b145b92d859cc5025128a99de88cd5ac42120258b4
 refs_token_policy:     b07ad1a1244a388d54463fce3c68aa8d4ddc5a3297159d20590d574f
 ```
 
-**Old deployment, shared (both networks):**
+**Previous deployment, shared (both networks):**
 ```
 agent_registry (legacy): be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01
 treasury (stub):         ab1aad52c4774e5da9f2c0fa1a4d07220a0bdd57ee3dce9be860dac6
@@ -267,7 +304,7 @@ Module-3/
       api.py                                  # FastAPI REST API (v1 endpoints)
       sybil.py                                # Sybil detection (cycle + cluster, Phase 1.1)
     oracle/                                   # Foundation oracle service
-    tests/                                    # 136 unit tests
+    tests/                                    # Offline tests (SDK, indexer, oracle)
 
   scripts/
     deploy_common.py                          # Config builders; deployment inputs and order
@@ -275,7 +312,7 @@ Module-3/
     deploy_mainnet_ogmios.py                  # Deploy via Ogmios, mainnet or testnet (--network); dry run by default (see Module-1/deploy/identity/DEPLOY-IDENTITY.md)
     test_deploy_config.py                     # Offline checks of the config builder and the inputs
     smoke_test_ogmios.py                      # Full lifecycle smoke test — testnet (identity records from M3_SMOKE_AGENT_A/B)
-    smoke_test_mainnet_ogmios.py              # Same smoke test on mainnet
+    smoke_test_mainnet_ogmios.py              # Same smoke test on mainnet (reads deploy/identity/mainnet/deploy_state.json)
     setup_wallet_docker.py                    # Docker-based wallet setup
     demo_seed_mainnet.py                      # Resumable demo seed — spans all 5 tiers + sybil cluster
 
@@ -288,11 +325,13 @@ Module-3/
     .env.mainnet.example
 
   deploy/                                     # Deployment artifacts
-    deploy_state.json                         # Testnet deployment hashes + tx IDs
-    plutus.json                               # Testnet applied blueprint (with config)
+    deploy_state.json                         # Testnet deployment hashes + tx IDs (previous deployment)
+    plutus.json                               # Testnet applied blueprint (previous deployment)
     mainnet/
-      deploy_state.json                       # Mainnet deployment hashes + tx IDs
-      plutus.json                             # Mainnet applied blueprint (with config)
+      deploy_state.json                       # Mainnet deployment hashes + tx IDs (previous deployment)
+      plutus.json                             # Mainnet applied blueprint (previous deployment)
+    identity/mainnet/
+      deploy_state.json                       # Mainnet deployment of the identity registry release (2026-11-03)
 ```
 
 ## Building and Testing
@@ -311,10 +350,13 @@ aiken check
 # Offline checks of the deploy config builder (needs cbor2)
 cd Module-3/scripts && python3 test_deploy_config.py
 
-# Run smoke test on Vector testnet (remote — no Docker required). The two
-# agents are identity records that exist; the wallet is the deploy (oracle)
-# key. The test checks the records (Active, capabilities, controller key,
-# challenger age) before the first transaction.
+# Run smoke test on Vector testnet (remote — no Docker required). The script
+# reads deploy/deploy_state.json. That file belongs to the previous
+# deployment, and the SDK refuses it: replace it with the state file of an
+# identity-era testnet deployment first. The two agents are identity records
+# that exist; the wallet is the deploy (oracle) key. The test checks the
+# records (Active, capabilities, controller key, challenger age) before the
+# first transaction.
 export M3_SMOKE_AGENT_A=did:vector:<64 hex>   # stakes code_review, testing
 export M3_SMOKE_AGENT_B=did:vector:<64 hex>   # endorses and challenges A
 # Optional, when a controller key is not the wallet key:
@@ -322,7 +364,9 @@ export M3_SMOKE_AGENT_B=did:vector:<64 hex>   # endorses and challenges A
 # export M3_SMOKE_AGENT_B_CONTROLLER_SKEY=/path/b_controller.skey
 cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_ogmios.py
 
-# Run smoke test on Vector mainnet (same inputs)
+# Run smoke test on Vector mainnet (same inputs). The script reads
+# deploy/identity/mainnet/deploy_state.json and keeps its run state next to it.
+# The wallet is the oracle key of that deployment.
 cd Module-3 && PYTHONPATH=python:$PYTHONPATH python3 scripts/smoke_test_mainnet_ogmios.py
 
 # Run SDK unit tests (offline)
