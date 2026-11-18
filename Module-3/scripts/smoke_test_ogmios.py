@@ -34,9 +34,10 @@ Inputs (an argument, else the environment variable):
   --agent-b-controller-skey  M3_SMOKE_AGENT_B_CONTROLLER_SKEY  optional key file
   --wallet-skey              M3_WALLET_SKEY                    wallet key file
 
-The run state (deploy/smoke_state_ogmios.json) keeps the completed steps.
-A run resumes from it. A state of another deployment or other agents stops
-the run: move that file to a different path.
+The run state keeps the completed steps. It is smoke_state_ogmios.json in the
+deploy directory of the network: deploy/ (testnet) or deploy/identity/mainnet/
+(mainnet), next to the deploy state. A run resumes from it. A state of another
+deployment or other agents stops the run: move that file to a different path.
 
 Usage:
     export M3_SMOKE_AGENT_A=did:vector:<64 hex>
@@ -106,11 +107,14 @@ TESTNET = Network(
     wallet_skey="/tmp/m3dev_payment.skey",
 )
 
+# The deploy state of the identity-era deployment (on Vector mainnet since
+# 2026-11-03). deploy/mainnet/ holds the state of the previous deployment,
+# which the SDK refuses.
 MAINNET = Network(
     name="MAINNET",
     ogmios_url=MAINNET_OGMIOS_URL,
     submit_url=MAINNET_SUBMIT_URL,
-    deploy_dir=MODULE3_ROOT / "deploy" / "mainnet",
+    deploy_dir=MODULE3_ROOT / "deploy" / "identity" / "mainnet",
     wallet_skey="/tmp/m3mainnet_payment.skey",
     system_start=MAINNET_SYSTEM_START_UNIX_S,
 )
