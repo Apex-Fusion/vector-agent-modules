@@ -25,8 +25,8 @@ You can participate in four roles:
 
 ## Prerequisites
 
-1. **Identity record** — Your agent needs a record in the identity registry (did:vector). To stake, endorse, challenge or receive a history bonus, the record must have effective status Active (no hold in force, an Accountable Party that covers the transaction's validity range, and for a subagent an Active parent under the current epoch), the record must list each capability that you stake, and the record's controller key must sign. To withdraw a stake, an endorsement or a challenge, only the controller key signs; this also works for a revoked or retired record. Each of these transactions has a validity range of at most one hour.
-2. **AP3X tokens** — The native staking token (= ADA on Vector testnet). Minimum amounts:
+1. **Identity record** — Your agent needs a record in the identity registry (did:vector). To stake, endorse, challenge or receive a history bonus, the record must have effective status Active (no hold in force, an Accountable Party that covers the transaction's validity range, and for a subagent an Active parent under the current epoch), the record must list each capability that you stake, and the record's controller key must sign. To decrease a stake, or to withdraw an endorsement or a challenge, only the controller key signs; this also works for a revoked or retired record. Each of these transactions has a validity range of at most one hour.
+2. **AP3X tokens** — The native coin of Vector (like ADA on Cardano; 1 AP3X = 1,000,000 DFM). Minimum amounts:
    - Staker: 10 AP3X to create a self-stake
    - Endorser: 5 AP3X per endorsement
    - Challenger: 25 AP3X per challenge
@@ -36,7 +36,7 @@ You can participate in four roles:
    cd Module-3/python && pip install -e ".[dev]"
    ```
 
-No local node or Docker required. The SDK connects to the Vector testnet via remote Ogmios and submit endpoints.
+No local node or Docker required. The SDK connects to Vector through remote Ogmios and submit endpoints. Its default endpoints are the testnet ones. For mainnet, pass the mainnet endpoints and set the mainnet system start (see the Quick Start in the [README](../README.md)).
 
 ---
 
@@ -56,19 +56,32 @@ Stake when you have capabilities you want to advertise on-chain. Staking is the 
 
 2. **Create a seed UTXO** — Send a small amount to the reputation validator address. This UTXO will be consumed during stake creation:
    ```python
+   import reputation_staking.constants as constants
+   import reputation_staking.utils as utils
    from reputation_staking import ReputationStakingClient, load_deployment
+   from reputation_staking.constants import (
+       MAINNET_OGMIOS_URL,
+       MAINNET_SUBMIT_URL,
+       MAINNET_SYSTEM_START_UNIX_S,
+   )
    from reputation_staking.ogmios_backend import OgmiosHttpContext, load_wallet
 
-   context = OgmiosHttpContext()
+   # Vector mainnet. The SDK defaults are the testnet endpoints and the testnet
+   # system start.
+   utils.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
+   constants.SYSTEM_START_UNIX_S = MAINNET_SYSTEM_START_UNIX_S
+
+   context = OgmiosHttpContext(ogmios_url=MAINNET_OGMIOS_URL)
    skey, vkey, wallet_addr = load_wallet("wallet/payment.skey")
-   # The deploy state of a new deployment (with identity_hash). An old state
-   # raises DeploymentStateError: move that file to a different path.
+   # The deploy state of the identity-era deployment (with identity_hash). The
+   # state of the previous deployment raises DeploymentStateError.
    client = ReputationStakingClient.from_deploy_state(
-       "deploy/deploy_state.json", context, skey,
+       "deploy/identity/mainnet/deploy_state.json", context, skey,
+       ogmios_url=MAINNET_OGMIOS_URL, submit_url=MAINNET_SUBMIT_URL,
        validity_slots=900,  # validity range of each transaction, at most 3600 slots (1 h)
    )
-   # load_deployment("deploy/deploy_state.json") gives the same values
-   # (identity_hash, params_token_policy, holders, Module-1 hashes).
+   # load_deployment("deploy/identity/mainnet/deploy_state.json") gives the same
+   # values (identity_hash, params_token_policy, holders, Module-1 hashes).
 
    agent = "did:vector:<64 hex>"  # your identity record (or its 64-hex identifier)
    record = client.find_identity_record(agent)  # None when the record is not there
@@ -110,7 +123,7 @@ Stake when you have capabilities you want to advertise on-chain. Staking is the 
 ### Increasing / Decreasing Stake
 
 - **Increase**: Add more AP3X to boost your reputation score and endorsement cap
-- **Decrease**: Withdraw AP3X, subject to a 24-hour cooldown and the 10 AP3X minimum
+- **Decrease**: Withdraw AP3X above the module minimum, after a 24-hour cooldown. The owner cannot withdraw the module minimum (`min_self_stake`, 10 AP3X in the params record of the identity-era deployment). The decrease rule keeps at least that amount in the stake. No action burns the stake token, so the stake stays at the reputation address.
 - **Update capabilities**: Change which capabilities your stake backs without changing the amount
 
 ### Reputation Tiers
@@ -368,7 +381,7 @@ A distribution (`client.distribute_outcome(...)` or `client.distribute_falsified
 ## Strategy Tips
 
 ### For Stakers
-- Start with a small stake (10 AP3X) and grow as you build reputation
+- Start with a small stake (10 AP3X) and grow as you build reputation. You cannot withdraw the module minimum, so treat the first 10 AP3X as a lasting stake
 - List only capabilities you can actually demonstrate — false claims attract challengers
 - Stay active: only your own stake changes reset your decay timer
 - Higher self-stake means a higher endorsement cap (3x multiplier)
@@ -415,7 +428,7 @@ To set up and run a complete Module 3 instance:
 7. DistributeOutcome: burns challenge token, pays target + treasury (a history bonus for the target needs its Active record and its controller's signature)
 8. Verify: indexer shows correct scores, tiers, and history bonuses
 
-For full deployment details, see [`../deploy/DEPLOY.md`](../deploy/DEPLOY.md) or run the smoke test:
+For full deployment details, see the [deployment runbook](../../Module-1/deploy/identity/DEPLOY-IDENTITY.md) (Module-3 is step 8). To run the smoke test:
 ```bash
 cd Module-3
 
@@ -423,10 +436,18 @@ cd Module-3
 # identity records that exist; the script checks them before it spends.
 export M3_SMOKE_AGENT_A=did:vector:<64 hex>
 export M3_SMOKE_AGENT_B=did:vector:<64 hex>
+
+# Vector mainnet: reads deploy/identity/mainnet/deploy_state.json, the state
+# of the identity-era deployment.
+PYTHONPATH=python python3 scripts/smoke_test_mainnet_ogmios.py
+
+# Vector testnet: reads deploy/deploy_state.json. That file belongs to the
+# previous deployment, and the SDK refuses it. Replace it with the state file
+# of an identity-era testnet deployment first.
 PYTHONPATH=python python3 scripts/smoke_test_ogmios.py
 ```
 
-The Ogmios smoke test uses PyCardano + remote Ogmios HTTP for all chain interaction, matching Module 1 and Module 6. It requires the deploy wallet `.skey` file (the oracle key), the two agent records, and network access.
+The Ogmios smoke test uses PyCardano + remote Ogmios HTTP for all chain interaction, matching Module 1 and Module 6. It requires the deploy wallet `.skey` file (the oracle key of the deployment), the two agent records, and network access.
 
 ---
 
@@ -439,7 +460,7 @@ Module 3 uses the same remote chain interaction pattern as Module 1 and Module 6
 | `OgmiosHttpContext` | PyCardano-compatible chain context using Ogmios HTTP JSON-RPC |
 | `ReputationStakingClient` | High-level API: stake, endorse, challenge, resolve, distribute |
 | `PlutusData` classes | Type-safe datum/redeemer construction matching on-chain Aiken types |
-| HTTP submit endpoint | Transaction submission via `https://submit.vector.testnet.apexfusion.org/api/submit/tx` |
+| HTTP submit endpoint | Transaction submission via the submit endpoint of the network (`https://submit.vector.mainnet.apexfusion.org/api/submit/tx` on mainnet, `https://submit.vector.testnet.apexfusion.org/api/submit/tx` on testnet) |
 
 All transactions are built with PyCardano's `TransactionBuilder`, which handles fee estimation, execution budget evaluation (via Ogmios `evaluateTransaction`), and CBOR serialization. CIP-33 reference scripts are resolved lazily from on-chain UTxOs.
 
@@ -451,9 +472,9 @@ ReputationStakingClient
     │
     ├─► OgmiosHttpContext ──► Ogmios HTTP (queries, evaluation)
     │
-    └─► HTTP Submit API ────► Vector testnet submit endpoint
+    └─► HTTP Submit API ────► Vector submit endpoint
 ```
 
 ---
 
-*This guide covers Module 3 Phase 1.0 as deployed on Vector testnet. For the full specification, see [`../MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md`](../MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md).*
+*This guide covers Module 3 Phase 1.0 as deployed on Vector mainnet (the identity-era deployment, state file `deploy/identity/mainnet/deploy_state.json`). For the full specification, see [`../MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md`](../MODULE-3-REPUTATION-STAKING-IMPL-SPEC.md).*
