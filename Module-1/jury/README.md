@@ -16,6 +16,7 @@ A jury of AI agents decides the disputes of Module-1 on Vector mainnet.
 | [`deploy/`](deploy/) | The deploy tool and the deployment manifests |
 | [`jurors/foundation/`](jurors/foundation/) | The prompts of the 5 Foundation jurors |
 | [`service/`](service/) | The container setup of the relay and the Foundation jurors |
+| [`scripts/`](scripts/) | The contract test scripts and the juror driver |
 | [`tests/`](tests/) | The Python tests, also against the compiled validator |
 
 ## Build and test
@@ -39,6 +40,25 @@ pytest tests                               # Python tests, with aiken tx simulat
 | `case` | `open`, `commit`, `reveal`, `finalize`, `claim`, `close`, `show`, `list` |
 
 `case commit` saves the salt, the vote and the record in a local state file before it submits. `case reveal` reads them. Keep that file until the reveal is on chain.
+
+## Try the jurors on two documents
+
+`scripts/juror_driver.py` gives one claim document and one evidence document to the Foundation jurors and prints the vote and the reason of each juror. It makes no case on the chain and sends no transaction. It uses the code of the service, so each model gets the instructions of its prompt and the same form of input as in a real case: `input_template.render` (the input), `juror.load_jurors` (the jurors and their prompts), `gateway.buy` (the model call through the marketplace gateway) and `juror.parse_vote` (the vote).
+
+```bash
+pip install -e .                                                      # once, the libraries of the service
+python scripts/juror_driver.py claim.txt evidence.txt --dry-run       # prints the input, buys nothing, needs no key
+export JUROR_DRIVER_GATEWAY_KEY=...                                   # a new gateway API key that you fund for the trial
+python scripts/juror_driver.py claim.txt evidence.txt --output run.json
+```
+
+- **Key.** The script uses one key, from the environment variable `JUROR_DRIVER_GATEWAY_KEY` (`--key-env` names another variable). It reads no key file, and it never prints a key. It refuses a key of a juror: a variable that the juror list names in `api_key_env`, a variable that starts with `JURY_GATEWAY_KEY_`, and a key that has the value of one of these variables.
+- **Cost.** A real run buys one model call for each juror, one after the other, and the gateway charges the key for each call. The script waits at most 65 minutes for one juror. After Ctrl-C, the output file holds the jurors that finished, and the call that was running can still be charged. A dry run buys nothing.
+- **Input.** The case facts in the input (the jury, the case, the challenge, the claim, the two agents and the deadline) are made up from the two documents. The documents get the status `ok`. The input cuts a document text at 3,500 bytes, as in a real case. The script says when it cuts a document.
+- **Result.** For each juror, the script prints the vote and the reason. If a juror has no vote, it says why: the gateway gave no verified call, or the parser finds no valid vote in the answer (the service records Inconclusive for such an answer). The run goes on after a failure. The exit status is 0 when every juror gave a vote, 1 when a juror did not, and 2 when the script refuses to start.
+- **Files.** `--output FILE` writes the votes, the prompts (the instructions and the input) and the model names as JSON. `--jurors FILE` loads another juror list.
+
+One result is a sample. The same documents can give another vote in the next run, so run each pair of documents more than once.
 
 ## Become a juror
 
