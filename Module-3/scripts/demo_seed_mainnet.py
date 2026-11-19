@@ -33,7 +33,7 @@ End state after run (approximate):
   Sybil1   -> Novice + sybil flag  (mutual cycle with Sybil2)
   Sybil2   -> Novice + sybil flag  (mutual cycle with Sybil1)
 
-Resumable via deploy/mainnet/demo_state.json. A state of another deployment
+Resumable via deploy/identity/mainnet/demo_state.json. A state of another deployment
 or other agents stops the run: move that file to a different path.
 
 Usage:

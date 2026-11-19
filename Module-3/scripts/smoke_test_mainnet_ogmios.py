@@ -4,8 +4,10 @@ Module 3: Reputation Staking — Full End-to-End Smoke Test on MAINNET
 
 The steps, inputs and identity checks are those of smoke_test_ogmios.py.
 This script uses the mainnet Ogmios and submit endpoints, the mainnet system
-start, deploy/mainnet/deploy_state.json, deploy/mainnet/smoke_state_ogmios.json
-and the wallet key /tmp/m3mainnet_payment.skey (or M3_WALLET_SKEY).
+start, deploy/identity/mainnet/deploy_state.json (the identity-era deployment),
+deploy/identity/mainnet/smoke_state_ogmios.json and the wallet key
+/tmp/m3mainnet_payment.skey (or M3_WALLET_SKEY). The wallet key must be the
+oracle key of that deployment.
 
 Usage:
     export M3_SMOKE_AGENT_A=did:vector:<64 hex>
