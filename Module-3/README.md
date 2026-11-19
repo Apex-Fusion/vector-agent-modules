@@ -39,7 +39,15 @@ Two Aiken multi-validators on Plutus V3 (Conway). The identity-era deployment is
 
 Aiken unit tests (`aiken check`) and 398 Python SDK tests (offline, with the transaction builders) cover the contracts and the SDK. The previous deployment passed 12/12 smoke test steps on both Vector testnet and mainnet (includes CapabilityVerified and CapabilityFalsified paths).
 
-**Identity-era deployment.** The deployment for the identity registry is on Vector mainnet since 2026-11-03. Its reputation validator is `fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424`. Its endorsement validator is `21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe`. Its state file is `deploy/identity/mainnet/deploy_state.json`. As of 2026-11-18, no stake, endorsement or challenge has used it, and no smoke test has run on it. The previous deployment (reputation validator `5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093`) keeps its positions.
+**Identity-era deployment.** The deployment for the identity registry is on Vector mainnet since 2026-11-03. Its reputation validator is `fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424`. Its endorsement validator is `21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe`. Its state file is `deploy/identity/mainnet/deploy_state.json`. The previous deployment (reputation validator `5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093`) keeps its positions.
+
+**First stake on the identity-era deployment.** The stake tools of the hosted MCP server went live on 2026-11-19: `vector_build_reputation_stake_open`, `vector_build_reputation_stake`, `vector_build_reputation_stake_increase`, `vector_build_reputation_stake_update_capabilities`, `vector_build_reputation_stake_decrease` and `vector_get_reputation_stake`. On 2026-11-19, a test record of the Foundation made the first stake on this deployment, on Vector mainnet:
+
+- Open: `c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c`
+- Create: `2f5752a8d1e70fe29fb032c69194943df8f3d51ba8cd428ee94a3f814c7b163f` (11 AP3X)
+- Increase: `0058c3849e8d59045da653e471d57404b1aef3492987fc56b5180390502c7a03` (12 AP3X)
+
+The stake holds 11 AP3X after the create and 12 AP3X after the increase. The capability update and the decrease are not yet proven on mainnet. The contract sets a cooldown of 24 hours before each of them (see the rule "Stake time" under "Contract rules (wave 4)" below).
 
 ## Python SDK
 
