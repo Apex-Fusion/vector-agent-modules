@@ -41,13 +41,15 @@ Aiken unit tests (`aiken check`) and 398 Python SDK tests (offline, with the tra
 
 **Identity-era deployment.** The deployment for the identity registry is on Vector mainnet since 2026-11-03. Its reputation validator is `fad945ab20f61a58fbdf6a33a8f491899b7dd4167fb64200bc060424`. Its endorsement validator is `21ac1502ba7bab74e98ef3ad256bba1622a1351934ac19d0432126fe`. Its state file is `deploy/identity/mainnet/deploy_state.json`. The previous deployment (reputation validator `5168e1871cfdb1e55c18ee173acbcdce092044a48bc2e23f3ba35093`) keeps its positions.
 
-**First stake on the identity-era deployment.** The stake tools of the hosted MCP server went live on 2026-11-19: `vector_build_reputation_stake_open`, `vector_build_reputation_stake`, `vector_build_reputation_stake_increase`, `vector_build_reputation_stake_update_capabilities`, `vector_build_reputation_stake_decrease` and `vector_get_reputation_stake`. On 2026-11-19, a test record of the Foundation made the first stake on this deployment, on Vector mainnet:
+**First stake on the identity-era deployment.** The stake tools of the hosted MCP server went live on 2026-11-19: `vector_build_reputation_stake_open`, `vector_build_reputation_stake`, `vector_build_reputation_stake_increase`, `vector_build_reputation_stake_update_capabilities`, `vector_build_reputation_stake_decrease` and `vector_get_reputation_stake`. A test record of the Foundation used each of them on this deployment, on Vector mainnet:
 
-- Open: `c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c`
-- Create: `2f5752a8d1e70fe29fb032c69194943df8f3d51ba8cd428ee94a3f814c7b163f` (11 AP3X)
-- Increase: `0058c3849e8d59045da653e471d57404b1aef3492987fc56b5180390502c7a03` (12 AP3X)
+- Open (2026-11-19): `c4ec66206f6f917519f411f9fbab1d709c918b30acf6bc7951759a513fa22c8c`
+- Create (2026-11-19): `2f5752a8d1e70fe29fb032c69194943df8f3d51ba8cd428ee94a3f814c7b163f` (11 AP3X)
+- Increase (2026-11-19): `0058c3849e8d59045da653e471d57404b1aef3492987fc56b5180390502c7a03` (12 AP3X)
+- Capability update (2026-11-20): `c4c6cbba333188758fe43ce198b5974fd0fe58db1b79db5bf33792b4ab6e3503` (a second capability)
+- Decrease (2026-11-23): `48d4ce7bbd9141a0e5787af08a2cb14aa6c75b64134f874fa64bc8a4155eb6ad` (11 AP3X)
 
-The stake holds 11 AP3X after the create and 12 AP3X after the increase. The capability update and the decrease are not yet proven on mainnet. The contract sets a cooldown of 24 hours before each of them (see the rule "Stake time" under "Contract rules (wave 4)" below).
+After the create, the increase, the capability update and the decrease, `vector_get_reputation_stake` read the stake back with the amount and the capabilities of that step. The capability update and the decrease each came more than 24 hours after the `last_updated` of the step before them, as the contract requires (see the rule "Stake time" under "Contract rules (wave 4)" below). Each owner action wrote the end of its validity range, about 30 minutes after the submit, as `last_updated`, so the 24 hours count from that time.
 
 ## Python SDK
 
